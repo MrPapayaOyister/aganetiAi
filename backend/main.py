@@ -475,6 +475,21 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Collaborative AI Enterprise OS", lifespan=lifespan)
 
+# ── CORS (for the Next.js dashboard) ───────────────────────
+# DASHBOARD_ORIGINS is a comma-separated allow-list (e.g.
+# "http://localhost:3000,https://demo.example.com"). Defaults to "*" so the demo
+# dashboard works out of the box; credentials are disabled because the dashboard
+# is token/loopback-scoped, not cookie-authenticated.
+from fastapi.middleware.cors import CORSMiddleware
+_dashboard_origins = [o.strip() for o in os.getenv("DASHBOARD_ORIGINS", "*").split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_dashboard_origins,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # ==========================================
 # 1. Initialize Clients & Credentials
 # ==========================================

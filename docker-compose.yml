@@ -25,6 +25,7 @@ services:
       --port 8080
       -c 8192
       --n-gpu-layers 999
+      -fa on
       --embeddings
       --pooling last
     restart: unless-stopped
