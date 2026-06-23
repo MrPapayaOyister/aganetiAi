@@ -1,0 +1,33 @@
+urrent State of the Codebase
+What's Actually Built & Working
+main.py (FastAPI Backend)
+
+Local LLM connected via llama.cpp OpenAI-compatible endpoint
+
+Qdrant RAG queried and injected into Manager agent system prompt
+
+LangGraph mesh: Manager → Developer (task delegation flow)
+
+LangGraph mesh: Triage Officer → Communications Drafter (email flow)
+
+/delegate endpoint — task routing
+
+/triage_email endpoint — processes incoming emails
+
+/send_email endpoint — SMTP outbox, real email dispatch
+
+mail_watcher.py
+
+IMAP polling loop (every 30s), fetches last 3 unread emails
+
+Calls /triage_email API, saves draft to email_drafts.json
+
+app_frontend.py (Streamlit)
+
+Displays approval queue from email_drafts.json
+
+Editable draft text area per email
+
+"Send Real Email" button calls /send_email
+
+Chat input exists — but does nothing yet (just echoes the input, not wired to any agent)

@@ -1,0 +1,7 @@
+| Gap                                                | Impact                                       |
+| -------------------------------------------------- | -------------------------------------------- |
+| Chat input in frontend is not wired to any backend | User cannot actually converse with the agent |
+| No persistent memory — every LLM call is stateless | Agent has no context of previous messages    |
+| No /chat endpoint in main.py                       | Nothing to wire the chat input to            |
+| AgentState has no conversation history field       | Even if wired, history can't flow through    |
+| Credentials hardcoded in both files                | Not a blocker now, but fragile               |

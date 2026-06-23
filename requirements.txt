@@ -1,0 +1,17 @@
+python-dotenv
+apscheduler
+aiogram
+httpx
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+faster-whisper
+kokoro>=0.9.4
+soundfile
+weasyprint
+pdfplumber
+python-docx
+openpyxl
+pandas
+msal
+# Note: espeak-ng is required by kokoro and must be installed on the system (e.g. via sudo apt-get install espeak-ng -y)

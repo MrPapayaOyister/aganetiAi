@@ -1,0 +1,16 @@
+.env
+tokens/
+memory/
+__pycache__/
+logs/
+temp/
+credentials.json
+email_store/
+email_drafts.json
+models/
+superenv/
+frontend/email_drafts.json
+*.log
+*.db
+*.db-shm
+*.db-wal

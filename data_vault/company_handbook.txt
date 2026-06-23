@@ -1,0 +1,4 @@
+COMPANY DATA COMPLIANCE POLICY 2026:
+All new data pipelines must be built using Python and Pandas. 
+Raw data must be stored in standard CSV format before processing.
+Code review must be conducted by a senior engineer before deployment.
