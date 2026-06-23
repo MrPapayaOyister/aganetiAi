@@ -1,9 +1,20 @@
-
 services:
-  # Module: Ultra-Lightweight C++ Inference Engine
+  # ── Smart inference engine (GPU) ───────────────────────────
+  # Qwen 2.5 14B Instruct Q4_K_M, fully GPU-offloaded on the DGX Spark GB10.
   llama_server:
-    image: ghcr.io/ggml-org/llama.cpp:server
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
     container_name: local_llm_core
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     ports:
       - "8080:8080"
     volumes:
@@ -13,14 +24,12 @@ services:
       --host 0.0.0.0
       --port 8080
       -c 8192
-      -t 8 
+      --n-gpu-layers 999
       --embeddings
       --pooling last
     restart: unless-stopped
-    mem_limit: 12g
-    memswap_limit: 12g
 
-  # Module: Corporate Second Brain Vector Memory
+  # ── Corporate second-brain vector memory ──────────────────
   qdrant:
     image: qdrant/qdrant:latest
     container_name: qdrant_memory
@@ -28,15 +37,26 @@ services:
       - "6333:6333"
       - "6334:6334"
     volumes:
-      - ./memory:/qdrant/storage
+      # Separated from the memory/ python package (see project_overview/CURRENT_GAPS.md).
+      - ./qdrant_data:/qdrant/storage
     restart: unless-stopped
 
-  # Module: Low-Latency Fast Inference Engine (1.5B Qwen)
+  # ── Fast inference engine (GPU) ────────────────────────────
+  # Qwen 2.5 1.5B Instruct Q4_K_M for low-latency, non-"smart" routes.
   llama_fast:
-    image: ghcr.io/ggml-org/llama.cpp:server
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
     container_name: llama_fast
-    mem_limit: 4g
-    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     ports:
       - "8081:8080"
     volumes:
@@ -46,6 +66,7 @@ services:
       --host 0.0.0.0
       --port 8080
       --ctx-size 4096
-      --threads 4
+      --n-gpu-layers 999
       --n-predict 512
       --no-mmap
+    restart: unless-stopped

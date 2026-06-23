@@ -17,7 +17,10 @@ if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 
 
-DRAFTS_FILE = "/home/my_vm_google/projects/frontend/email_drafts.json"
+DRAFTS_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "frontend", "email_drafts.json",
+)
 
 def remove_draft(index_to_remove):
     if os.path.exists(DRAFTS_FILE):

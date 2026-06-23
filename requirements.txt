@@ -1,17 +1,46 @@
-python-dotenv
-apscheduler
-aiogram
+# ── Core API ───────────────────────────────────────────────
+fastapi
+uvicorn[standard]
+pydantic
+
+# ── LLM / RAG ──────────────────────────────────────────────
+openai
+langgraph
+qdrant-client
+fastembed
+
+# ── Microsoft 365 ──────────────────────────────────────────
+msal
 httpx
-google-api-python-client
-google-auth-httplib2
-google-auth-oauthlib
+
+# ── Telegram bot ───────────────────────────────────────────
+aiogram
+
+# ── Scheduling ─────────────────────────────────────────────
+apscheduler
+
+# ── Voice (STT/TTS) ────────────────────────────────────────
+# espeak-ng + ffmpeg are SYSTEM packages — see INSTALL.md
 faster-whisper
 kokoro>=0.9.4
 soundfile
+
+# ── Documents / reports ────────────────────────────────────
 weasyprint
+jinja2
 pdfplumber
 python-docx
 openpyxl
 pandas
-msal
-# Note: espeak-ng is required by kokoro and must be installed on the system (e.g. via sudo apt-get install espeak-ng -y)
+
+# ── Frontend ───────────────────────────────────────────────
+streamlit
+requests
+
+# ── Legacy Google (kept for older scripts in scripts/) ─────
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+
+# ── Misc ───────────────────────────────────────────────────
+python-dotenv

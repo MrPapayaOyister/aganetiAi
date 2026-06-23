@@ -1406,7 +1406,7 @@ async def schedule_meeting_endpoint(payload: dict):
 # Users polled every cycle. Sequential + off-thread + single job (max_instances=1) so the
 # LLM-heavy triage never blocks the event loop and two triages never run concurrently.
 MAIL_POLL_USERS = ["user_1", "user_2"]
-DRAFTS_FILE     = "/home/my_vm_google/projects/frontend/email_drafts.json"
+from config.settings import DRAFTS_FILE   # BASE_DIR-derived; was a hardcoded VM path
 _TRIAGE_CAP     = 3     # max emails triaged per user per cycle (CPU safety, as before)
 _PROCESSED_CAP  = 500   # bound the triaged-IDs history per user
 

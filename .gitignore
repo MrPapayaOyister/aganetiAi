@@ -1,16 +1,35 @@
+# ── Secrets & credentials ──────────────────────────────────
 .env
+credentials.json
 tokens/
-memory/
+
+# ── Python ─────────────────────────────────────────────────
 __pycache__/
+*.pyc
+superenv/
+.venv/
+
+# ── Runtime data ───────────────────────────────────────────
 logs/
 temp/
-credentials.json
 email_store/
 email_drafts.json
-models/
-superenv/
 frontend/email_drafts.json
 *.log
 *.db
 *.db-shm
 *.db-wal
+
+# ── Models (large GGUF files) ──────────────────────────────
+models/
+
+# ── Qdrant vector storage (separated from the memory/ python package) ──
+# NOTE: the memory/ PYTHON PACKAGE (store.py, long_term.py, query_rewriter.py,
+# summarizer.py) is now TRACKED. Only Qdrant's on-disk storage and runtime
+# session files are ignored.
+qdrant_data/
+memory/__pycache__/
+memory/*.json
+memory/collections/
+memory/aliases/
+memory/raft_state.json

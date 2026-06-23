@@ -1,0 +1,16 @@
+[Unit]
+Description=Aganeti AI FastAPI backend (Aria)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=matrix
+WorkingDirectory=/home/matrix/aganetiAi
+EnvironmentFile=/home/matrix/aganetiAi/.env
+ExecStart=/home/matrix/aganetiAi/.venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

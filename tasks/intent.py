@@ -36,7 +36,11 @@ def detect_task_intent(user_message: str) -> dict | None:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_message}
             ],
-            temperature=0.0
+            temperature=0.0,
+            # Constrain the model to emit valid JSON. llama.cpp's server enforces this
+            # via a grammar, removing most malformed-output cases. The markdown-fence
+            # stripping below is kept as a defensive fallback for older server builds.
+            response_format={"type": "json_object"},
         )
         content = response.choices[0].message.content.strip()
         

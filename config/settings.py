@@ -27,6 +27,11 @@ EMAIL_STORE = BASE_DIR / "email_store"
 # Database
 DB_PATH = str(BASE_DIR / "tasks.db")
 
+# Email draft approval queue (Streamlit reads this; mail watcher appends to it).
+# Derived from BASE_DIR so the project is portable across hosts (was hardcoded to
+# the old cloud-VM path /home/my_vm_google/projects/...).
+DRAFTS_FILE = str(BASE_DIR / "frontend" / "email_drafts.json")
+
 # LLM Config
 LLM_BASE_URL = os.getenv("LLM_BASE_URL")
 LLM_SMART_URL = os.getenv("LLM_SMART_URL", "http://localhost:8080")

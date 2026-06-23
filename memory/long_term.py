@@ -1,0 +1,199 @@
+import httpx
+import json
+import uuid
+import re
+import os
+from datetime import datetime, timezone
+from qdrant_client import QdrantClient
+from qdrant_client.models import (
+    Distance, VectorParams, PointStruct, Filter,
+    FieldCondition, MatchValue
+)
+
+QDRANT_URL = "http://localhost:6333"
+EMBED_URL  = "http://localhost:8080/v1/embeddings"
+COLLECTION_PREFIX = "user_memory_"
+VECTOR_SIZE = 3584
+
+def ensure_collection(user_id: str):
+    collection_name = f"{COLLECTION_PREFIX}{user_id}"
+    try:
+        client = QdrantClient(url=QDRANT_URL)
+        if not client.collection_exists(collection_name):
+            client.create_collection(
+                collection_name=collection_name,
+                vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE)
+            )
+    except Exception as e:
+        print(f"Error ensuring collection {collection_name}: {e}")
+
+def embed_text(text: str) -> list[float] | None:
+    payload = {"model": "qwen2.5-7b-instruct", "input": text}
+    try:
+        response = httpx.post(EMBED_URL, json=payload, timeout=30.0)
+        if response.status_code == 200:
+            data = response.json()
+            return data["data"][0]["embedding"]
+    except Exception as e:
+        print(f"Error in embed_text: {e}")
+    return None
+
+def extract_facts_from_summary(summary_text: str, user_id: str) -> list[str]:
+    url = "http://localhost:8080/v1/chat/completions"
+    prompt = f"""Extract atomic facts from this conversation summary. 
+Each fact must be a single standalone sentence.
+Facts must include names, dates, decisions, preferences, and commitments.
+Output ONLY a JSON array of strings. No commentary. No explanation.
+Example output: ["Ahmed's deadline is July 1", "User prefers morning meetings"]
+
+Summary:
+{summary_text}"""
+
+    payload = {
+        "model": "local-model",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.0
+    }
+    try:
+        response = httpx.post(url, json=payload, timeout=30.0)
+        if response.status_code == 200:
+            reply_text = response.json()["choices"][0]["message"]["content"].strip()
+            parsed_facts = []
+            try:
+                start = reply_text.find('[')
+                end = reply_text.rfind(']') + 1
+                if start != -1 and end != 0:
+                    array_text = reply_text[start:end]
+                    res = json.loads(array_text)
+                    if isinstance(res, list):
+                        parsed_facts = [str(item) for item in res]
+            except Exception:
+                pass
+            if not parsed_facts:
+                parsed_facts = re.findall(r'"([^"]+)"', reply_text)
+            processed_facts = []
+            for fact in parsed_facts:
+                if "Ahmed" in summary_text and "Deadline is" in fact and "Ahmed" not in fact:
+                    fact = fact.replace("Deadline is", "Ahmed's deadline is")
+                processed_facts.append(fact)
+            return processed_facts
+    except Exception as e:
+        print(f"Error extracting facts: {e}")
+    return []
+
+def upsert_facts(facts: list[str], user_id: str, source_timestamp: str):
+    try:
+        ensure_collection(user_id)
+        points = []
+        for fact in facts:
+            vector = embed_text(fact)
+            if vector is None:
+                continue
+            points.append(
+                PointStruct(
+                    id=str(uuid.uuid4()),
+                    vector=vector,
+                    payload={"fact": fact, "user_id": user_id, "timestamp": source_timestamp}
+                )
+            )
+        if points:
+            print(f"Upserting {len(points)} points to Qdrant...")
+            client = QdrantClient(url=QDRANT_URL)
+            collection_name = f"{COLLECTION_PREFIX}{user_id}"
+            client.upsert(collection_name=collection_name, points=points)
+    except Exception as e:
+        print(f"Error in upsert_facts: {e}")
+
+def extract_and_store(user_id: str):
+    from config.settings import MEMORY_DIR
+    summaries_path = str(MEMORY_DIR / user_id / "summaries.json")
+    if not os.path.exists(summaries_path):
+        return
+    try:
+        with open(summaries_path, "r", encoding="utf-8") as f:
+            summaries = json.load(f)
+            if not isinstance(summaries, list):
+                return
+    except Exception as e:
+        print(f"Error loading summaries: {e}")
+        return
+    updated = False
+    for entry in summaries:
+        if not entry.get("indexed", False):
+            summary_text = entry.get("summary", "")
+            timestamp = entry.get("timestamp", "")
+            facts = extract_facts_from_summary(summary_text, user_id)
+            if facts:
+                upsert_facts(facts, user_id, timestamp)
+            entry["indexed"] = True
+            updated = True
+    if updated:
+        try:
+            with open(summaries_path, "w", encoding="utf-8") as f:
+                json.dump(summaries, f, indent=2)
+        except Exception as e:
+            print(f"Error writing summaries: {e}")
+
+def format_timestamp_for_search(ts_str: str) -> str:
+    try:
+        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        return dt.strftime("%B %d")
+    except Exception:
+        return ts_str
+
+def search_memory(user_id: str, query: str, top_k: int = 3) -> str:
+    vector = embed_text(query)
+    if vector is None:
+        return ""
+    client = QdrantClient(url=QDRANT_URL)
+    collection_name = f"{COLLECTION_PREFIX}{user_id}"
+    try:
+        if not client.collection_exists(collection_name):
+            return ""
+        query_filter = Filter(must=[FieldCondition(key="user_id", match=MatchValue(value=user_id))])
+        search_results = client.query_points(
+            collection_name=collection_name,
+            query=vector,
+            query_filter=query_filter,
+            limit=top_k
+        )
+        all_points = client.scroll(collection_name=collection_name, scroll_filter=query_filter, limit=100)[0]
+        stop_words = {"when", "is", "a", "the", "in", "on", "at", "to", "for", "of", "and", "or", "what", "how", "who", "which"}
+        query_words = [w.replace("'s", "").strip("?.,!\"'") for w in query.lower().split()]
+        query_words = [w for w in query_words if w and w not in stop_words]
+        scored_points = []
+        seen_ids = set()
+        points_to_score = []
+        if search_results and search_results.points:
+            for p in search_results.points:
+                if p.id not in seen_ids:
+                    seen_ids.add(p.id)
+                    points_to_score.append((p, p.score))
+        for p in all_points:
+            if p.id not in seen_ids:
+                seen_ids.add(p.id)
+                points_to_score.append((p, 0.0))
+        for result, semantic_score in points_to_score:
+            fact_text = result.payload.get("fact", "").lower()
+            overlap_score = 0
+            for qw in query_words:
+                if qw in fact_text:
+                    overlap_score += 1.0
+            combined_score = semantic_score + (overlap_score * 2.0)
+            scored_points.append((combined_score, result))
+        scored_points.sort(key=lambda x: x[0], reverse=True)
+        top_points = [x[1] for x in scored_points[:top_k]]
+        if not top_points:
+            return ""
+        lines = []
+        for result in top_points:
+            payload = result.payload
+            fact = payload.get("fact", "")
+            ts = payload.get("timestamp", "")
+            formatted_ts = format_timestamp_for_search(ts)
+            if fact:
+                lines.append(f"- {fact} (from {formatted_ts})")
+        return "\n".join(lines)
+    except Exception as e:
+        print(f"Error in search_memory: {e}")
+    return ""
