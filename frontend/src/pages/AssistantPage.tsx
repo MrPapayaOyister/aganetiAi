@@ -1,13 +1,14 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { generateId } from '../utils/uuid'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Send, Paperclip, Volume2, VolumeX, StopCircle, Zap } from 'lucide-react'
+import { Send, Paperclip, Volume2, VolumeX, StopCircle, Zap, Music } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { OrbAnimation, type OrbMode } from '../components/OrbAnimation'
 import { MessageBubble } from '../components/MessageBubble'
 import { VoiceButton } from '../components/VoiceButton'
 import { useStream } from '../hooks/useStream'
 import { useVoice } from '../hooks/useVoice'
+import { useSound } from '../hooks/useSound'
 import { useToast } from '../hooks/useToast'
 import { useAppContext } from '../App'
 import { useAmbient } from '../contexts/AmbientContext'
@@ -64,6 +65,8 @@ export default function AssistantPage() {
   const { setAmbient } = useAmbient()
   const { stream, streaming, abort } = useStream()
   const voice = useVoice()
+  const sound = useSound()
+  const lastTickRef = useRef(0)
 
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
@@ -148,6 +151,17 @@ export default function AssistantPage() {
   useEffect(() => { scrollToBottom() }, [messages.length, scrollToBottom])
   useEffect(() => { scrollToBottom() }, [actionCards.length, scrollToBottom])
 
+  // Subtle click cue on any button press (skip elements marked data-mute-click,
+  // e.g. Send/chips which play their own richer cue).
+  useEffect(() => {
+    const onDown = (e: PointerEvent) => {
+      const el = (e.target as HTMLElement | null)?.closest('button,[role="button"]')
+      if (el && !el.hasAttribute('data-mute-click')) sound.playClick()
+    }
+    window.addEventListener('pointerdown', onDown)
+    return () => window.removeEventListener('pointerdown', onDown)
+  }, [sound])
+
   // Mobile keyboard: track visual viewport height
   useEffect(() => {
     if (!window.visualViewport) return
@@ -169,10 +183,14 @@ export default function AssistantPage() {
     fullReplyRef.current = ''
     setMessages(prev => [...prev, userMsg, assistantMsg])
     setInput('')
+    sound.playSend()
 
     await stream(text, sessionId, userId, {
       onToken: (t) => {
         setThinkingMsg(null)        // clear thinking banner on first token
+        // throttled "typing" tick
+        const now = performance.now()
+        if (now - lastTickRef.current > 110) { lastTickRef.current = now; sound.playTick() }
         fullReplyRef.current += t
         setMessages(prev => prev.map(m =>
           m.id === assistantId ? { ...m, content: m.content + t } : m
@@ -189,6 +207,7 @@ export default function AssistantPage() {
       },
       onDone: async () => {
         setThinkingMsg(null)
+        sound.playReceive()
         setMessages(prev => prev.map(m =>
           m.id === assistantId ? { ...m, streaming: false } : m
         ))
@@ -198,7 +217,7 @@ export default function AssistantPage() {
         }
       },
     })
-  }, [streaming, stream, sessionId, userId, ttsEnabled, voice, addToast])
+  }, [streaming, stream, sessionId, userId, ttsEnabled, voice, addToast, sound])
 
   // Mic needs a secure context (HTTPS/localhost). On plain HTTP the browser
   // blocks getUserMedia + Web Speech, so guide the user instead of a dead button.
@@ -278,10 +297,21 @@ export default function AssistantPage() {
         <div className="flex items-center gap-1">
           <motion.button
             whileTap={{ scale: 0.88 }}
+            data-mute-click
+            onClick={() => sound.setEnabled(!sound.enabled)}
+            className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors
+                        ${sound.enabled ? 'text-[#7B2FFF] bg-[#7B2FFF]/10' : 'text-[#4A6080] hover:bg-white/5'}`}
+            title={sound.enabled ? 'Mute sound effects' : 'Enable sound effects'}
+          >
+            {sound.enabled ? <Music size={15} /> : <VolumeX size={15} />}
+          </motion.button>
+
+          <motion.button
+            whileTap={{ scale: 0.88 }}
             onClick={() => setTtsEnabled(!ttsEnabled)}
             className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors
                         ${ttsEnabled ? 'text-[#00D4FF] bg-[#00D4FF]/10' : 'text-[#4A6080] hover:bg-white/5'}`}
-            title={ttsEnabled ? 'Disable TTS' : 'Enable TTS'}
+            title={ttsEnabled ? 'Disable voice replies' : 'Enable voice replies'}
           >
             {ttsEnabled ? <Volume2 size={15} /> : <VolumeX size={15} />}
           </motion.button>
@@ -346,6 +376,7 @@ export default function AssistantPage() {
                 {suggestions.map((s, i) => (
                   <motion.button
                     key={`${s}-${i}`}
+                    data-mute-click
                     initial={{ opacity: 0, y: 8 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: 0.5 + i * 0.08 }}
@@ -353,7 +384,7 @@ export default function AssistantPage() {
                     whileTap={{ scale: 0.97 }}
                     onClick={() => handleSend(s)}
                     className="px-4 py-2 glass-sm rounded-full text-sm text-[#94A3B8]
-                               hover:text-[#E2E8F0] transition-all"
+                               hover:text-[#E2E8F0] hover:border-[#00D4FF]/30 transition-all"
                   >
                     {s}
                   </motion.button>
@@ -365,16 +396,11 @@ export default function AssistantPage() {
               key="chat"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              className="h-full overflow-y-auto py-2"
+              className="h-full overflow-y-auto"
             >
-              <AnimatePresence initial={false}>
+              <div className="max-w-3xl mx-auto w-full px-2 sm:px-4 py-5">
                 {messages.map(msg => (
-                  <motion.div
-                    key={msg.id}
-                    initial={{ opacity: 0, y: 12, scale: 0.98 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    transition={{ type: 'spring', stiffness: 420, damping: 30 }}
-                  >
+                  <div key={msg.id}>
                     <MessageBubble
                       message={msg}
                       streaming={msg.streaming && streaming}
@@ -387,18 +413,18 @@ export default function AssistantPage() {
                         initial={{ opacity: 0, y: 8, scale: 0.97 }}
                         animate={{ opacity: 1, y: 0, scale: 1 }}
                         transition={{ type: 'spring', stiffness: 300, damping: 24 }}
-                        className="ml-14 mt-1 mb-1 flex items-center gap-2 px-3 py-2 rounded-lg
+                        className="ml-14 mt-1 mb-2 flex items-center gap-2 px-3 py-2 rounded-xl
                                    bg-[rgba(0,212,255,0.06)] border border-[rgba(0,212,255,0.15)]
-                                   text-xs text-[#94A3B8] max-w-xs w-fit"
+                                   text-xs text-[#94A3B8] w-fit max-w-sm"
                       >
                         <ActionIcon action={card.action} />
                         <ActionLabel action={card.action} payload={card.payload} />
                       </motion.div>
                     ))}
-                  </motion.div>
+                  </div>
                 ))}
-              </AnimatePresence>
-              <div ref={messagesEndRef} />
+                <div ref={messagesEndRef} className="h-2" />
+              </div>
             </motion.div>
           )}
         </AnimatePresence>
@@ -451,9 +477,12 @@ export default function AssistantPage() {
         )}
       </AnimatePresence>
 
-      {/* Input bar (container reserves space for the mobile bottom nav) */}
-      <div className="shrink-0 px-3 py-2.5 border-t border-[#1E3A5F]/30 bg-[#070B14]/80">
-        <div className="glass-sm rounded-2xl flex items-end gap-2 px-3 py-2 max-w-3xl mx-auto">
+      {/* Input bar — floating elevated pill */}
+      <div className="shrink-0 px-3 pt-1.5 pb-3">
+        <div className="glass-strong rounded-[22px] flex items-end gap-2 px-3 py-2 max-w-3xl mx-auto
+                        shadow-[0_8px_32px_rgba(0,0,0,0.45)] focus-within:border-[#00D4FF]/40
+                        transition-colors"
+             style={{ borderRadius: 22 }}>
           {/* Attach */}
           <motion.button
             whileTap={{ scale: 0.88 }}
@@ -502,6 +531,7 @@ export default function AssistantPage() {
           {/* Send */}
           <motion.button
             whileTap={{ scale: 0.88 }}
+            data-mute-click
             onClick={() => handleSend(input)}
             disabled={!input.trim() || streaming}
             className="shrink-0 mb-0.5 w-9 h-9 rounded-full flex items-center justify-center
