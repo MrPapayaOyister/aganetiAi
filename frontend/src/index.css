@@ -1,23 +1,28 @@
 @import "tailwindcss";
 
 /* ════════════════════════════════════════════════════════════
-   ARIA DESIGN SYSTEM — tokens, glass, glow, motion
+   ARIA DESIGN SYSTEM — TRUE NEUMORPHISM (dark slate base)
    Tailwind v4 (@tailwindcss/vite). Tokens live in :root.
+   Surfaces are SOLID with dual light/dark shadows. No glass/blur.
    ════════════════════════════════════════════════════════════ */
 
 :root {
-  /* Surfaces */
-  --bg-base:       #070B14;
-  --bg-surface:    #0D1628;
-  --bg-elevated:   #122040;
-  --bg-overlay:    rgba(13,22,40,0.9);
+  /* Surfaces — lifted off near-black so dual shadows read */
+  --bg-base:       #1E2230;   /* app background */
+  --bg-surface:    #232838;   /* raised cards */
+  --bg-elevated:   #2A3042;   /* higher elevation / hover */
+  --bg-sunken:     #1A1E2A;   /* inset wells (inputs) */
+  --bg-overlay:    rgba(20,23,34,0.72);
 
-  /* Borders */
-  --border-subtle: rgba(30,58,95,0.4);
-  --border-active: rgba(0,212,255,0.4);
-  --border-glow:   rgba(0,212,255,0.8);
+  /* Neumorphic shadow pair */
+  --neu-light:     rgba(255,255,255,0.05);
+  --neu-dark:      rgba(0,0,0,0.55);
 
-  /* Accents */
+  /* Borders (used sparingly; neumorphism leans on shadow not stroke) */
+  --border-subtle: rgba(255,255,255,0.05);
+  --border-active: rgba(0,212,255,0.45);
+
+  /* Accents — used sparingly (CTAs, focus, the particle sphere) */
   --cyan:    #00D4FF;
   --purple:  #7B2FFF;
   --teal:    #00FFB3;
@@ -26,26 +31,24 @@
   --danger:  #FF4466;
 
   /* Text */
-  --text-primary:   #E2E8F0;
-  --text-secondary: #94A3B8;
-  --text-muted:     #4A6080;
-  --text-accent:    #00D4FF;
+  --text-primary:   #E6EBF5;
+  --text-secondary: #9AA7BD;
+  --text-muted:     #5C6B85;
+  --text-accent:    #38DBFF;
 
   /* Effects */
-  --glow-cyan:   0 0 20px rgba(0,212,255,0.4);
-  --glow-purple: 0 0 20px rgba(123,47,255,0.4);
-  --glass-blur:  blur(12px);
-  --glass-bg:    rgba(13,22,40,0.6);
+  --glow-cyan:   0 0 18px rgba(0,212,255,0.35);
+  --glow-purple: 0 0 18px rgba(123,47,255,0.35);
 
   /* Radii */
-  --radius-sm:   6px;
-  --radius-md:   12px;
+  --radius-sm:   8px;
+  --radius-md:   14px;
   --radius-lg:   20px;
   --radius-full: 9999px;
 
   /* Runtime */
   --vvh: 100dvh;
-  --bottom-nav-height: 64px;
+  --bottom-nav-height: 68px;
 }
 
 /* ── Safe-area utilities ─────────────────────────── */
@@ -53,16 +56,11 @@
 @utility pt-safe { padding-top: env(safe-area-inset-top); }
 @utility mb-safe { margin-bottom: env(safe-area-inset-bottom); }
 
-/* ── Reset ───────────────────────────────────────────────────
-   NOTE: do NOT reset margin/padding on the universal selector here.
-   This file is unlayered, and in Tailwind v4 unlayered rules override
-   layered utilities — a `* { margin:0 }` would clobber space-y / p-* /
-   m-* everywhere. Tailwind's Preflight (base layer) already resets
-   element margins, so we only keep box-sizing. */
+/* ── Reset (box-sizing only — Preflight handles element margins;
+   a universal margin/padding reset here would clobber Tailwind utilities) ── */
 *, *::before, *::after { box-sizing: border-box; }
 
 html { height: 100%; }
-body { margin: 0; }
 
 body {
   background: var(--bg-base);
@@ -84,67 +82,99 @@ body {
 :focus-visible {
   outline: 2px solid var(--cyan);
   outline-offset: 2px;
-  border-radius: 4px;
+  border-radius: 6px;
 }
 
 /* ── Scrollbar ───────────────────────────────────── */
-::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #1E3A5F; border-radius: 2px; }
-::-webkit-scrollbar-thumb:hover { background: #2A4A6F; }
-* { scrollbar-width: thin; scrollbar-color: #1E3A5F transparent; }
+::-webkit-scrollbar-thumb { background: #2E3548; border-radius: 6px; border: 1px solid var(--bg-base); }
+::-webkit-scrollbar-thumb:hover { background: #3A4256; }
+* { scrollbar-width: thin; scrollbar-color: #2E3548 transparent; }
 
 /* ════════════════════════════════════════════════════════════
-   GLASS + GLOW (plain classes — match existing usage)
+   NEUMORPHIC SURFACES
+   The old .glass* classes are REDEFINED as neumorphism so every
+   existing usage instantly switches with no per-file edits.
    ════════════════════════════════════════════════════════════ */
 
-.glass {
-  background: rgba(13,22,40,0.55);
-  backdrop-filter: blur(14px) saturate(140%);
-  -webkit-backdrop-filter: blur(14px) saturate(140%);
-  border: 1px solid rgba(30,58,95,0.4);
-  border-radius: 16px;
+.neu, .glass, .glass-sm, .glass-strong {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow:
+    6px 6px 14px var(--neu-dark),
+    -6px -6px 14px var(--neu-light);
 }
-.glass-sm {
-  background: rgba(13,22,40,0.42);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(30,58,95,0.3);
-  border-radius: 12px;
+.glass-sm { box-shadow: 4px 4px 9px var(--neu-dark), -4px -4px 9px var(--neu-light); }
+.glass-strong, .neu-strong {
+  background: var(--bg-elevated);
+  box-shadow: 8px 8px 20px var(--neu-dark), -8px -8px 20px var(--neu-light);
 }
-.glass-strong {
-  background: rgba(7,11,20,0.82);
-  backdrop-filter: blur(22px) saturate(160%);
-  -webkit-backdrop-filter: blur(22px) saturate(160%);
-  border: 1px solid rgba(30,58,95,0.5);
+
+/* Pressed / well surfaces — inputs, active toggles, tracks */
+.neu-inset {
+  background: var(--bg-sunken);
+  border: 1px solid rgba(0,0,0,0.25);
+  border-radius: var(--radius-md);
+  box-shadow:
+    inset 4px 4px 9px var(--neu-dark),
+    inset -4px -4px 9px var(--neu-light);
 }
-.glow-cyan   { box-shadow: 0 0 20px rgba(0,212,255,0.22), 0 0 40px rgba(0,212,255,0.06); }
-.glow-purple { box-shadow: 0 0 20px rgba(123,47,255,0.25), 0 0 40px rgba(123,47,255,0.08); }
+
+/* Flat soft surface (no elevation) */
+.neu-flat {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+/* Pill button — raised, depresses on active */
+.neu-pill {
+  background: var(--bg-surface);
+  border-radius: var(--radius-full);
+  box-shadow: 4px 4px 9px var(--neu-dark), -4px -4px 9px var(--neu-light);
+  transition: box-shadow 0.15s ease, transform 0.1s ease, color 0.15s ease;
+}
+.neu-pill:hover { box-shadow: 5px 5px 11px var(--neu-dark), -5px -5px 11px var(--neu-light); }
+.neu-pill:active {
+  box-shadow: inset 3px 3px 7px var(--neu-dark), inset -3px -3px 7px var(--neu-light);
+  transform: translateY(1px);
+}
+
+/* Accent glow helpers (sparingly) */
+.glow-cyan   { box-shadow: 6px 6px 14px var(--neu-dark), -6px -6px 14px var(--neu-light), 0 0 16px rgba(0,212,255,0.18); }
+.glow-purple { box-shadow: 6px 6px 14px var(--neu-dark), -6px -6px 14px var(--neu-light), 0 0 16px rgba(123,47,255,0.18); }
+
+/* ════════════════════════════════════════════════════════════
+   TYPE SCALE (consistent size + weight everywhere)
+   ════════════════════════════════════════════════════════════ */
+.t-title   { font-size: 18px; font-weight: 600; line-height: 1.3;  color: var(--text-primary); letter-spacing: -0.01em; }
+.t-heading { font-size: 14px; font-weight: 600; line-height: 1.35; color: var(--text-primary); }
+.t-body    { font-size: 14px; font-weight: 400; line-height: 1.55; color: var(--text-primary); }
+.t-label   { font-size: 12px; font-weight: 500; line-height: 1.4;  color: var(--text-secondary); }
+.t-caption { font-size: 11px; font-weight: 400; line-height: 1.4;  color: var(--text-muted); }
 
 /* ════════════════════════════════════════════════════════════
    ANIMATIONS
    ════════════════════════════════════════════════════════════ */
 
-@keyframes blink {
-  0%, 100% { opacity: 0.25; transform: translateY(0); }
-  50%      { opacity: 1;    transform: translateY(-2px); }
-}
+@keyframes blink { 0%,100% { opacity: 0.25; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-2px); } }
 
-@keyframes cursorBlink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+@keyframes cursorBlink { 0%,49% { opacity: 1; } 50%,100% { opacity: 0; } }
 .cursor-blink { animation: cursorBlink 1s steps(2) infinite; }
 
-@keyframes waveBar { 0%, 100% { transform: scaleY(0.25); } 50% { transform: scaleY(1); } }
+@keyframes waveBar { 0%,100% { transform: scaleY(0.25); } 50% { transform: scaleY(1); } }
 .wave-bar { transform-origin: center bottom; animation: waveBar 0.9s ease-in-out infinite; }
 
 @keyframes shimmer { 0% { background-position: -400px 0; } 100% { background-position: 400px 0; } }
 .skeleton {
-  background: linear-gradient(90deg,
-    rgba(30,58,95,0.15) 25%, rgba(30,58,95,0.38) 50%, rgba(30,58,95,0.15) 75%);
+  background: linear-gradient(90deg, rgba(255,255,255,0.03) 25%, rgba(255,255,255,0.07) 50%, rgba(255,255,255,0.03) 75%);
   background-size: 800px 100%;
   animation: shimmer 1.6s linear infinite;
 }
 
-@keyframes floatY { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+@keyframes floatY { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
 .float-y { animation: floatY 4s ease-in-out infinite; }
 
 @keyframes dashFlow { to { stroke-dashoffset: -24; } }
@@ -161,16 +191,15 @@ body {
 }
 
 @keyframes borderPulse {
-  0%, 100% { border-color: rgba(0,212,255,0.2); box-shadow: 0 0 0 rgba(0,212,255,0); }
-  50%      { border-color: rgba(0,212,255,0.8); box-shadow: 0 0 18px rgba(0,212,255,0.25); }
+  0%,100% { box-shadow: 6px 6px 14px var(--neu-dark), -6px -6px 14px var(--neu-light), 0 0 0 rgba(0,212,255,0); }
+  50%     { box-shadow: 6px 6px 14px var(--neu-dark), -6px -6px 14px var(--neu-light), 0 0 18px rgba(0,212,255,0.3); }
 }
 .border-pulse { animation: borderPulse 1.6s ease-in-out infinite; }
 
 /* ════════════════════════════════════════════════════════════
    CHAT MARKDOWN
    ════════════════════════════════════════════════════════════ */
-
-.prose-chat { font-size: 0.875rem; line-height: 1.65; color: var(--text-primary); }
+.prose-chat { font-size: 14px; line-height: 1.6; color: var(--text-primary); }
 .prose-chat p { margin: 0.35em 0; }
 .prose-chat p:first-child { margin-top: 0; }
 .prose-chat p:last-child  { margin-bottom: 0; }
@@ -179,15 +208,16 @@ body {
 .prose-chat ul, .prose-chat ol { margin: 0.4em 0; padding-left: 1.25em; }
 .prose-chat li { margin: 0.2em 0; }
 .prose-chat li::marker { color: var(--cyan); }
-.prose-chat a { color: var(--cyan); text-decoration: underline; text-underline-offset: 2px; }
+.prose-chat a { color: var(--text-accent); text-decoration: underline; text-underline-offset: 2px; }
 .prose-chat code {
-  background: rgba(0,212,255,0.1); color: #7FE7FF;
-  padding: 0.1em 0.4em; border-radius: 5px;
+  background: var(--bg-sunken); color: #8FE9FF;
+  padding: 0.1em 0.4em; border-radius: 6px;
   font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 0.85em;
 }
 .prose-chat pre {
-  background: rgba(7,11,20,0.9); border: 1px solid var(--border-subtle);
+  background: var(--bg-sunken);
   border-radius: 10px; padding: 0.9em 1em; overflow-x: auto; margin: 0.6em 0;
+  box-shadow: inset 3px 3px 7px var(--neu-dark), inset -3px -3px 7px var(--neu-light);
 }
 .prose-chat pre code { background: none; color: #C8D6E8; padding: 0; }
 .prose-chat h1, .prose-chat h2, .prose-chat h3 { color: #fff; font-weight: 600; margin: 0.6em 0 0.3em; }

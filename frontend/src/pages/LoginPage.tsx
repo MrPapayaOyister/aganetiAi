@@ -24,7 +24,7 @@ export default function LoginPage() {
   }, [session, navigate])
 
   return (
-    <div className="relative min-h-dvh w-full overflow-hidden bg-[#070B14] flex items-center justify-center px-4 pt-safe">
+    <div className="relative min-h-dvh w-full overflow-hidden bg-[#1E2230] flex items-center justify-center px-4 pt-safe">
       {/* Ambient field — converges (thinking) during boot, settles to idle */}
       <div className="absolute inset-0">
         <ParticleCanvas mode={booting ? 'thinking' : 'idle'} amplitude={0.4} focusY={0.38} />

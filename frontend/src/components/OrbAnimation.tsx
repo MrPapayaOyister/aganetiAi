@@ -198,7 +198,7 @@ function OrbBase({
             <stop offset="0%"  stopColor={isError ? '#FF6B8A' : '#7FE7FF'} stopOpacity="0.95" />
             <stop offset="45%" stopColor={isError ? '#FF4466' : '#00D4FF'} stopOpacity="0.85" />
             <stop offset="80%" stopColor={isError ? '#8B1E3A' : '#7B2FFF'} stopOpacity="0.7" />
-            <stop offset="100%" stopColor="#070B14" stopOpacity="0.55" />
+            <stop offset="100%" stopColor="#1E2230" stopOpacity="0.55" />
           </radialGradient>
         </defs>
         <circle cx="50" cy="50" r="46" fill="url(#orbCore)" />

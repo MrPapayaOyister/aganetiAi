@@ -46,7 +46,7 @@ export default function Sidebar() {
 
   return (
     <aside className="w-20 h-screen flex flex-col items-center pt-6 pb-4 gap-1
-                      bg-[#0D1628] border-r border-[#1E3A5F]/40">
+                      bg-[#232838] border-r border-[#1E3A5F]/40">
       {/* Logo / orb */}
       <div className="mb-5">
         <motion.div

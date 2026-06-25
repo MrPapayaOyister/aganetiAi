@@ -13,7 +13,7 @@ const links = [
 export default function BottomNav() {
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-50
-                    bg-[#0D1628]/85 backdrop-blur-xl border-t border-[#1E3A5F]/40
+                    bg-[#232838]/85 backdrop-blur-xl border-t border-[#1E3A5F]/40
                     flex justify-around items-center px-2 py-1.5 pb-safe">
       {links.map(({ to, icon: Icon, label }) => (
         <NavLink key={to} to={to} end={to === '/'} className="flex-1">

@@ -1,7 +1,10 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { generateId } from '../utils/uuid'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Send, Paperclip, Volume2, VolumeX, StopCircle, Zap, Music } from 'lucide-react'
+import {
+  Send, Paperclip, Volume2, VolumeX, StopCircle, Zap, Music,
+  CheckCircle2, RefreshCw, Mail, SendHorizontal, Calendar, Clock, Brain,
+} from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { OrbAnimation, type OrbMode } from '../components/OrbAnimation'
 import { MessageBubble } from '../components/MessageBubble'
@@ -36,12 +39,13 @@ function getGreeting() {
 }
 
 // ── Action card helpers ─────────────────────────────────────────
+const ACTION_ICONS: Record<string, React.ElementType> = {
+  task_created: CheckCircle2, task_updated: RefreshCw, email_drafted: Mail,
+  email_sent: SendHorizontal, event_created: Calendar, reminder_set: Clock, memory_saved: Brain,
+}
 function ActionIcon({ action }: { action: string }) {
-  const icons: Record<string, string> = {
-    task_created: '✓', task_updated: '↻', email_drafted: '✉',
-    email_sent: '↗', event_created: '📅', reminder_set: '⏰', memory_saved: '🧠',
-  }
-  return <span className="text-[#00D4FF] font-bold">{icons[action] ?? '⚡'}</span>
+  const Icon = ACTION_ICONS[action] ?? Zap
+  return <Icon size={14} className="text-[#38DBFF] shrink-0" />
 }
 
 function ActionLabel({ action, payload }: { action: string; payload: Record<string, unknown> }) {
