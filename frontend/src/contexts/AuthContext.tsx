@@ -47,15 +47,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   useEffect(() => {
+    // Is this page load an OAuth return? (implicit flow puts the token in the hash)
+    const hash = window.location.hash || ''
+    const search = window.location.search || ''
+    const oauthReturn = /access_token=|error_description=|error=/.test(hash) || /[?&]code=/.test(search)
+
+    let settled = false
+    const finish = (s: Session | null) => {
+      applySession(s)
+      if (!settled) { settled = true; setLoading(false) }
+    }
+
+    // Fires AFTER Supabase parses the URL hash → carries the real session.
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      (_event, s) => finish(s)
+    )
+
+    // For a normal load, resolve immediately. During an OAuth return, do NOT
+    // clear loading here — that would let ProtectedRoute navigate to /login and
+    // strip the hash before Supabase reads it. Wait for onAuthStateChange.
     supabase.auth.getSession().then(({ data }) => {
-      applySession(data.session)
-      setLoading(false)
+      if (!oauthReturn) finish(data.session)
+      else if (data.session) finish(data.session)
     })
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (_event, s) => applySession(s)
-    )
-    return () => subscription.unsubscribe()
+    // Safety net: never hang on the spinner forever.
+    const t = window.setTimeout(() => { if (!settled) { settled = true; setLoading(false) } }, 5000)
+
+    return () => { subscription.unsubscribe(); window.clearTimeout(t) }
   }, [])
 
   const signInWithGoogle = async () => {
