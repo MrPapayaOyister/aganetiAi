@@ -4,8 +4,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import Layout from './components/Layout'
 import { Toast } from './components/Toast'
 import CommandPalette from './components/CommandPalette'
-import ParticleCanvas from './components/ParticleCanvas'
-import IntelligenceField from './components/IntelligenceField'
+import AgentPixelField from './components/AgentPixelField'
 import AssistantPage from './pages/AssistantPage'
 import AnalyticsPage from './pages/AnalyticsPage'
 import FilesPage from './pages/FilesPage'
@@ -16,7 +15,8 @@ import LoginPage from './pages/LoginPage'
 import ProtectedRoute from './components/ProtectedRoute'
 import { ToastContext, useToastState } from './hooks/useToast'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
-import { AmbientProvider, useAmbient } from './contexts/AmbientContext'
+import { AmbientProvider } from './contexts/AmbientContext'
+import { AgentFieldProvider } from './contexts/AgentFieldContext'
 import { PrefsProvider } from './contexts/PrefsContext'
 import { OnboardingModal } from './components/OnboardingModal'
 
@@ -68,7 +68,7 @@ function AnimatedRoutes() {
 // ── Authenticated shell ─────────────────────────────────────────
 function AuthenticatedShell() {
   const { userId } = useAuth()
-  const { mode, amplitude } = useAmbient()
+  const location = useLocation()
   const [ttsEnabled, setTtsEnabledState] = useState<boolean>(
     () => localStorage.getItem('aria_tts') !== 'false'   // default ON
   )
@@ -80,12 +80,16 @@ function AuthenticatedShell() {
     localStorage.setItem('aria_tts', String(v))
   }
 
+  // Utility pages get a quieter PixelBlast. Assistant page is the richest.
+  const calmRoutes = ['/settings', '/files', '/analytics']
+  const calm = calmRoutes.some(p => location.pathname.startsWith(p))
+
   return (
     <AppCtx.Provider value={{ userId, setUserId, ttsEnabled, setTtsEnabled }}>
-      {/* Global background — deep nebula layer + constellation particles */}
-      <div className="fixed inset-0 z-0 pointer-events-none">
-        <IntelligenceField mode={mode} amplitude={amplitude} />
-        <ParticleCanvas mode={mode} amplitude={amplitude} />
+      {/* Global PixelBlast background — pointer-safe, reacts to agent state. */}
+      <div className="fixed inset-0 z-0 pointer-events-none"
+           style={{ opacity: calm ? 0.55 : 0.85 }}>
+        <AgentPixelField calm={calm} interactive={false} />
       </div>
       <div className="relative z-10 h-full">
         <Layout>
@@ -104,6 +108,7 @@ export default function App() {
   return (
     <AuthProvider>
       <AmbientProvider>
+        <AgentFieldProvider>
         <PrefsProvider>
         <ToastContext.Provider value={toastCtx}>
           <Routes>
@@ -125,6 +130,7 @@ export default function App() {
           </AnimatePresence>
         </ToastContext.Provider>
         </PrefsProvider>
+        </AgentFieldProvider>
       </AmbientProvider>
     </AuthProvider>
   )

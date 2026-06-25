@@ -14,6 +14,7 @@ export default defineConfig({
     }
   },
   build: {
+    chunkSizeWarningLimit: 700,   // three.js base alone is ~555kB; allow headroom
     rollupOptions: {
       output: {
         manualChunks(id: string) {
@@ -30,6 +31,8 @@ export default defineConfig({
             return 'vendor-supabase'
           if (id.includes('axios'))
             return 'vendor-axios'
+          if (id.includes('three') || id.includes('postprocessing'))
+            return 'vendor-three'
           return 'vendor-misc'
         },
       },

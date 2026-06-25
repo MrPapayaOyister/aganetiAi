@@ -7,12 +7,12 @@
    ════════════════════════════════════════════════════════════ */
 
 :root {
-  /* Surfaces — lifted off near-black so dual shadows read */
-  --bg-base:       #1E2230;   /* app background */
-  --bg-surface:    #232838;   /* raised cards */
+  /* Surfaces — deeper base so the PixelBlast field reads through glass */
+  --bg-base:       #0E1320;   /* app background (deeper for glass contrast) */
+  --bg-surface:    #232838;   /* raised cards (neu primitives) */
   --bg-elevated:   #2A3042;   /* higher elevation / hover */
-  --bg-sunken:     #1A1E2A;   /* inset wells (inputs) */
-  --bg-overlay:    rgba(20,23,34,0.72);
+  --bg-sunken:     #14182A;   /* inset wells (inputs) */
+  --bg-overlay:    rgba(14,19,32,0.72);
 
   /* Neumorphic shadow pair */
   --neu-light:     rgba(255,255,255,0.05);
@@ -93,12 +93,42 @@ body {
 * { scrollbar-width: thin; scrollbar-color: #2E3548 transparent; }
 
 /* ════════════════════════════════════════════════════════════
-   NEUMORPHIC SURFACES
-   The old .glass* classes are REDEFINED as neumorphism so every
-   existing usage instantly switches with no per-file edits.
+   SURFACE SYSTEM — GLASSMORPHISM (.glass*) + NEUMORPHISM (.neu*)
+   Glass surfaces let the PixelBlast background show through with
+   subtle blur + translucent dark fill. Neu primitives remain for
+   pressed inputs/wells where opacity is intentional.
    ════════════════════════════════════════════════════════════ */
 
-.neu, .glass, .glass-sm, .glass-strong {
+.glass {
+  background: rgba(30, 34, 48, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: var(--radius-md);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.32),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+.glass-sm {
+  background: rgba(30, 34, 48, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-md);
+  backdrop-filter: blur(12px) saturate(135%);
+  -webkit-backdrop-filter: blur(12px) saturate(135%);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28);
+}
+.glass-strong {
+  background: rgba(35, 40, 56, 0.68);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: var(--radius-md);
+  backdrop-filter: blur(24px) saturate(150%);
+  -webkit-backdrop-filter: blur(24px) saturate(150%);
+  box-shadow:
+    0 12px 40px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.neu, .neu-strong {
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
@@ -106,8 +136,7 @@ body {
     6px 6px 14px var(--neu-dark),
     -6px -6px 14px var(--neu-light);
 }
-.glass-sm { box-shadow: 4px 4px 9px var(--neu-dark), -4px -4px 9px var(--neu-light); }
-.glass-strong, .neu-strong {
+.neu-strong {
   background: var(--bg-elevated);
   box-shadow: 8px 8px 20px var(--neu-dark), -8px -8px 20px var(--neu-light);
 }

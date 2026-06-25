@@ -18,6 +18,7 @@ import { useSound } from '../hooks/useSound'
 import { useToast } from '../hooks/useToast'
 import { useAppContext } from '../App'
 import { useAmbient } from '../contexts/AmbientContext'
+import { useAgentField, type AgentFieldMode } from '../contexts/AgentFieldContext'
 import { usePrefs } from '../contexts/PrefsContext'
 import axios from 'axios'
 import type { ChatMessage } from '../components/MessageBubble'
@@ -73,6 +74,7 @@ export default function AssistantPage() {
   const { prefs } = usePrefs()
   const agentName = prefs.agentName || 'Aria'
   const { setAmbient } = useAmbient()
+  const agentField = useAgentField()
   const { stream, streaming, abort } = useStream()
   const voice = useVoice()
   const live = useLiveChat()
@@ -116,10 +118,27 @@ export default function AssistantPage() {
     const amp = orbMode === 'thinking' ? 0.8 : orbMode === 'speaking' ? 0.7
       : orbMode === 'listening' ? 0.6 : 0
     setAmbient(orbMode === 'error' ? 'idle' : orbMode, amp)
-  }, [orbMode, setAmbient])
+    // PixelBlast field — same discrete mode, no per-frame churn.
+    agentField.setMode(orbMode as AgentFieldMode, amp)
+  }, [orbMode, setAmbient, agentField])
 
-  // Reset the field to idle when leaving the page
-  useEffect(() => () => setAmbient('idle', 0), [setAmbient])
+  // Stream the live voice amplitude into the PixelBlast field for speaking/listening.
+  // We sample at ~10fps and only update when delta > 0.05 to avoid re-renders.
+  useEffect(() => {
+    if (orbMode !== 'speaking' && orbMode !== 'listening') return
+    let last = 0
+    const id = setInterval(() => {
+      const a = voice.amplitude ?? 0
+      if (Math.abs(a - last) > 0.05) { last = a; agentField.setAmplitude(a) }
+    }, 100)
+    return () => clearInterval(id)
+  }, [orbMode, voice, agentField])
+
+  // Reset both fields to idle when leaving the page
+  useEffect(() => () => {
+    setAmbient('idle', 0)
+    agentField.setMode('idle', 0)
+  }, [setAmbient, agentField])
 
   // Load the active conversation's messages on switch: localStorage first,
   // backend /chat/history as a fallback.
@@ -224,6 +243,10 @@ export default function AssistantPage() {
             return prev
           return [...prev, { id: generateId(), action, payload, messageId: assistantId }]
         })
+        // Field reaction: brief 'acting' mode + ripple bloom near the chat area.
+        agentField.setMode('acting', 0.9)
+        agentField.pulse(0.5, 0.62, 1.6)
+        setTimeout(() => agentField.pulse(0.42, 0.58, 1.0), 140)
       },
       onSources: (srcs) => {
         if (srcs.length) setSourcesByMsg(prev => ({ ...prev, [assistantId]: srcs }))
@@ -231,6 +254,8 @@ export default function AssistantPage() {
       onError: (msg) => {
         addToast(msg, 'error')
         setErrorFlash(true)
+        agentField.setMode('error', 0.7)
+        agentField.pulse(0.5, 0.55, 1.4)
         setTimeout(() => setErrorFlash(false), 800)
       },
       onDone: async () => {
@@ -239,13 +264,17 @@ export default function AssistantPage() {
         setMessages(prev => prev.map(m =>
           m.id === assistantId ? { ...m, streaming: false } : m
         ))
+        // Completion bloom — one elegant outward confirmation wave.
+        agentField.setMode('success', 0.6)
+        agentField.pulse(0.5, 0.5, 1.6)
+        setTimeout(() => agentField.setMode('idle', 0), 1200)
         if ((ttsEnabled || liveRef.current) && fullReplyRef.current) {
           const plain = fullReplyRef.current.replace(/[*_`#>[\]()]/g, '').substring(0, 600)
           await voice.speak(plain)
         }
       },
     })
-  }, [streaming, stream, sessionId, userId, ttsEnabled, voice, addToast, sound])
+  }, [streaming, stream, sessionId, userId, ttsEnabled, voice, addToast, sound, agentField])
 
   // Mic needs a secure context (HTTPS/localhost). On plain HTTP the browser
   // blocks getUserMedia + Web Speech, so guide the user instead of a dead button.
