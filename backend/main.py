@@ -849,11 +849,16 @@ async def call_llm(messages: list, user_message: str = "", stream: bool = True):
             data = resp.json()
             yield data["choices"][0]["message"]["content"]
 
-async def call_llm_tools(messages: list) -> dict:
+async def call_llm_tools(messages: list, allow_text_recovery: bool = True) -> dict:
     """
     Single non-streaming call to the SMART model with the native tool schema.
     Returns the assistant message dict: {"content": str, "tool_calls": [...]}.
     Tool calling needs the 14B + --jinja, so this always targets LLM_SMART_URL.
+
+    allow_text_recovery: when False, the <tool_call> extraction fallback is
+    suppressed.  Set to False in follow-up rounds after an action tool has
+    already executed — the model's "summary" content sometimes echoes the
+    prior tool-call JSON, and re-extracting it causes duplicate execution.
     """
     from backend.tools import TOOL_SCHEMAS
     url = f"{LLM_SMART_URL}/v1/chat/completions"
@@ -869,10 +874,11 @@ async def call_llm_tools(messages: list) -> dict:
         resp = await client_http.post(url, json=payload)
         resp.raise_for_status()
         msg = resp.json()["choices"][0]["message"]
-    # Fallback: this build sometimes emits tool calls as raw content (esp. with the
-    # full prompt) instead of structured tool_calls — recover them so actions aren't
-    # silently dropped / hallucinated.
-    if not (msg.get("tool_calls")):
+    # Fallback: this build sometimes emits tool calls as raw content instead of
+    # structured tool_calls — recover them so actions aren't silently dropped.
+    # DISABLED in follow-up rounds (allow_text_recovery=False) to prevent the
+    # model's summary content from being mis-parsed as new tool invocations.
+    if allow_text_recovery and not (msg.get("tool_calls")):
         from backend.tools import extract_text_tool_calls
         recovered = extract_text_tool_calls(msg.get("content") or "")
         if recovered:
@@ -1835,6 +1841,11 @@ async def chat_endpoint(request: ChatRequest, http_request: Request):
                     yield _sse({"type": "thinking", "message": "Let me check on that..."})
                     assistant_msg = first
                     final_text = ""
+                    # Per-turn dedup: track (tool_name, canonical_args) pairs already
+                    # executed so duplicate LLM retries or echoed tool-call JSON in
+                    # summary content never fire the same side-effect twice.
+                    _executed_calls: set[tuple[str, str]] = set()
+                    _action_executed = False
                     for _round in range(MAX_TOOL_ROUNDS):
                         tcs = assistant_msg.get("tool_calls") or []
                         if not tcs:
@@ -1848,6 +1859,21 @@ async def chat_endpoint(request: ChatRequest, http_request: Request):
                             fn = tc.get("function", {})
                             name = fn.get("name")
                             raw_args = fn.get("arguments")
+                            # ── Dedup guard ──────────────────────────────────────────
+                            try:
+                                _args_obj = (json.loads(raw_args) if isinstance(raw_args, str)
+                                             else (raw_args or {}))
+                                _call_key = (name, json.dumps(_args_obj, sort_keys=True))
+                            except Exception:
+                                _call_key = (name, str(raw_args))
+                            if _call_key in _executed_calls:
+                                log.warning("chat: duplicate tool call skipped: %s (user=%s)",
+                                            name, user_id)
+                                convo.append({"role": "tool", "tool_call_id": tc.get("id", ""),
+                                              "content": "Already completed in this turn."})
+                                continue
+                            _executed_calls.add(_call_key)
+                            # ── End dedup guard ───────────────────────────────────────
                             # Feature 4: human-readable thinking before each tool runs
                             log.info("thinking → %s (user=%s)", name, user_id)
                             yield _sse({"type": "thinking",
@@ -1865,6 +1891,7 @@ async def chat_endpoint(request: ChatRequest, http_request: Request):
                                             "message": f"Could not complete {name}."})
                             if is_action:
                                 action_taken = True
+                                _action_executed = True
                                 confirmations.append(result)
                                 evt = _action_event(name, raw_args)
                                 if evt:
@@ -1877,7 +1904,11 @@ async def chat_endpoint(request: ChatRequest, http_request: Request):
                                                 "payload": {"sources": [{"source": s} for s in srcs]}})
                             convo.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": result})
                         try:
-                            assistant_msg = await call_llm_tools(convo)
+                            # Disable text-recovery in follow-up rounds: the model's "summary"
+                            # content after a successful action often echoes the prior tool-call
+                            # JSON. Recovering it would re-execute the same action.
+                            assistant_msg = await call_llm_tools(
+                                convo, allow_text_recovery=not _action_executed)
                         except Exception:
                             log.exception(f"tool loop call failed (user={user_id})")
                             assistant_msg = {"content": "", "tool_calls": None}
@@ -1901,9 +1932,12 @@ async def chat_endpoint(request: ChatRequest, http_request: Request):
         action_confirmations: list[str] = []
         action_taken = False
         final_text = ""
+        _executed_calls_ns: set[tuple[str, str]] = set()
+        _action_executed_ns = False
         for _round in range(MAX_TOOL_ROUNDS):
             try:
-                assistant_msg = await call_llm_tools(convo)
+                assistant_msg = await call_llm_tools(
+                    convo, allow_text_recovery=not _action_executed_ns)
             except Exception:
                 log.exception(f"tool-aware LLM call failed (user={user_id})")
                 assistant_msg = {"content": "", "tool_calls": None}
@@ -1916,10 +1950,25 @@ async def chat_endpoint(request: ChatRequest, http_request: Request):
             convo.append({"role": "assistant", "content": assistant_msg.get("content") or "", "tool_calls": tcs})
             for tc in tcs:
                 fn = tc.get("function", {})
+                tc_name = fn.get("name")
+                tc_raw_args = fn.get("arguments")
+                try:
+                    _args_obj = (json.loads(tc_raw_args) if isinstance(tc_raw_args, str)
+                                 else (tc_raw_args or {}))
+                    _call_key = (tc_name, json.dumps(_args_obj, sort_keys=True))
+                except Exception:
+                    _call_key = (tc_name, str(tc_raw_args))
+                if _call_key in _executed_calls_ns:
+                    log.warning("chat(ns): duplicate tool call skipped: %s (user=%s)", tc_name, user_id)
+                    convo.append({"role": "tool", "tool_call_id": tc.get("id", ""),
+                                  "content": "Already completed in this turn."})
+                    continue
+                _executed_calls_ns.add(_call_key)
                 result, is_action = await asyncio.to_thread(
-                    execute_single_tool, fn.get("name"), fn.get("arguments"), user_id)
+                    execute_single_tool, tc_name, tc_raw_args, user_id)
                 if is_action:
                     action_taken = True
+                    _action_executed_ns = True
                     action_confirmations.append(result)
                 convo.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": result})
         base_reply = ("\n\n".join(c for c in action_confirmations if c).strip() or "Done.") \

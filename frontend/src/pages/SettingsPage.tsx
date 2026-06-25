@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { usePrefs } from '../contexts/PrefsContext'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -184,6 +185,9 @@ function AccountSection() {
   const { user, userId, signOut } = useAuth()
   const { addToast } = useToast()
   const qc = useQueryClient()
+  const { prefs, setPrefs } = usePrefs()
+  const [agentNameInput, setAgentNameInput] = useState(prefs.agentName)
+  const [displayNameInput, setDisplayNameInput] = useState(prefs.displayName)
 
   const email = user?.email ?? '—'
   const initials = email !== '—' ? email.slice(0, 2).toUpperCase() : 'AI'
@@ -213,6 +217,38 @@ function AccountSection() {
 
   return (
     <div className="space-y-4">
+      {/* Personalisation */}
+      <div className="glass rounded-2xl p-5 space-y-3">
+        <p className="text-xs font-semibold text-[#4A6080] uppercase tracking-wide">Personalisation</p>
+        <div>
+          <label className="text-xs font-medium text-[#9AA7BD] block mb-1.5">Assistant name</label>
+          <input
+            value={agentNameInput}
+            onChange={e => setAgentNameInput(e.target.value)}
+            onBlur={() => setPrefs({ agentName: agentNameInput.trim() || 'Aria' })}
+            placeholder="Aria"
+            maxLength={30}
+            className="w-full neu-inset rounded-xl px-4 py-2.5 text-sm text-[#E2E8F0]
+                       placeholder:text-[#4A6080] outline-none"
+          />
+        </div>
+        <div>
+          <label className="text-xs font-medium text-[#9AA7BD] block mb-1.5">
+            Your display name <span className="text-[#4A6080] font-normal">(optional)</span>
+          </label>
+          <input
+            value={displayNameInput}
+            onChange={e => setDisplayNameInput(e.target.value)}
+            onBlur={() => setPrefs({ displayName: displayNameInput.trim() })}
+            placeholder="Your first name…"
+            maxLength={50}
+            className="w-full neu-inset rounded-xl px-4 py-2.5 text-sm text-[#E2E8F0]
+                       placeholder:text-[#4A6080] outline-none"
+          />
+        </div>
+        <p className="text-xs text-[#4A6080]">Saved automatically on blur.</p>
+      </div>
+
       {/* Identity card */}
       <div className="glass rounded-2xl p-5 space-y-4">
         <div className="flex items-center gap-4">

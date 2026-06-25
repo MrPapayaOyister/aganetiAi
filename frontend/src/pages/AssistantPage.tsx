@@ -18,6 +18,7 @@ import { useSound } from '../hooks/useSound'
 import { useToast } from '../hooks/useToast'
 import { useAppContext } from '../App'
 import { useAmbient } from '../contexts/AmbientContext'
+import { usePrefs } from '../contexts/PrefsContext'
 import axios from 'axios'
 import type { ChatMessage } from '../components/MessageBubble'
 
@@ -69,6 +70,8 @@ function ActionLabel({ action, payload }: { action: string; payload: Record<stri
 export default function AssistantPage() {
   const { userId, ttsEnabled, setTtsEnabled } = useAppContext()
   const { addToast } = useToast()
+  const { prefs } = usePrefs()
+  const agentName = prefs.agentName || 'Aria'
   const { setAmbient } = useAmbient()
   const { stream, streaming, abort } = useStream()
   const voice = useVoice()
@@ -214,7 +217,13 @@ export default function AssistantPage() {
       },
       onThinking: (msg) => setThinkingMsg(msg),
       onAction: (action, payload) => {
-        setActionCards(prev => [...prev, { id: generateId(), action, payload, messageId: assistantId }])
+        setActionCards(prev => {
+          const key = `${action}|${JSON.stringify(payload)}`
+          if (prev.some(c => c.messageId === assistantId &&
+                             `${c.action}|${JSON.stringify(c.payload)}` === key))
+            return prev
+          return [...prev, { id: generateId(), action, payload, messageId: assistantId }]
+        })
       },
       onSources: (srcs) => {
         if (srcs.length) setSourcesByMsg(prev => ({ ...prev, [assistantId]: srcs }))
@@ -321,7 +330,7 @@ export default function AssistantPage() {
               </motion.div>
             )}
           </AnimatePresence>
-          <span className="font-semibold text-[#E2E8F0] text-sm">Aria</span>
+          <span className="font-semibold text-[#E2E8F0] text-sm">{agentName}</span>
           {streaming && !thinkingMsg && (
             <div className="flex items-center gap-1">
               {[0, 1, 2].map(i => (
@@ -422,7 +431,7 @@ export default function AssistantPage() {
                 transition={{ delay: 0.32 }}
                 className="mt-2 text-[#4A6080] text-sm"
               >
-                Ask anything. Aria handles the rest.
+                Ask anything. {agentName} handles the rest.
               </motion.p>
 
               <motion.div
@@ -570,7 +579,7 @@ export default function AssistantPage() {
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask Aria anything…"
+            placeholder={`Ask ${agentName} anything…`}
             rows={1}
             disabled={voice.isListening}
             className="flex-1 bg-transparent resize-none outline-none text-sm text-[#E2E8F0]

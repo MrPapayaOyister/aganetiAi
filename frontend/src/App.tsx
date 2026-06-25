@@ -17,6 +17,8 @@ import ProtectedRoute from './components/ProtectedRoute'
 import { ToastContext, useToastState } from './hooks/useToast'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { AmbientProvider, useAmbient } from './contexts/AmbientContext'
+import { PrefsProvider } from './contexts/PrefsContext'
+import { OnboardingModal } from './components/OnboardingModal'
 
 // ── App context (userId = real Supabase UUID + TTS pref) ────────
 interface AppCtxType {
@@ -91,6 +93,7 @@ function AuthenticatedShell() {
         </Layout>
       </div>
       <CommandPalette />
+      <OnboardingModal />
     </AppCtx.Provider>
   )
 }
@@ -101,6 +104,7 @@ export default function App() {
   return (
     <AuthProvider>
       <AmbientProvider>
+        <PrefsProvider>
         <ToastContext.Provider value={toastCtx}>
           <Routes>
             <Route path="/login" element={<LoginPage />} />
@@ -120,6 +124,7 @@ export default function App() {
             ))}
           </AnimatePresence>
         </ToastContext.Provider>
+        </PrefsProvider>
       </AmbientProvider>
     </AuthProvider>
   )
