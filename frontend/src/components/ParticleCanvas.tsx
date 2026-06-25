@@ -108,6 +108,30 @@ export default function ParticleCanvas({
 
       ctx!.clearRect(0, 0, W, H)
 
+      // ── Connection lines between nearby particles (constellation) ──
+      // Skip on low-power/reduced to protect frame budget.
+      if (!lowPower && !reduce) {
+        const LINK = 120
+        const LINK2 = LINK * LINK
+        ctx!.lineWidth = 0.6
+        for (let i = 0; i < particles.length; i++) {
+          const a = particles[i]
+          for (let j = i + 1; j < particles.length; j++) {
+            const b = particles[j]
+            const dx = a.x - b.x, dy = a.y - b.y
+            const d2 = dx * dx + dy * dy
+            if (d2 > LINK2) continue
+            const k = 1 - Math.sqrt(d2) / LINK
+            const o = k * (0.05 + energy * 0.12)
+            ctx!.strokeStyle = `rgba(120,180,255,${o})`
+            ctx!.beginPath()
+            ctx!.moveTo(a.x, a.y)
+            ctx!.lineTo(b.x, b.y)
+            ctx!.stroke()
+          }
+        }
+      }
+
       for (const p of particles) {
         // direction to focus center
         const dx = fx - p.x
