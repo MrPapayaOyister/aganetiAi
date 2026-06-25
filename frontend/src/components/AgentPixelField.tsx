@@ -20,25 +20,29 @@ interface ModeConfig {
   pixelJitter: number
 }
 
+// Base values tuned for the masked composition: the IntelligenceCore mask
+// already concentrates the field around the center and fades the edges, so
+// patternDensity needs to be higher (mask multiplies down what's visible)
+// and edgeFade is small (the mask provides the falloff).
 const BASE: ModeConfig = {
   color: '#7AA2F7',
-  patternDensity: 1.0,
-  patternScale: 3,
+  patternDensity: 1.25,
+  patternScale: 2.4,
   speed: 0.4,
   rippleIntensityScale: 1.2,
   rippleSpeed: 0.35,
-  edgeFade: 0.35,
+  edgeFade: 0.10,
   pixelJitter: 0.35,
 }
 
 const MODE_MAP: Record<AgentFieldMode, Partial<ModeConfig>> = {
-  idle:      { color: '#5A6F9F', patternDensity: 0.85, speed: 0.30 },
-  listening: { color: '#00C8FF', patternDensity: 1.10, speed: 0.55, rippleIntensityScale: 1.5 },
-  thinking:  { color: '#7B2FFF', patternDensity: 1.18, speed: 0.65, rippleIntensityScale: 1.7, rippleSpeed: 0.45 },
-  speaking:  { color: '#00D4FF', patternDensity: 1.22, speed: 0.80, rippleIntensityScale: 1.9, rippleSpeed: 0.55 },
-  acting:    { color: '#9D5BFF', patternDensity: 1.28, speed: 0.90, rippleIntensityScale: 2.1, rippleSpeed: 0.50 },
-  success:   { color: '#00FFB3', patternDensity: 1.10, speed: 0.55, rippleIntensityScale: 2.2 },
-  error:     { color: '#FF8A4A', patternDensity: 1.05, speed: 0.45, rippleIntensityScale: 1.8 },
+  idle:      { color: '#5A6F9F', patternDensity: 1.05, speed: 0.30 },
+  listening: { color: '#00C8FF', patternDensity: 1.30, speed: 0.55, rippleIntensityScale: 1.5 },
+  thinking:  { color: '#7B2FFF', patternDensity: 1.38, speed: 0.65, rippleIntensityScale: 1.7, rippleSpeed: 0.45 },
+  speaking:  { color: '#00D4FF', patternDensity: 1.42, speed: 0.80, rippleIntensityScale: 1.9, rippleSpeed: 0.55 },
+  acting:    { color: '#9D5BFF', patternDensity: 1.48, speed: 0.90, rippleIntensityScale: 2.1, rippleSpeed: 0.50 },
+  success:   { color: '#00FFB3', patternDensity: 1.30, speed: 0.55, rippleIntensityScale: 2.2 },
+  error:     { color: '#FF8A4A', patternDensity: 1.25, speed: 0.45, rippleIntensityScale: 1.8 },
 }
 
 // Intensity preset → density/speed multipliers

@@ -349,31 +349,37 @@ const PixelBlast = forwardRef(function PixelBlast(props, ref) {
     },
   }), [])
 
+  // ═══════════════════════════════════════════════════════════════
+  // INIT effect — heavy. Only re-runs when antialias/liquid/noiseAmount
+  // change (they require a WebGL context recreate). Everything else is
+  // a uniform-only update in the second effect below.
+  //
+  // FIX: the previous implementation had one giant effect with all props
+  // in its dep array. React invoked its cleanup on every dep change, and
+  // the cleanup unconditionally disposed the renderer → the canvas was
+  // recreated on EVERY prop change (color, density, speed, etc.) which
+  // manifested as page flashing.  Splitting init from update + moving
+  // dispose into an unmount-only effect makes the field stable.
+  // ═══════════════════════════════════════════════════════════════
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
     speedRef.current = speed
-    const needsReinitKeys = ['antialias', 'liquid', 'noiseAmount']
-    const cfg = { antialias, liquid, noiseAmount }
-    let mustReinit = false
-    if (!threeRef.current) mustReinit = true
-    else if (prevConfigRef.current) {
-      for (const k of needsReinitKeys)
-        if (prevConfigRef.current[k] !== cfg[k]) { mustReinit = true; break }
+    // Dispose any existing context for a clean re-init.
+    if (threeRef.current) {
+      const t = threeRef.current
+      t.resizeObserver?.disconnect()
+      cancelAnimationFrame(t.raf)
+      t.quad?.geometry.dispose()
+      t.material.dispose()
+      t.composer?.dispose()
+      t.renderer.dispose()
+      t.renderer.forceContextLoss()
+      if (t.renderer.domElement.parentElement === container) container.removeChild(t.renderer.domElement)
+      threeRef.current = null
     }
-    if (mustReinit) {
-      if (threeRef.current) {
-        const t = threeRef.current
-        t.resizeObserver?.disconnect()
-        cancelAnimationFrame(t.raf)
-        t.quad?.geometry.dispose()
-        t.material.dispose()
-        t.composer?.dispose()
-        t.renderer.dispose()
-        t.renderer.forceContextLoss()
-        if (t.renderer.domElement.parentElement === container) container.removeChild(t.renderer.domElement)
-        threeRef.current = null
-      }
+    // Inline-IIFE: keep the existing init block's variable scoping.
+    ;(() => {
       const canvas = document.createElement('canvas')
       const renderer = new THREE.WebGLRenderer({
         canvas, antialias, alpha: true, powerPreference: 'high-performance',
@@ -520,50 +526,68 @@ const PixelBlast = forwardRef(function PixelBlast(props, ref) {
         renderer, scene, camera, material, clock, clickIx: 0, uniforms,
         resizeObserver: ro, raf, quad, timeOffset, composer, touch, liquidEffect,
       }
-    } else {
-      const t = threeRef.current
-      t.uniforms.uShapeType.value = SHAPE_MAP[variant] ?? 0
-      t.uniforms.uPixelSize.value = pixelSize * t.renderer.getPixelRatio()
-      t.uniforms.uColor.value.set(color)
-      t.uniforms.uScale.value = patternScale
-      t.uniforms.uDensity.value = patternDensity
-      t.uniforms.uPixelJitter.value = pixelSizeJitter
-      t.uniforms.uEnableRipples.value = enableRipples ? 1 : 0
-      t.uniforms.uRippleIntensity.value = rippleIntensityScale
-      t.uniforms.uRippleThickness.value = rippleThickness
-      t.uniforms.uRippleSpeed.value = rippleSpeed
-      t.uniforms.uEdgeFade.value = edgeFade
-      if (transparent) t.renderer.setClearAlpha(0)
-      else t.renderer.setClearColor(0x000000, 1)
-      if (t.liquidEffect) {
-        const uStrength = t.liquidEffect.uniforms.get('uStrength')
-        if (uStrength) uStrength.value = liquidStrength
-        const uFreq = t.liquidEffect.uniforms.get('uFreq')
-        if (uFreq) uFreq.value = liquidWobbleSpeed
-      }
-      if (t.touch) t.touch.radiusScale = liquidRadius
+    })()
+    // NO cleanup here — the unmount-only effect below handles disposal.
+    // (Dispose-on-each-rerun is what caused the flashing bug.)
+    return undefined
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [antialias, liquid, noiseAmount])
+
+  // UPDATE effect — runs whenever display props change. Mutates uniforms in
+  // place on the existing renderer.  This is cheap and never tears down WebGL.
+  useEffect(() => {
+    const t = threeRef.current
+    if (!t) return
+    t.uniforms.uShapeType.value = SHAPE_MAP[variant] ?? 0
+    t.uniforms.uPixelSize.value = pixelSize * t.renderer.getPixelRatio()
+    t.uniforms.uColor.value.set(color)
+    t.uniforms.uScale.value = patternScale
+    t.uniforms.uDensity.value = patternDensity
+    t.uniforms.uPixelJitter.value = pixelSizeJitter
+    t.uniforms.uEnableRipples.value = enableRipples ? 1 : 0
+    t.uniforms.uRippleIntensity.value = rippleIntensityScale
+    t.uniforms.uRippleThickness.value = rippleThickness
+    t.uniforms.uRippleSpeed.value = rippleSpeed
+    t.uniforms.uEdgeFade.value = edgeFade
+    if (transparent) t.renderer.setClearAlpha(0)
+    else t.renderer.setClearColor(0x000000, 1)
+    if (t.liquidEffect) {
+      const uStrength = t.liquidEffect.uniforms.get('uStrength')
+      if (uStrength) uStrength.value = liquidStrength
+      const uFreq = t.liquidEffect.uniforms.get('uFreq')
+      if (uFreq) uFreq.value = liquidWobbleSpeed
     }
-    prevConfigRef.current = cfg
-    return () => {
-      if (threeRef.current && mustReinit) return
-      if (!threeRef.current) return
-      const t = threeRef.current
-      t.resizeObserver?.disconnect()
-      cancelAnimationFrame(t.raf)
-      t.quad?.geometry.dispose()
-      t.material.dispose()
-      t.composer?.dispose()
-      t.renderer.dispose()
-      t.renderer.forceContextLoss()
-      if (t.renderer.domElement.parentElement === container) container.removeChild(t.renderer.domElement)
-      threeRef.current = null
-    }
+    if (t.touch) t.touch.radiusScale = liquidRadius
   }, [
-    antialias, liquid, noiseAmount, pixelSize, patternScale, patternDensity,
-    enableRipples, rippleIntensityScale, rippleThickness, rippleSpeed,
-    pixelSizeJitter, edgeFade, transparent, liquidStrength, liquidRadius,
-    liquidWobbleSpeed, autoPauseOffscreen, variant, color, speed, interactive,
+    variant, pixelSize, color, patternScale, patternDensity, pixelSizeJitter,
+    enableRipples, rippleIntensityScale, rippleThickness, rippleSpeed, edgeFade,
+    transparent, liquidStrength, liquidRadius, liquidWobbleSpeed,
   ])
+
+  // Keep speedRef synced to the speed prop without touching React.
+  useEffect(() => { speedRef.current = speed }, [speed])
+
+  // UNMOUNT-only disposal.  Empty deps → only runs once on actual unmount.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => () => {
+    const t = threeRef.current
+    if (!t) return
+    t.resizeObserver?.disconnect()
+    cancelAnimationFrame(t.raf)
+    t.quad?.geometry.dispose()
+    t.material.dispose()
+    t.composer?.dispose()
+    t.renderer.dispose()
+    t.renderer.forceContextLoss()
+    const c = containerRef.current
+    if (c && t.renderer.domElement.parentElement === c) c.removeChild(t.renderer.domElement)
+    threeRef.current = null
+  }, [])
+
+  // `prevConfigRef` and `interactive` (read inside init handlers) are still
+  // captured by closure; only the heavy init effect cares about reinit deps.
+  // eslint-disable-next-line @typescript-eslint/no-unused-expressions
+  prevConfigRef
 
   return (
     <div

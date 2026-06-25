@@ -677,11 +677,10 @@ export default function AssistantPage() {
         )}
       </AnimatePresence>
 
-      {/* Input bar — floating elevated pill */}
+      {/* Input bar — premium glass dock at the bottom */}
       <div className="shrink-0 px-3 pt-1.5 pb-3">
-        <div className="glass-strong rounded-[22px] flex items-center gap-1.5 px-2 py-2 max-w-3xl mx-auto
-                        shadow-[0_8px_32px_rgba(0,0,0,0.45)]
-                        focus-within:shadow-[0_8px_32px_rgba(0,0,0,0.45),0_0_0_1px_rgba(0,212,255,0.2)]
+        <div className="composer-dock rounded-[22px] flex items-center gap-1.5 px-2 py-2 max-w-3xl mx-auto
+                        focus-within:shadow-[0_18px_50px_rgba(0,0,0,0.65),0_0_0_1px_rgba(0,212,255,0.25)]
                         transition-shadow"
              style={{ borderRadius: 22 }}>
           {/* Attach */}

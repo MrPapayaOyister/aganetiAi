@@ -40,7 +40,7 @@ function ConversationStreamBase({
   renderActionCards, onPlay, onRegenerate,
 }: ConversationStreamProps) {
   return (
-    <div className="max-w-3xl mx-auto w-full px-3 sm:px-6 py-6 space-y-6">
+    <div className="conv-lane max-w-3xl mx-auto w-full px-3 sm:px-6 py-6 space-y-6">
       <AnimatePresence initial={false}>
         {messages.map((m, i) => (
           <ConvTurn

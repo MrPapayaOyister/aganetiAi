@@ -4,7 +4,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import Layout from './components/Layout'
 import { Toast } from './components/Toast'
 import CommandPalette from './components/CommandPalette'
-import AgentPixelField from './components/AgentPixelField'
+import IntelligenceCore from './components/IntelligenceCore'
 import AssistantPage from './pages/AssistantPage'
 import AnalyticsPage from './pages/AnalyticsPage'
 import FilesPage from './pages/FilesPage'
@@ -80,30 +80,31 @@ function AuthenticatedShell() {
     localStorage.setItem('aria_tts', String(v))
   }
 
-  // Utility pages get a slightly dimmer field via opacity only — props that
-  // would cause a WebGL re-init (pixelSize, liquid) are CONSTANT across routes.
+  // Utility pages get a slightly quieter feel via opacity — but the
+  // IntelligenceCore itself remains mounted (only ONE WebGL context for the
+  // whole app lifetime → no flash on route change).
   const calmRoutes = ['/settings', '/files', '/analytics']
   const calm = calmRoutes.some(p => location.pathname.startsWith(p))
 
   return (
     <AppCtx.Provider value={{ userId, setUserId, ttsEnabled, setTtsEnabled }}>
-      {/* Global PixelBlast background — pointer-safe, reacts to agent state.
-          Opacity transitions smoothly so route changes don't flash. */}
+      {/* Intelligence core — masked PixelBlast + radial bloom + vignette.
+          Mounted ONCE; never remounts across routes. */}
       <div
         className="fixed inset-0 z-0 pointer-events-none"
-        style={{ opacity: calm ? 0.55 : 0.92, transition: 'opacity 380ms ease' }}
+        style={{ opacity: calm ? 0.62 : 1.0, transition: 'opacity 600ms ease' }}
       >
-        <AgentPixelField bridgeClicks />
+        <IntelligenceCore />
       </div>
-      {/* Top scrim — fades PixelBlast cleanly into the header */}
+      {/* Top scrim — fades core cleanly into the header */}
       <div
         className="fixed inset-x-0 top-0 h-24 z-[1] pointer-events-none"
-        style={{ background: 'linear-gradient(to bottom, rgba(6,8,14,0.55), transparent)' }}
+        style={{ background: 'linear-gradient(to bottom, rgba(4,6,11,0.65), transparent)' }}
       />
       {/* Bottom scrim — protects readability above the input bar */}
       <div
         className="fixed inset-x-0 bottom-0 h-32 z-[1] pointer-events-none"
-        style={{ background: 'linear-gradient(to top, rgba(6,8,14,0.65), transparent)' }}
+        style={{ background: 'linear-gradient(to top, rgba(4,6,11,0.72), transparent)' }}
       />
       <div className="relative z-10 h-full">
         <Layout>
