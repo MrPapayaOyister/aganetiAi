@@ -1,0 +1,117 @@
+"""
+JWT validation middleware for Supabase-issued tokens.
+
+Supabase signs JWTs with RS256 using a project-specific key pair.
+We validate locally (no network call) using the public JWKS endpoint
+or the static JWT secret from the Supabase dashboard.
+
+Set in .env:
+  SUPABASE_URL=https://xxxx.supabase.co
+  SUPABASE_JWT_SECRET=your-jwt-secret   # from Project Settings → API → JWT Secret
+  SUPABASE_SERVICE_KEY=...              # for backend-to-Supabase DB calls (service role)
+"""
+from __future__ import annotations
+
+import os
+import logging
+from typing import Optional
+
+import jwt
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+from .context import UserContext, ProviderContext
+from .supabase_client import get_supabase_admin
+
+logger = logging.getLogger("aganeti.auth")
+
+SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET", "")
+_bearer = HTTPBearer(auto_error=False)
+
+
+def _decode_jwt(token: str) -> dict:
+    """Validate and decode a Supabase JWT. Raises HTTPException on failure."""
+    if not SUPABASE_JWT_SECRET:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            "Server auth not configured (missing SUPABASE_JWT_SECRET)")
+    try:
+        payload = jwt.decode(
+            token,
+            SUPABASE_JWT_SECRET,
+            algorithms=["HS256"],
+            options={"require": ["sub", "exp"]},
+        )
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token expired")
+    except jwt.InvalidTokenError as e:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"Invalid token: {e}")
+
+
+async def _build_user_context(user_id: str, email: str) -> UserContext:
+    """
+    Load profile, feature flags, and provider connections from Supabase
+    and assemble a UserContext. Single DB call pattern using select().
+    """
+    supabase = get_supabase_admin()
+
+    # Fetch profile + feature flags + providers in parallel
+    profile_resp = supabase.table("profiles").select("*").eq("id", user_id).single().execute()
+    flags_resp = supabase.table("feature_flags").select("flag").eq("user_id", user_id).eq("enabled", True).execute()
+    providers_resp = (
+        supabase.table("provider_connections")
+        .select("provider, provider_email, scopes, token_expiry")
+        .eq("user_id", user_id)
+        .execute()
+    )
+
+    profile = profile_resp.data or {}
+    flags = [r["flag"] for r in (flags_resp.data or [])]
+    providers = [
+        ProviderContext(
+            provider=r["provider"],
+            email=r.get("provider_email", ""),
+            scopes=r.get("scopes") or [],
+            token_expiry=r.get("token_expiry"),
+        )
+        for r in (providers_resp.data or [])
+    ]
+
+    return UserContext(
+        user_id=user_id,
+        email=email,
+        display_name=profile.get("display_name") or email.split("@")[0],
+        plan=profile.get("plan", "free"),
+        features=flags,
+        providers=providers,
+    )
+
+
+async def get_current_user(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
+) -> UserContext:
+    """FastAPI dependency — validates JWT and returns UserContext."""
+    if not credentials:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated")
+
+    payload = _decode_jwt(credentials.credentials)
+    user_id: str = payload["sub"]
+    email: str = payload.get("email", "")
+
+    ctx = await _build_user_context(user_id, email)
+    return ctx
+
+
+async def optional_user(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
+) -> Optional[UserContext]:
+    """Like get_current_user but returns None instead of 401 for unauthenticated."""
+    if not credentials:
+        return None
+    try:
+        payload = _decode_jwt(credentials.credentials)
+        return await _build_user_context(payload["sub"], payload.get("email", ""))
+    except HTTPException:
+        return None

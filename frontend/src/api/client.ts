@@ -1,6 +1,6 @@
 import axios from 'axios'
 
-const http = axios.create({ baseURL: '/api' })
+export const http = axios.create({ baseURL: '/api' })
 
 // ── Types ──────────────────────────────────────────────
 export type UserID = 'user_1' | 'user_2'
