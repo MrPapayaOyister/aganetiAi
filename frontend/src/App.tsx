@@ -5,6 +5,7 @@ import Layout from './components/Layout'
 import { Toast } from './components/Toast'
 import CommandPalette from './components/CommandPalette'
 import ParticleCanvas from './components/ParticleCanvas'
+import IntelligenceField from './components/IntelligenceField'
 import AssistantPage from './pages/AssistantPage'
 import AnalyticsPage from './pages/AnalyticsPage'
 import FilesPage from './pages/FilesPage'
@@ -79,8 +80,9 @@ function AuthenticatedShell() {
 
   return (
     <AppCtx.Provider value={{ userId, setUserId, ttsEnabled, setTtsEnabled }}>
-      {/* Global ambient particle field — reacts to assistant state */}
+      {/* Global background — deep nebula layer + constellation particles */}
       <div className="fixed inset-0 z-0 pointer-events-none">
+        <IntelligenceField mode={mode} amplitude={amplitude} />
         <ParticleCanvas mode={mode} amplitude={amplitude} />
       </div>
       <div className="relative z-10 h-full">

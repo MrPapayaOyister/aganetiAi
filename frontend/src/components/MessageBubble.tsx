@@ -73,7 +73,7 @@ function MessageBubbleBase({ message, streaming, speaking, sources, onRegenerate
       </div>
 
       <div className="min-w-0 flex-1">
-        <div className={`px-4 py-3 rounded-2xl rounded-tl-md t-body neu ${speaking ? 'border-pulse' : ''}`}>
+        <div className={`px-4 py-3 rounded-2xl rounded-tl-md t-body neu ${speaking ? 'speaking-pulse' : ''}`}>
           {isEmpty ? (
             <ThinkingDots />
           ) : (

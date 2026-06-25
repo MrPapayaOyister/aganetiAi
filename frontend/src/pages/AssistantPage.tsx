@@ -322,11 +322,26 @@ export default function AssistantPage() {
             )}
           </AnimatePresence>
           <span className="font-semibold text-[#E2E8F0] text-sm">Aria</span>
-          {streaming && (
-            <span className="text-xs text-[#4A6080] animate-pulse">Thinking…</span>
+          {streaming && !thinkingMsg && (
+            <div className="flex items-center gap-1">
+              {[0, 1, 2].map(i => (
+                <motion.span
+                  key={i}
+                  className="w-1 h-1 rounded-full bg-[#4A6080]"
+                  animate={{ opacity: [0.3, 1, 0.3] }}
+                  transition={{ duration: 0.9, repeat: Infinity, delay: i * 0.2 }}
+                />
+              ))}
+            </div>
           )}
           {voice.isSpeaking && (
-            <span className="text-xs text-[#7B2FFF]">Speaking…</span>
+            <motion.span
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="text-xs text-[#7B2FFF]/80"
+            >
+              Speaking…
+            </motion.span>
           )}
         </div>
 
@@ -407,7 +422,7 @@ export default function AssistantPage() {
                 transition={{ delay: 0.32 }}
                 className="mt-2 text-[#4A6080] text-sm"
               >
-                Your AI assistant is ready.
+                Ask anything. Aria handles the rest.
               </motion.p>
 
               <motion.div
@@ -427,7 +442,8 @@ export default function AssistantPage() {
                     whileTap={{ scale: 0.97 }}
                     onClick={() => handleSend(s)}
                     className="px-4 py-2 glass-sm rounded-full text-sm text-[#94A3B8]
-                               hover:text-[#E2E8F0] hover:border-[#00D4FF]/30 transition-all"
+                               border border-white/[0.06]
+                               hover:text-[#E2E8F0] hover:border-[#00D4FF]/35 hover:bg-[#00D4FF]/[0.04] transition-all"
                   >
                     {s}
                   </motion.button>
@@ -525,16 +541,17 @@ export default function AssistantPage() {
 
       {/* Input bar — floating elevated pill */}
       <div className="shrink-0 px-3 pt-1.5 pb-3">
-        <div className="glass-strong rounded-[22px] flex items-end gap-2 px-3 py-2 max-w-3xl mx-auto
-                        shadow-[0_8px_32px_rgba(0,0,0,0.45)] focus-within:border-[#00D4FF]/40
-                        transition-colors"
+        <div className="glass-strong rounded-[22px] flex items-center gap-1.5 px-2 py-2 max-w-3xl mx-auto
+                        shadow-[0_8px_32px_rgba(0,0,0,0.45)]
+                        focus-within:shadow-[0_8px_32px_rgba(0,0,0,0.45),0_0_0_1px_rgba(0,212,255,0.2)]
+                        transition-shadow"
              style={{ borderRadius: 22 }}>
           {/* Attach */}
           <motion.button
             whileTap={{ scale: 0.88 }}
             onClick={() => fileInputRef.current?.click()}
-            className="shrink-0 mb-1 w-8 h-8 flex items-center justify-center
-                       rounded-full text-[#4A6080] hover:text-[#00D4FF] transition-colors min-w-[44px] min-h-[44px]"
+            className="shrink-0 size-10 flex items-center justify-center
+                       rounded-xl text-[#4A6080] hover:text-[#00D4FF] hover:bg-white/[0.04] transition-colors"
             title="Attach file"
           >
             <Paperclip size={16} />
@@ -557,7 +574,7 @@ export default function AssistantPage() {
             rows={1}
             disabled={voice.isListening}
             className="flex-1 bg-transparent resize-none outline-none text-sm text-[#E2E8F0]
-                       placeholder:text-[#4A6080] leading-relaxed py-1.5 max-h-32 overflow-y-auto"
+                       placeholder:text-[#4A6080] leading-relaxed py-2 max-h-32 overflow-y-auto"
             onInput={e => {
               const el = e.currentTarget
               el.style.height = 'auto'
@@ -570,9 +587,8 @@ export default function AssistantPage() {
             whileTap={{ scale: 0.88 }}
             onClick={toggleLive}
             title="Live conversation"
-            className={`shrink-0 mb-0.5 w-9 h-9 rounded-full flex items-center justify-center
-                        transition-all min-w-[40px] min-h-[40px]
-                        ${live.active ? 'text-[#00FF88] bg-[#00FF88]/10' : 'text-[#5C6B85] hover:text-[#38DBFF]'}`}
+            className={`shrink-0 size-10 rounded-xl flex items-center justify-center transition-all
+                        ${live.active ? 'text-[#00FF88] bg-[#00FF88]/10' : 'text-[#5C6B85] hover:text-[#38DBFF] hover:bg-white/[0.04]'}`}
           >
             <Radio size={16} />
           </motion.button>
@@ -592,10 +608,10 @@ export default function AssistantPage() {
             data-mute-click
             onClick={() => handleSend(input)}
             disabled={!input.trim() || streaming}
-            className="shrink-0 mb-0.5 w-9 h-9 rounded-full flex items-center justify-center
+            className="shrink-0 size-10 rounded-xl flex items-center justify-center
                        bg-[#00D4FF]/15 border border-[#00D4FF]/30 text-[#00D4FF]
                        hover:bg-[#00D4FF]/25 disabled:opacity-30 disabled:cursor-not-allowed
-                       transition-all min-w-[44px] min-h-[44px]"
+                       transition-all"
           >
             {streaming ? (
               <motion.div

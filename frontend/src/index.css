@@ -196,6 +196,14 @@ body {
 }
 .border-pulse { animation: borderPulse 1.6s ease-in-out infinite; }
 
+/* Dual-color speaking glow — used on assistant bubble while Aria speaks */
+@keyframes speakingPulse {
+  0%,100% { box-shadow: 6px 6px 14px var(--neu-dark), -6px -6px 14px var(--neu-light); }
+  50%     { box-shadow: 6px 6px 14px var(--neu-dark), -6px -6px 14px var(--neu-light),
+                        0 0 22px rgba(0,212,255,0.22), 0 0 44px rgba(123,47,255,0.12); }
+}
+.speaking-pulse { animation: speakingPulse 1.1s ease-in-out infinite; }
+
 /* ════════════════════════════════════════════════════════════
    CHAT MARKDOWN
    ════════════════════════════════════════════════════════════ */
