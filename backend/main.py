@@ -19,7 +19,7 @@ from integrations.model_router import route_model
 from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # tighten later
+    allow_origins=["http://34.158.137.18", "http://localhost:5173"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
