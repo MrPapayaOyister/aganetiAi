@@ -200,6 +200,21 @@ export default function AssistantPage() {
     })
   }, [streaming, stream, sessionId, userId, ttsEnabled, voice, addToast])
 
+  // Mic needs a secure context (HTTPS/localhost). On plain HTTP the browser
+  // blocks getUserMedia + Web Speech, so guide the user instead of a dead button.
+  const handleVoiceStart = useCallback(() => {
+    if (!window.isSecureContext) {
+      addToast('Voice input needs a secure (HTTPS) connection', 'info')
+      return
+    }
+    if (!navigator.mediaDevices?.getUserMedia &&
+        !('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+      addToast('Voice input is not supported in this browser', 'info')
+      return
+    }
+    voice.startListening(handleSend)
+  }, [addToast, voice, handleSend])
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -224,7 +239,8 @@ export default function AssistantPage() {
   }
 
   return (
-    <div className="flex flex-col overflow-hidden" style={{ height: 'var(--vvh, 100vh)' }}>
+    <div className="flex flex-col overflow-hidden h-[var(--vvh,100dvh)] md:h-full
+                    pb-[calc(var(--bottom-nav-height)+env(safe-area-inset-bottom))] md:pb-0">
       {/* Header bar */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-[#1E3A5F]/30 shrink-0">
         <div className="flex items-center gap-3">
@@ -435,8 +451,8 @@ export default function AssistantPage() {
         )}
       </AnimatePresence>
 
-      {/* Input bar */}
-      <div className="shrink-0 px-3 py-2.5 pb-safe border-t border-[#1E3A5F]/30 bg-[#070B14]/80">
+      {/* Input bar (container reserves space for the mobile bottom nav) */}
+      <div className="shrink-0 px-3 py-2.5 border-t border-[#1E3A5F]/30 bg-[#070B14]/80">
         <div className="glass-sm rounded-2xl flex items-end gap-2 px-3 py-2 max-w-3xl mx-auto">
           {/* Attach */}
           <motion.button
@@ -478,7 +494,7 @@ export default function AssistantPage() {
           <VoiceButton
             voiceState={voice.state}
             analyserNode={voice.analyserNode}
-            onStart={() => voice.startListening(handleSend)}
+            onStart={handleVoiceStart}
             onStop={voice.stopListening}
             disabled={streaming}
           />

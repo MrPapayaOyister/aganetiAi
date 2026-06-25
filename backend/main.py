@@ -734,8 +734,22 @@ async def ingest_upload(file: UploadFile = File(...), user_id: str = "user_1"):
     dest = Path(f"data_vault/{user_id}/{file.filename}")
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(await file.read())
-    await asyncio.to_thread(__import__('backend.ingest', fromlist=['ingest_file']).ingest_file, str(dest))
-    return {"status": "indexed", "file": file.filename}
+
+    def _do_ingest() -> int:
+        # ingest_file(client, path) requires a Qdrant client and the collection
+        # to exist; build both here (same helpers ingest_all uses).
+        from backend.ingest import ingest_file, get_client, ensure_collection
+        client = get_client()
+        ensure_collection(client)
+        return ingest_file(client, dest)
+
+    try:
+        chunks = await asyncio.to_thread(_do_ingest)
+    except Exception:
+        log.exception("ingest_upload failed for %s (user=%s)", file.filename, user_id)
+        raise HTTPException(status_code=500, detail="Failed to index file")
+
+    return {"status": "indexed", "file": file.filename, "chunks": chunks}
 
 @app.get("/files/{user_id}")
 async def list_user_files(user_id: str):
