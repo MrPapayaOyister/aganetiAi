@@ -53,10 +53,16 @@
 @utility pt-safe { padding-top: env(safe-area-inset-top); }
 @utility mb-safe { margin-bottom: env(safe-area-inset-bottom); }
 
-/* ── Reset ───────────────────────────────────────── */
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* ── Reset ───────────────────────────────────────────────────
+   NOTE: do NOT reset margin/padding on the universal selector here.
+   This file is unlayered, and in Tailwind v4 unlayered rules override
+   layered utilities — a `* { margin:0 }` would clobber space-y / p-* /
+   m-* everywhere. Tailwind's Preflight (base layer) already resets
+   element margins, so we only keep box-sizing. */
+*, *::before, *::after { box-sizing: border-box; }
 
 html { height: 100%; }
+body { margin: 0; }
 
 body {
   background: var(--bg-base);

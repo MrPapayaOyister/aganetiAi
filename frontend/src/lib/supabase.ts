@@ -50,9 +50,12 @@ export const supabase: SupabaseClient = supabaseConfigured
       auth: {
         persistSession:     true,
         autoRefreshToken:   true,
-        detectSessionInUrl: true,   // handles the OAuth redirect hash automatically
+        detectSessionInUrl: true,   // parses the OAuth redirect on load
         storageKey:         'aria-auth',
-        flowType:           'pkce',
+        // IMPORTANT: implicit (not pkce). The VM is served over plain HTTP, where
+        // crypto.subtle is unavailable, so PKCE's code-exchange silently fails and
+        // the session is never set. Implicit returns the token in the URL hash.
+        flowType:           'implicit',
       },
     })
   : makeStub()

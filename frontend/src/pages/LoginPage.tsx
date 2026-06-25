@@ -68,12 +68,12 @@ export default function LoginPage() {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.75 }}
-          className="glass-strong rounded-2xl p-5 mt-8 w-full space-y-3"
+          className="glass-strong w-full mt-10 p-6 flex flex-col gap-3"
           style={{ borderRadius: 20 }}
         >
           <button
             onClick={signInWithGoogle}
-            className="w-full flex items-center justify-center gap-3 px-5 py-3.5 rounded-xl
+            className="w-full flex items-center justify-center gap-3 px-5 h-12 rounded-xl
                        bg-white text-[#1a1a1a] font-medium text-sm
                        hover:bg-white/90 active:scale-[0.98] transition-all duration-150"
           >
@@ -88,7 +88,7 @@ export default function LoginPage() {
 
           <button
             onClick={() => addToast('Microsoft login coming soon', 'info')}
-            className="w-full flex items-center justify-center gap-3 px-5 py-3.5 rounded-xl
+            className="w-full flex items-center justify-center gap-3 px-5 h-12 rounded-xl
                        bg-white/[0.04] border border-white/[0.1] text-[#E2E8F0] font-medium text-sm
                        hover:bg-white/[0.08] active:scale-[0.98] transition-all duration-150"
           >
