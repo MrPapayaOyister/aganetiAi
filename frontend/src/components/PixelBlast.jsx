@@ -380,7 +380,10 @@ const PixelBlast = forwardRef(function PixelBlast(props, ref) {
       })
       renderer.domElement.style.width = '100%'
       renderer.domElement.style.height = '100%'
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
+      // Mobile (<768px) drops DPR to 1.0 — halves fragment-shader load.
+      const isMobile = typeof window !== 'undefined' && window.innerWidth < 768
+      const dprCap = isMobile ? 1.0 : 2.0
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, dprCap))
       container.appendChild(renderer.domElement)
       if (transparent) renderer.setClearAlpha(0)
       else renderer.setClearColor(0x000000, 1)

@@ -7,7 +7,7 @@ import {
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { OrbAnimation, type OrbMode } from '../components/OrbAnimation'
-import { MessageBubble } from '../components/MessageBubble'
+import { ConversationStream, type ChatMessage } from '../components/ConversationStream'
 import { VoiceButton } from '../components/VoiceButton'
 import { ConversationMenu } from '../components/ConversationMenu'
 import { useConversations } from '../hooks/useConversations'
@@ -21,7 +21,6 @@ import { useAmbient } from '../contexts/AmbientContext'
 import { useAgentField, type AgentFieldMode } from '../contexts/AgentFieldContext'
 import { usePrefs } from '../contexts/PrefsContext'
 import axios from 'axios'
-import type { ChatMessage } from '../components/MessageBubble'
 
 const FALLBACK_SUGGESTIONS = [
   "What's on my agenda today?",
@@ -118,27 +117,37 @@ export default function AssistantPage() {
     const amp = orbMode === 'thinking' ? 0.8 : orbMode === 'speaking' ? 0.7
       : orbMode === 'listening' ? 0.6 : 0
     setAmbient(orbMode === 'error' ? 'idle' : orbMode, amp)
-    // PixelBlast field — same discrete mode, no per-frame churn.
     agentField.setMode(orbMode as AgentFieldMode, amp)
   }, [orbMode, setAmbient, agentField])
 
-  // Stream the live voice amplitude into the PixelBlast field for speaking/listening.
-  // We sample at ~10fps and only update when delta > 0.05 to avoid re-renders.
+  // RAF: pipe live voice amplitude into the field's ref (zero React re-renders).
   useEffect(() => {
-    if (orbMode !== 'speaking' && orbMode !== 'listening') return
-    let last = 0
-    const id = setInterval(() => {
-      const a = voice.amplitude ?? 0
-      if (Math.abs(a - last) > 0.05) { last = a; agentField.setAmplitude(a) }
-    }, 100)
-    return () => clearInterval(id)
-  }, [orbMode, voice, agentField])
+    let raf = 0
+    const tick = () => {
+      raf = requestAnimationFrame(tick)
+      agentField.setAmplitude(voice.amplitude ?? 0)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [voice, agentField])
 
   // Reset both fields to idle when leaving the page
   useEffect(() => () => {
     setAmbient('idle', 0)
     agentField.setMode('idle', 0)
   }, [setAmbient, agentField])
+
+  // Live chat: richer particles — emit ambient ripples at random points
+  // every ~900ms so the field feels alive while waiting for speech.
+  useEffect(() => {
+    if (!live.active) return
+    const id = setInterval(() => {
+      const nx = 0.25 + Math.random() * 0.5
+      const ny = 0.35 + Math.random() * 0.4
+      agentField.pulse(nx, ny, 0.9)
+    }, 900)
+    return () => clearInterval(id)
+  }, [live.active, agentField])
 
   // Load the active conversation's messages on switch: localStorage first,
   // backend /chat/history as a fallback.
@@ -210,8 +219,100 @@ export default function AssistantPage() {
     return () => window.visualViewport!.removeEventListener('resize', handler)
   }, [])
 
+  // Pulse-target lookup → find a DOM anchor for per-tool ripples (e.g. inbox icon).
+  const pulseAt = useCallback((selector: string | null, fallback: [number, number], intensity = 1.4) => {
+    if (selector) {
+      const el = document.querySelector(selector) as HTMLElement | null
+      if (el) {
+        const r = el.getBoundingClientRect()
+        const nx = (r.left + r.width / 2) / window.innerWidth
+        const ny = (r.top + r.height / 2) / window.innerHeight
+        agentField.pulse(nx, ny, intensity)
+        return
+      }
+    }
+    agentField.pulse(fallback[0], fallback[1], intensity)
+  }, [agentField])
+
+  // Per-tool ripple coordinate map (anchor → fallback nx,ny).
+  const toolPulse = useCallback((action: string) => {
+    switch (action) {
+      case 'reminder_set':
+        // Toast region (top-right)
+        pulseAt(null, [0.92, 0.10], 1.7); break
+      case 'email_drafted':
+      case 'email_sent':
+        // Drafts/Inbox icons in the sidebar
+        pulseAt('[data-pulse-target="/drafts"], [data-pulse-target="/inbox"]', [0.04, 0.45], 1.7); break
+      case 'event_created':
+        // Toward analytics/agenda
+        pulseAt('[data-pulse-target="/analytics"]', [0.04, 0.30], 1.6); break
+      case 'task_created':
+      case 'task_updated':
+        pulseAt(null, [0.5, 0.55], 1.5); break
+      case 'memory_saved':
+        pulseAt(null, [0.20, 0.85], 1.4); break
+      default:
+        pulseAt(null, [0.5, 0.55], 1.4)
+    }
+  }, [pulseAt])
+
+  // Sentence-streaming TTS queue. Speaks each sentence as soon as it arrives
+  // — text and voice come together, with no waiting for the full reply.
+  const ttsQueueRef = useRef<string[]>([])
+  const ttsActiveRef = useRef(false)
+  const ttsBufferRef = useRef('')
+
+  const drainTtsQueue = useCallback(async () => {
+    if (ttsActiveRef.current) return
+    ttsActiveRef.current = true
+    try {
+      while (ttsQueueRef.current.length) {
+        const next = ttsQueueRef.current.shift()!
+        await voice.speak(next)
+      }
+    } finally { ttsActiveRef.current = false }
+  }, [voice])
+
+  const flushTtsSentences = useCallback((force = false) => {
+    const buf = ttsBufferRef.current
+    if (!buf) return
+    if (force) {
+      const clean = buf.replace(/[*_`#>[\]()]/g, '').trim()
+      if (clean) { ttsQueueRef.current.push(clean); drainTtsQueue() }
+      ttsBufferRef.current = ''
+      return
+    }
+    // Split on sentence boundaries (., !, ?, newline)
+    const parts: string[] = []
+    let rest = buf
+    const re = /[^.!?\n]+[.!?\n]+/g
+    let m: RegExpExecArray | null
+    let lastIdx = 0
+    while ((m = re.exec(buf)) !== null) {
+      parts.push(m[0])
+      lastIdx = re.lastIndex
+    }
+    rest = buf.slice(lastIdx)
+    ttsBufferRef.current = rest
+    for (const p of parts) {
+      const clean = p.replace(/[*_`#>[\]()]/g, '').trim()
+      if (clean) ttsQueueRef.current.push(clean)
+    }
+    if (ttsQueueRef.current.length) drainTtsQueue()
+  }, [drainTtsQueue])
+
+  const stopAllVoice = useCallback(() => {
+    ttsQueueRef.current = []
+    ttsBufferRef.current = ''
+    voice.stopSpeaking()
+  }, [voice])
+
   const handleSend = useCallback(async (text: string) => {
-    if (!text.trim() || streaming) return
+    if (!text.trim()) return
+    // Allow interrupt while streaming or speaking — abort prior turn first.
+    if (streaming) abort()
+    stopAllVoice()
 
     const userMsg: ChatMessage = { id: generateId(), role: 'user', content: text }
     const assistantId = generateId()
@@ -223,16 +324,21 @@ export default function AssistantPage() {
     convos.touch(sessionId, text)
     sound.playSend()
 
+    const speakLive = ttsEnabled || liveRef.current
+
     await stream(text, sessionId, userId, {
       onToken: (t) => {
-        setThinkingMsg(null)        // clear thinking banner on first token
-        // throttled "typing" tick
+        setThinkingMsg(null)
         const now = performance.now()
         if (now - lastTickRef.current > 110) { lastTickRef.current = now; sound.playTick() }
         fullReplyRef.current += t
         setMessages(prev => prev.map(m =>
           m.id === assistantId ? { ...m, content: m.content + t } : m
         ))
+        if (speakLive) {
+          ttsBufferRef.current += t
+          flushTtsSentences(false)
+        }
       },
       onThinking: (msg) => setThinkingMsg(msg),
       onAction: (action, payload) => {
@@ -243,10 +349,8 @@ export default function AssistantPage() {
             return prev
           return [...prev, { id: generateId(), action, payload, messageId: assistantId }]
         })
-        // Field reaction: brief 'acting' mode + ripple bloom near the chat area.
         agentField.setMode('acting', 0.9)
-        agentField.pulse(0.5, 0.62, 1.6)
-        setTimeout(() => agentField.pulse(0.42, 0.58, 1.0), 140)
+        toolPulse(action)
       },
       onSources: (srcs) => {
         if (srcs.length) setSourcesByMsg(prev => ({ ...prev, [assistantId]: srcs }))
@@ -264,17 +368,16 @@ export default function AssistantPage() {
         setMessages(prev => prev.map(m =>
           m.id === assistantId ? { ...m, streaming: false } : m
         ))
-        // Completion bloom — one elegant outward confirmation wave.
         agentField.setMode('success', 0.6)
         agentField.pulse(0.5, 0.5, 1.6)
         setTimeout(() => agentField.setMode('idle', 0), 1200)
-        if ((ttsEnabled || liveRef.current) && fullReplyRef.current) {
-          const plain = fullReplyRef.current.replace(/[*_`#>[\]()]/g, '').substring(0, 600)
-          await voice.speak(plain)
-        }
+        if (speakLive) flushTtsSentences(true)
       },
     })
-  }, [streaming, stream, sessionId, userId, ttsEnabled, voice, addToast, sound, agentField])
+  }, [
+    streaming, abort, stopAllVoice, stream, sessionId, userId, ttsEnabled,
+    addToast, sound, agentField, toolPulse, flushTtsSentences, convos,
+  ])
 
   // Mic needs a secure context (HTTPS/localhost). On plain HTTP the browser
   // blocks getUserMedia + Web Speech, so guide the user instead of a dead button.
@@ -412,12 +515,12 @@ export default function AssistantPage() {
             {ttsEnabled ? <Volume2 size={15} /> : <VolumeX size={15} />}
           </motion.button>
 
-          {streaming && (
+          {(streaming || voice.isSpeaking) && (
             <motion.button
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               whileTap={{ scale: 0.88 }}
-              onClick={abort}
+              onClick={() => { abort(); stopAllVoice() }}
               className="w-8 h-8 rounded-lg flex items-center justify-center
                          text-[#FF4466] hover:bg-[#FF4466]/10 transition-colors"
               title="Stop"
@@ -495,25 +598,22 @@ export default function AssistantPage() {
               animate={{ opacity: 1 }}
               className="h-full overflow-y-auto"
             >
-              <div className="max-w-3xl mx-auto w-full px-2 sm:px-4 py-5">
-                {messages.map(msg => (
-                  <div key={msg.id}>
-                    <MessageBubble
-                      message={msg}
-                      streaming={msg.streaming && streaming}
-                      speaking={voice.isSpeaking && msg.role === 'assistant' && msg.id === lastAssistantId}
-                      sources={sourcesByMsg[msg.id]}
-                      onPlay={(t) => voice.speak(t.replace(/[*_`#>[\]()]/g, '').slice(0, 600))}
-                      onRegenerate={msg.role === 'assistant' ? () => regenerate(msg.id) : undefined}
-                    />
-                    {/* Action cards belonging to this message */}
-                    {actionCards.filter(c => c.messageId === msg.id).map(card => (
+              <ConversationStream
+                messages={messages}
+                streaming={streaming}
+                speakingMessageId={voice.isSpeaking ? lastAssistantId : null}
+                sourcesByMsg={sourcesByMsg}
+                onPlay={(t) => voice.speak(t.replace(/[*_`#>[\]()]/g, '').slice(0, 600))}
+                onRegenerate={(id) => regenerate(id)}
+                renderActionCards={(messageId) => (
+                  <>
+                    {actionCards.filter(c => c.messageId === messageId).map(card => (
                       <motion.div
                         key={card.id}
                         initial={{ opacity: 0, y: 8, scale: 0.97 }}
                         animate={{ opacity: 1, y: 0, scale: 1 }}
                         transition={{ type: 'spring', stiffness: 300, damping: 24 }}
-                        className="ml-14 mt-1 mb-2 flex items-center gap-2 px-3 py-2 rounded-xl
+                        className="flex items-center gap-2 px-3 py-2 rounded-xl
                                    bg-[rgba(0,212,255,0.06)] border border-[rgba(0,212,255,0.15)]
                                    text-xs text-[#94A3B8] w-fit max-w-sm"
                       >
@@ -521,10 +621,10 @@ export default function AssistantPage() {
                         <ActionLabel action={card.action} payload={card.payload} />
                       </motion.div>
                     ))}
-                  </div>
-                ))}
-                <div ref={messagesEndRef} className="h-2" />
-              </div>
+                  </>
+                )}
+              />
+              <div ref={messagesEndRef} className="h-2" />
             </motion.div>
           )}
         </AnimatePresence>
@@ -645,7 +745,7 @@ export default function AssistantPage() {
             whileTap={{ scale: 0.88 }}
             data-mute-click
             onClick={() => handleSend(input)}
-            disabled={!input.trim() || streaming}
+            disabled={!input.trim()}
             className="shrink-0 size-10 rounded-xl flex items-center justify-center
                        bg-[#00D4FF]/15 border border-[#00D4FF]/30 text-[#00D4FF]
                        hover:bg-[#00D4FF]/25 disabled:opacity-30 disabled:cursor-not-allowed

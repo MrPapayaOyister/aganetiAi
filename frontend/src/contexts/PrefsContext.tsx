@@ -1,18 +1,25 @@
 import { createContext, useContext, useState, type ReactNode } from 'react'
 
+export type BgIntensity = 'off' | 'calm' | 'standard' | 'cinematic'
+
 export interface Prefs {
   agentName: string
   displayName: string
   onboardingDone: boolean
+  bgIntensity: BgIntensity
 }
 
-const DEFAULT_PREFS: Prefs = { agentName: 'Aria', displayName: '', onboardingDone: false }
+const DEFAULT_PREFS: Prefs = {
+  agentName: 'Aria',
+  displayName: '',
+  onboardingDone: false,
+  bgIntensity: 'standard',
+}
 
 function loadPrefs(): Prefs {
   try {
     const stored = localStorage.getItem('aria_prefs')
     if (stored) return { ...DEFAULT_PREFS, ...JSON.parse(stored) }
-    // Existing user (had aria_user_id before this deploy) → skip first-run onboarding.
     if (localStorage.getItem('aria_user_id')) {
       return { ...DEFAULT_PREFS, onboardingDone: true }
     }

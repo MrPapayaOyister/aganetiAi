@@ -217,6 +217,31 @@ function AccountSection() {
 
   return (
     <div className="space-y-4">
+      {/* Background intensity */}
+      <div className="glass rounded-2xl p-5 space-y-3">
+        <p className="text-xs font-semibold text-[#4A6080] uppercase tracking-wide">Background intensity</p>
+        <div className="grid grid-cols-4 gap-2">
+          {(['off', 'calm', 'standard', 'cinematic'] as const).map(level => {
+            const active = prefs.bgIntensity === level
+            return (
+              <button
+                key={level}
+                onClick={() => setPrefs({ bgIntensity: level })}
+                className={`px-3 py-2 rounded-xl text-xs font-medium border transition-all capitalize
+                  ${active
+                    ? 'bg-[#00D4FF]/15 border-[#00D4FF]/40 text-[#00D4FF]'
+                    : 'bg-white/[0.02] border-white/[0.06] text-[#9AA7BD] hover:border-white/[0.12] hover:text-[#E2E8F0]'}`}
+              >
+                {level}
+              </button>
+            )
+          })}
+        </div>
+        <p className="text-xs text-[#4A6080]">
+          Off saves battery · Cinematic enables liquid distortion + brighter colors.
+        </p>
+      </div>
+
       {/* Personalisation */}
       <div className="glass rounded-2xl p-5 space-y-3">
         <p className="text-xs font-semibold text-[#4A6080] uppercase tracking-wide">Personalisation</p>

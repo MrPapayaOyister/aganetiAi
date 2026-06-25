@@ -57,8 +57,7 @@ export default function Sidebar() {
   }, [inboxCount, addToast])
 
   return (
-    <aside className="w-20 h-screen flex flex-col items-center pt-6 pb-4 gap-1
-                      bg-[#232838] border-r border-[#1E3A5F]/40">
+    <aside className="w-20 h-screen flex flex-col items-center pt-6 pb-4 gap-1 glass-rail">
       {/* Logo / orb */}
       <div className="mb-5">
         <motion.div
@@ -78,12 +77,13 @@ export default function Sidebar() {
             key={to}
             to={to}
             end={to === '/'}
+            data-pulse-target={to}
             className={({ isActive }) =>
               `relative flex flex-col items-center gap-1 w-14 py-2.5 rounded-xl
-               transition-all duration-200
+               border border-transparent transition-all duration-200
                ${isActive
-                 ? 'bg-[#00D4FF]/10 text-[#00D4FF]'
-                 : 'text-[#4A6080] hover:text-[#94A3B8] hover:bg-white/5'}`
+                 ? 'bg-[#00D4FF]/10 text-[#00D4FF] border-[#00D4FF]/25'
+                 : 'text-[#4A6080] hover:text-[#E2E8F0] hover:bg-white/[0.04] hover:border-white/10'}`
             }
           >
             {({ isActive }) => (
