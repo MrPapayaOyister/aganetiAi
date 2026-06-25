@@ -81,7 +81,7 @@ services:
     restart: unless-stopped
 
   piper_tts:
-    image: rhasspy/piper:latest
+    image: ghcr.io/rhasspy/piper:latest
     container_name: piper_tts
     ports: ["5002:5002"]
     volumes: ["./tts_models:/models"]

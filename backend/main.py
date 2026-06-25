@@ -16,13 +16,6 @@ import json
 import httpx
 import time
 from integrations.model_router import route_model
-from fastapi.middleware.cors import CORSMiddleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://34.158.137.18", "http://localhost:5173"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 from integrations.m365_mail import (
     fetch_unread_emails,
     send_email,
@@ -44,6 +37,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from memory.store import load_history, save_message, load_session_state, save_session_state, append_message
 from config.settings import LLM_BASE_URL, QDRANT_URL, EMAIL_ACCOUNT, USER_1_M365_EMAIL, USER_2_M365_EMAIL
 from config.settings import LLM_SMART_URL, NATIVE_TOOLS, PASSIVE_TASK_DETECT
+from config.settings import TTS_URL, STT_URL
 from integrations.telegram_bot import start_bot, bot
 from aiogram.exceptions import TelegramBadRequest
 from config.settings import TELEGRAM_CHAT_ID
@@ -100,50 +94,6 @@ async def send_due_reminders(user_id: str):
     except Exception as e:
         print(f"[Reminders] Error for {user_id}: {e}")
 
-# TTS proxy
-@app.post("/tts")
-async def tts_endpoint(payload: dict):
-    text = payload.get("text", "")
-    async with httpx.AsyncClient(timeout=15.0) as c:
-        r = await c.post(f"{TTS_URL}/api/tts", json={"text": text})
-    return StreamingResponse(iter([r.content]), media_type="audio/wav")
-
-# STT proxy
-from fastapi import UploadFile, File
-@app.post("/stt")
-async def stt_endpoint(audio: UploadFile = File(...)):
-    async with httpx.AsyncClient(timeout=30.0) as c:
-        r = await c.post(f"{STT_URL}/asr",
-            files={"audio_file": (audio.filename, await audio.read(), audio.content_type)},
-            params={"encode": "true", "task": "transcribe", "language": "en", "output": "json"}
-        )
-    return r.json()
-
-# File ingest
-@app.post("/ingest/upload")
-async def ingest_upload(file: UploadFile = File(...), user_id: str = "user_1"):
-    dest = Path(f"data_vault/{user_id}/{file.filename}")
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(await file.read())
-    await asyncio.to_thread(__import__('backend.ingest', fromlist=['ingest_file']).ingest_file, str(dest))
-    return {"status": "indexed", "file": file.filename}
-
-
-@app.get("/files/{user_id}")
-async def list_user_files(user_id: str):
-    """List files that have been ingested for a user."""
-    vault = Path(f"data_vault/{user_id}")
-    if not vault.exists():
-        return {"files": []}
-    files = []
-    for p in sorted(vault.iterdir()):
-        if p.is_file():
-            files.append({
-                "name": p.name,
-                "size": p.stat().st_size,
-                "modified": p.stat().st_mtime,
-            })
-    return {"files": files}
 
     
 
@@ -742,6 +692,53 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── TTS proxy ────────────────────────────────────────────────
+@app.post("/tts")
+async def tts_endpoint(payload: dict):
+    text = payload.get("text", "")
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as c:
+            r = await c.post(f"{TTS_URL}/api/tts", json={"text": text})
+        return StreamingResponse(iter([r.content]), media_type="audio/wav")
+    except Exception:
+        from fastapi import HTTPException
+        raise HTTPException(503, "TTS service unavailable")
+
+# ── STT proxy ────────────────────────────────────────────────
+@app.post("/stt")
+async def stt_endpoint(audio: UploadFile = File(...)):
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as c:
+            r = await c.post(
+                f"{STT_URL}/asr",
+                files={"audio_file": (audio.filename, await audio.read(), audio.content_type)},
+                params={"encode": "true", "task": "transcribe", "language": "en", "output": "json"},
+            )
+        return r.json()
+    except Exception:
+        from fastapi import HTTPException
+        raise HTTPException(503, "STT service unavailable")
+
+# ── File ingest ───────────────────────────────────────────────
+@app.post("/ingest/upload")
+async def ingest_upload(file: UploadFile = File(...), user_id: str = "user_1"):
+    dest = Path(f"data_vault/{user_id}/{file.filename}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(await file.read())
+    await asyncio.to_thread(__import__('backend.ingest', fromlist=['ingest_file']).ingest_file, str(dest))
+    return {"status": "indexed", "file": file.filename}
+
+@app.get("/files/{user_id}")
+async def list_user_files(user_id: str):
+    vault = Path(f"data_vault/{user_id}")
+    if not vault.exists():
+        return {"files": []}
+    files = [
+        {"name": p.name, "size": p.stat().st_size, "modified": p.stat().st_mtime}
+        for p in sorted(vault.iterdir()) if p.is_file()
+    ]
+    return {"files": files}
 
 # ==========================================
 # 1. Initialize Clients & Credentials
