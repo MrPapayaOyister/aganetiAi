@@ -340,6 +340,15 @@ def extract_text_tool_calls(content: str) -> list:
     instead of structured tool_calls. With the full production prompt this build often
     emits `<tool_call>{...}</tool_call>` or a bare `{"name":..,"arguments":{..}}` in the
     content, which would otherwise be shown verbatim and the action silently skipped.
+
+    Safety rules applied to minimise false positives:
+    - <tool_call>…</tool_call> tagged content is preferred and processed first.
+    - Bare JSON is only matched as a fallback when NO tagged calls were found.
+    - In both paths, the JSON object must have BOTH a "name" key (in our known tool
+      set) AND an "arguments" key that is a dict/object — bare `{"name":"…"}` echoes
+      from the model's summary text are rejected.
+    - Callers (call_llm_tools) further gate this with allow_text_recovery=False in
+      follow-up rounds after an action tool has already executed.
     """
     if not content:
         return []
@@ -354,12 +363,15 @@ def extract_text_tool_calls(content: str) -> list:
         candidates = _balanced_json_objects(content)
     calls = []
     for obj in candidates:
-        if isinstance(obj, dict) and obj.get("name") and obj["name"] in (ACTION_TOOLS | READ_TOOLS):
-            args = obj.get("arguments", {})
-            if isinstance(args, dict):
-                args = json.dumps(args)
-            calls.append({"id": f"text_{len(calls)}",
-                          "function": {"name": obj["name"], "arguments": args}})
+        if not (isinstance(obj, dict) and obj.get("name") and
+                obj["name"] in (ACTION_TOOLS | READ_TOOLS)):
+            continue
+        # Require "arguments" to be a dict — bare {"name": "…"} echoes are rejected.
+        args = obj.get("arguments")
+        if not isinstance(args, dict):
+            continue
+        calls.append({"id": f"text_{len(calls)}",
+                      "function": {"name": obj["name"], "arguments": json.dumps(args)}})
     return calls
 
 

@@ -12,6 +12,10 @@ function loadPrefs(): Prefs {
   try {
     const stored = localStorage.getItem('aria_prefs')
     if (stored) return { ...DEFAULT_PREFS, ...JSON.parse(stored) }
+    // Existing user (had aria_user_id before this deploy) → skip first-run onboarding.
+    if (localStorage.getItem('aria_user_id')) {
+      return { ...DEFAULT_PREFS, onboardingDone: true }
+    }
   } catch { /* ignore */ }
   return DEFAULT_PREFS
 }

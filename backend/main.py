@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
 import json
+import hashlib
 import httpx
 import time
 from integrations.model_router import route_model
@@ -2495,6 +2496,19 @@ async def schedule_meeting_endpoint(payload: dict):
         raise HTTPException(status_code=502, detail=f"Graph API error: {e}")
 
 
+# Idempotency store for /set_reminder — maps content-hash → (schedule_id, expires_at).
+# Prevents duplicate schedules when the same reminder fires via text-recovery or
+# network retry within a short window.  Max 500 entries; evicted lazily.
+_reminder_idem: dict[str, tuple[str, float]] = {}
+_REMINDER_IDEM_TTL = 120.0   # seconds
+_REMINDER_IDEM_MAX = 500
+
+
+def _reminder_idem_key(user_id: str, message: str, remind_at: str) -> str:
+    raw = f"{user_id}||{message.lower().strip()}||{remind_at.lower().strip()}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:32]
+
+
 @app.post("/set_reminder")
 async def set_reminder_endpoint(payload: dict):
     """Create a one-shot Telegram reminder at a specific future time."""
@@ -2507,6 +2521,22 @@ async def set_reminder_endpoint(payload: dict):
 
     if not message or not remind_at:
         raise HTTPException(status_code=422, detail="'message' and 'remind_at' are required")
+
+    # Idempotency check: same (user, message, remind_at) within TTL → return cached result.
+    idem_key = _reminder_idem_key(user_id, message, remind_at)
+    now = time.monotonic()
+    if idem_key in _reminder_idem:
+        sched_id, expires = _reminder_idem[idem_key]
+        if now < expires:
+            log.info("set_reminder: idempotent hit for key=%s sched_id=%s (user=%s)",
+                     idem_key[:8], sched_id, user_id)
+            return {"status": "set", "remind_at": remind_at, "message": message,
+                    "id": sched_id, "idempotent": True}
+    # Evict stale entries lazily to keep the dict bounded.
+    if len(_reminder_idem) >= _REMINDER_IDEM_MAX:
+        stale = [k for k, (_, exp) in _reminder_idem.items() if exp < now]
+        for k in stale:
+            del _reminder_idem[k]
 
     # Parse remind_at → local ISO datetime string (Asia/Dubai)
     try:
@@ -2530,6 +2560,9 @@ async def set_reminder_endpoint(payload: dict):
     })
     # Register immediately with APScheduler
     _register_apscheduler_job(schedule, user_id)
+
+    # Cache the result so duplicate requests within TTL return without a second schedule.
+    _reminder_idem[idem_key] = (schedule["id"], now + _REMINDER_IDEM_TTL)
 
     return {"status": "set", "remind_at": start_iso, "message": message, "id": schedule["id"]}
 
