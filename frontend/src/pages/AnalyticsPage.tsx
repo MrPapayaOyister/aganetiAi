@@ -6,11 +6,38 @@ import { TaskBoard } from '../components/TaskBoard'
 import { AgendaTimeline } from '../components/AgendaTimeline'
 import { EmailDigestPanel } from '../components/EmailDigestPanel'
 import { getInboxCount, getAgenda } from '../api/client'
+import { DonutChart, BarChart } from '../components/charts/Charts'
 import { useAppContext } from '../App'
 import axios from 'axios'
 
+const PRI_COLORS: Record<string, string> = {
+  urgent: '#FF4466', high: '#FFB800', medium: '#38DBFF', low: '#5C6B85',
+}
+
 export default function AnalyticsPage() {
   const { userId } = useAppContext()
+
+  const { data: summary } = useQuery({
+    queryKey: ['analytics-summary', userId],
+    queryFn: () => axios.get('/api/analytics', { params: { metric: 'summary', user_id: userId } }).then(r => r.data),
+    refetchInterval: 60_000, retry: false,
+  })
+  const { data: contacts } = useQuery({
+    queryKey: ['analytics-contacts', userId],
+    queryFn: () => axios.get('/api/analytics', { params: { metric: 'top_contacts', user_id: userId } }).then(r => r.data),
+    staleTime: 300_000, retry: false,
+  })
+
+  const done = summary?.done ?? 0
+  const pending = summary?.pending ?? 0
+  const byPri: Record<string, number> = summary?.pending_by_priority ?? {}
+  const priBars = ['urgent', 'high', 'medium', 'low']
+    .filter(p => byPri[p])
+    .map(p => ({ label: p, value: byPri[p], color: PRI_COLORS[p] }))
+  const contactBars = (contacts?.top ?? []).slice(0, 5).map((c: { sender: string; count: number }) => ({
+    label: (c.sender || '').split('<')[0].split('@')[0].trim().slice(0, 14) || '—',
+    value: c.count, color: '#7B2FFF',
+  }))
 
   const { data: inboxData } = useQuery({
     queryKey: ['inbox-count', userId],
@@ -60,6 +87,34 @@ export default function AnalyticsPage() {
           <StatCard label="Pending Tasks"   value={pendingTasks}   icon={CheckSquare}   color="#7B2FFF" trend={pendingTasks > 3 ? 'up' : 'flat'} />
           <StatCard label="Meetings Today"  value={todayMeetings}  icon={Calendar}      color="#00FF88" />
           <StatCard label="Agent Messages"  value={agentMessages}  icon={MessageSquare} color="#FFB800" />
+        </motion.div>
+
+        {/* Charts row */}
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.15 }}
+          className="grid grid-cols-1 md:grid-cols-2 gap-4"
+        >
+          <div className="neu rounded-2xl p-5">
+            <h2 className="t-heading mb-4">Task completion</h2>
+            <DonutChart
+              segments={[
+                { label: 'Done', value: done, color: '#00FF88' },
+                { label: 'Pending', value: pending, color: '#38DBFF' },
+              ]}
+              centerValue={`${done + pending ? Math.round((done / (done + pending)) * 100) : 0}%`}
+              centerLabel="complete"
+            />
+          </div>
+          <div className="neu rounded-2xl p-5">
+            <h2 className="t-heading mb-4">Open tasks by priority</h2>
+            <BarChart data={priBars} />
+          </div>
+          <div className="neu rounded-2xl p-5 md:col-span-2">
+            <h2 className="t-heading mb-4">Most-contacted senders</h2>
+            <BarChart data={contactBars} />
+          </div>
         </motion.div>
 
         {/* Two-column layout */}
