@@ -198,6 +198,29 @@ export default function AssistantPage() {
   useEffect(() => { scrollToBottom() }, [messages.length, scrollToBottom])
   useEffect(() => { scrollToBottom() }, [actionCards.length, scrollToBottom])
 
+  // AudioContext pre-warm: unlock on the very first pointer gesture so
+  // the browser's "first unlock" click is swallowed silently long before
+  // any TTS or mic stream attaches.
+  useEffect(() => {
+    let unlocked = false
+    const onceUnlock = () => {
+      if (unlocked) return
+      unlocked = true
+      try { voice.unlock() } catch { /* ignore */ }
+      window.removeEventListener('pointerdown', onceUnlock)
+      window.removeEventListener('touchstart', onceUnlock)
+      window.removeEventListener('keydown', onceUnlock)
+    }
+    window.addEventListener('pointerdown', onceUnlock, { passive: true })
+    window.addEventListener('touchstart', onceUnlock, { passive: true })
+    window.addEventListener('keydown', onceUnlock)
+    return () => {
+      window.removeEventListener('pointerdown', onceUnlock)
+      window.removeEventListener('touchstart', onceUnlock)
+      window.removeEventListener('keydown', onceUnlock)
+    }
+  }, [voice])
+
   // Subtle click cue on any button press (skip elements marked data-mute-click,
   // e.g. Send/chips which play their own richer cue).
   useEffect(() => {
@@ -604,6 +627,7 @@ export default function AssistantPage() {
                 streaming={streaming}
                 speakingMessageId={voice.isSpeaking ? lastAssistantId : null}
                 sourcesByMsg={sourcesByMsg}
+                agentMode={orbMode}
                 onPlay={(t) => voice.speak(t.replace(/[*_`#>[\]()]/g, '').slice(0, 600))}
                 onRegenerate={(id) => regenerate(id)}
                 renderActionCards={(messageId) => (

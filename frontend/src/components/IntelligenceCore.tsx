@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { useAgentField } from '../contexts/AgentFieldContext'
 import { usePrefs } from '../contexts/PrefsContext'
@@ -31,16 +32,40 @@ import AgentPixelField from './AgentPixelField'
  *  Only one WebGL context exists (Layer 2); other layers are pure CSS.
  */
 
-// Mask shape: nucleus OFFSET LEFT of the chat column so the brightest
-// field zone sits in the gap between the sidebar and the conversation
-// lane.  The chat column itself receives only the outer thinning ring,
-// which keeps text readable on top of the field.  Two satellite blobs
-// (lower-right, upper-right) add organic asymmetry.
-const FIELD_MASK = `
-  radial-gradient(ellipse 58% 70% at 30% 48%, #000 8%, rgba(0,0,0,0.86) 28%, rgba(0,0,0,0.40) 58%, rgba(0,0,0,0.10) 82%, transparent 95%),
-  radial-gradient(circle 22% at 78% 65%, rgba(0,0,0,0.36), transparent 70%),
-  radial-gradient(circle 18% at 82% 22%, rgba(0,0,0,0.22), transparent 72%)
-`.trim()
+/**
+ * Nucleus X-anchor (% from left):
+ *  • Desktop (≥768px) → 30%  : offsets LEFT of the chat column, between
+ *                              the 80px sidebar and the centered lane.
+ *  • Mobile  (<768px)  → 50%  : NO sidebar, so the nucleus belongs in the
+ *                              true viewport center.
+ * Y-anchor stays at 48% in both breakpoints.
+ */
+function useNucleusX(): number {
+  const [x, setX] = useState<number>(() =>
+    typeof window !== 'undefined' && window.matchMedia('(min-width: 768px)').matches ? 30 : 50
+  )
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return
+    const mq = window.matchMedia('(min-width: 768px)')
+    const update = () => setX(mq.matches ? 30 : 50)
+    update()
+    mq.addEventListener?.('change', update)
+    return () => mq.removeEventListener?.('change', update)
+  }, [])
+  return x
+}
+
+function buildFieldMask(nx: number): string {
+  // Right-side satellite blob positions also shift slightly so the
+  // composition stays balanced when the nucleus moves to center.
+  const sat1X = nx === 30 ? 78 : 82   // mobile: push slightly further right
+  const sat2X = nx === 30 ? 82 : 86
+  return `
+    radial-gradient(ellipse 58% 70% at ${nx}% 48%, #000 8%, rgba(0,0,0,0.86) 28%, rgba(0,0,0,0.40) 58%, rgba(0,0,0,0.10) 82%, transparent 95%),
+    radial-gradient(circle 22% at ${sat1X}% 65%, rgba(0,0,0,0.36), transparent 70%),
+    radial-gradient(circle 18% at ${sat2X}% 22%, rgba(0,0,0,0.22), transparent 72%)
+  `.trim()
+}
 
 // Tint of the deep core glow shifts with mode — pure CSS, no canvas churn.
 const CORE_TINTS: Record<string, { inner: string; outer: string; alpha: number }> = {
@@ -56,6 +81,8 @@ const CORE_TINTS: Record<string, { inner: string; outer: string; alpha: number }
 export default function IntelligenceCore() {
   const { mode } = useAgentField()
   const { prefs } = usePrefs()
+  const nucleusX = useNucleusX()
+  const fieldMask = buildFieldMask(nucleusX)
   const isOff = prefs.bgIntensity === 'off'
   const tint = CORE_TINTS[mode] ?? CORE_TINTS.idle
   const intensityMul =
@@ -75,8 +102,8 @@ export default function IntelligenceCore() {
           className="absolute inset-0"
           animate={{
             background: `
-              radial-gradient(ellipse 55% 60% at 30% 48%, ${tint.inner}${tintAlpha}), transparent 60%),
-              radial-gradient(ellipse 80% 80% at 30% 48%, ${tint.outer}${(tintAlpha * 0.5).toFixed(3)}), transparent 78%)
+              radial-gradient(ellipse 55% 60% at ${nucleusX}% 48%, ${tint.inner}${tintAlpha}), transparent 60%),
+              radial-gradient(ellipse 80% 80% at ${nucleusX}% 48%, ${tint.outer}${(tintAlpha * 0.5).toFixed(3)}), transparent 78%)
             `,
           }}
           transition={{ duration: 1.2, ease: 'easeOut' }}
@@ -90,8 +117,8 @@ export default function IntelligenceCore() {
           aria-hidden
           className="absolute inset-0"
           style={{
-            maskImage: FIELD_MASK,
-            WebkitMaskImage: FIELD_MASK,
+            maskImage: fieldMask,
+            WebkitMaskImage: fieldMask,
             maskComposite: 'add',
             WebkitMaskComposite: 'source-over',
           }}
@@ -106,7 +133,7 @@ export default function IntelligenceCore() {
           aria-hidden
           className="absolute inset-0"
           animate={{
-            background: `radial-gradient(ellipse 32% 36% at 30% 48%,
+            background: `radial-gradient(ellipse 32% 36% at ${nucleusX}% 48%,
                           transparent 58%,
                           ${tint.inner}${(tintAlpha * 0.6).toFixed(3)}) 72%,
                           transparent 88%)`,

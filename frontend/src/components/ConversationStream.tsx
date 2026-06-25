@@ -17,6 +17,8 @@ interface ConversationStreamProps {
   renderActionCards?: (messageId: string) => React.ReactNode
   onPlay?: (text: string) => void
   onRegenerate?: (id: string) => void
+  /** Current agent mode — colors the assistant accent rail */
+  agentMode?: string
 }
 
 /**
@@ -37,10 +39,10 @@ interface ConversationStreamProps {
  */
 function ConversationStreamBase({
   messages, streaming, speakingMessageId, sourcesByMsg = {},
-  renderActionCards, onPlay, onRegenerate,
+  renderActionCards, onPlay, onRegenerate, agentMode = 'idle',
 }: ConversationStreamProps) {
   return (
-    <div className="conv-surface conv-lane max-w-3xl mx-auto w-full px-4 sm:px-7 py-7 space-y-6">
+    <div className="conv-surface conv-lane max-w-3xl mx-auto w-full px-4 sm:px-7 py-7 space-y-5">
       <AnimatePresence initial={false}>
         {messages.map((m, i) => (
           <ConvTurn
@@ -53,6 +55,7 @@ function ConversationStreamBase({
             onPlay={onPlay}
             onRegenerate={onRegenerate}
             isFirst={i === 0}
+            agentMode={agentMode}
           />
         ))}
       </AnimatePresence>
@@ -61,7 +64,7 @@ function ConversationStreamBase({
 }
 
 function ConvTurn({
-  msg, streaming, speaking, sources, actionCards, onPlay, onRegenerate, isFirst,
+  msg, streaming, speaking, sources, actionCards, onPlay, onRegenerate, isFirst, agentMode,
 }: {
   msg: ChatMessage
   streaming: boolean
@@ -71,6 +74,7 @@ function ConvTurn({
   onPlay?: (t: string) => void
   onRegenerate?: (id: string) => void
   isFirst: boolean
+  agentMode: string
 }) {
   const [copied, setCopied] = useState(false)
   const copy = () => {
@@ -81,45 +85,55 @@ function ConvTurn({
 
   const isUser = msg.role === 'user'
 
+  // ── USER: right-aligned dark blue pill ────────────────────────
+  if (isUser) {
+    return (
+      <motion.section
+        initial={{ opacity: 0, y: 6 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.20, ease: 'easeOut' }}
+        className="flex flex-col items-end"
+      >
+        <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#5C6B85] mb-1.5
+                         opacity-45">
+          You
+        </span>
+        <div className="user-pill whitespace-pre-wrap">{msg.content}</div>
+      </motion.section>
+    )
+  }
+
+  // ── ASSISTANT: full-width frosted slab with cyan rail ──────────
   return (
     <motion.section
-      initial={{ opacity: 0, y: 16 }}
+      initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0 }}
-      transition={{ type: 'spring', stiffness: 280, damping: 26 }}
+      transition={{ duration: 0.20, ease: 'easeOut' }}
       className="group"
     >
-      {/* Hairline separator between turns (except the very first) */}
+      {/* Hairline separator above (except the very first message) */}
       {!isFirst && (
-        <div className="h-px mb-6 bg-gradient-to-r from-transparent via-white/[0.07] to-transparent" />
+        <div className="h-px mb-5 bg-gradient-to-r from-transparent via-white/[0.06] to-transparent" />
       )}
 
-      {/* Speaker label — small caps, tinted */}
+      {/* Assistant label — small caps, tinted by mode */}
       <div className="flex items-center gap-2 mb-1.5">
-        {isUser ? (
-          <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#5C6B85]">
-            You
-          </span>
-        ) : (
-          <span
-            className="text-[10px] font-semibold uppercase tracking-[0.18em]"
-            style={{
-              background: 'linear-gradient(90deg, #00D4FF, #7B2FFF)',
-              WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent',
-            }}
-          >
-            Assistant {speaking ? '·  speaking' : ''}
-          </span>
-        )}
+        <span
+          className="text-[10px] font-semibold uppercase tracking-[0.18em] opacity-60"
+          style={{
+            background: 'linear-gradient(90deg, #00D4FF, #7B2FFF)',
+            WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent',
+          }}
+        >
+          Assistant{speaking ? '  ·  speaking' : ''}
+        </span>
       </div>
 
-      {/* Content — no bubble, just flowing prose */}
-      {isUser ? (
-        <p className="text-[15px] leading-relaxed text-[#C8D3E5] whitespace-pre-wrap">
-          {msg.content}
-        </p>
-      ) : (
-        <div className="prose-chat text-[15px] leading-[1.7] text-[#E2E8F0]">
+      {/* Frosted slab */}
+      <div className="assistant-slab" data-mode={speaking ? 'speaking' : agentMode}>
+        <div className="prose-chat text-[15px] leading-[1.7] text-[#E6EBF5]">
           {msg.content ? (
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
           ) : streaming ? (
@@ -143,14 +157,14 @@ function ConvTurn({
             </div>
           )}
         </div>
-      )}
 
-      {/* Action cards (drafted email, set reminder, etc.) */}
-      {actionCards && <div className="mt-3 space-y-1.5">{actionCards}</div>}
+        {/* Action cards live INSIDE the slab so they group visually with the answer */}
+        {actionCards && <div className="mt-3 space-y-1.5">{actionCards}</div>}
+      </div>
 
-      {/* Hover actions — assistant only, after stream completes */}
-      {!isUser && !streaming && msg.content && (
-        <div className="flex items-center gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+      {/* Hover actions */}
+      {!streaming && msg.content && (
+        <div className="flex items-center gap-1 mt-2 ml-1 opacity-0 group-hover:opacity-100 transition-opacity">
           <ActionBtn title={copied ? 'Copied' : 'Copy'} onClick={copy}>
             {copied ? <Check size={13} className="text-[#00FF88]" /> : <Copy size={13} />}
           </ActionBtn>

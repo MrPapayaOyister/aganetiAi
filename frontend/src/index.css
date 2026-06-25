@@ -168,10 +168,59 @@ body {
 }
 @media (max-width: 768px) {
   .conv-surface {
-    backdrop-filter: blur(10px) saturate(130%);
-    -webkit-backdrop-filter: blur(10px) saturate(130%);
+    /* Mobile needs MORE blur, not less — text reads over a brighter
+       full-bleed field with no sidebar gap to dim the column. */
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+    background: linear-gradient(
+      to bottom,
+      rgba(8, 11, 20, 0.18) 0%,
+      rgba(8, 11, 20, 0.55) 8%,
+      rgba(8, 11, 20, 0.58) 92%,
+      rgba(8, 11, 20, 0.18) 100%
+    );
   }
 }
+
+/* ── Message bubble system ─────────────────────────────────────
+   User: right-aligned dark blue pill — distinct from the assistant
+   stream so the eye instantly knows "this is what I asked."
+   Assistant: full-width frosted slab with cyan rail — feels like
+   output emerging from the intelligence layer, not a chatbot bubble.
+   ─────────────────────────────────────────────────────────────── */
+.user-pill {
+  background: rgba(30, 40, 70, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  padding: 12px 16px;
+  color: #F0F4FB;
+  font-size: 14.5px;
+  line-height: 1.55;
+  max-width: 85%;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.32);
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+@media (min-width: 768px) {
+  .user-pill { max-width: 72%; font-size: 15px; }
+}
+
+.assistant-slab {
+  background: rgba(10, 14, 28, 0.55);
+  border-left: 2px solid rgba(0, 212, 255, 0.30);
+  border-radius: 0 16px 16px 0;
+  padding: 14px 18px;
+  backdrop-filter: blur(12px) saturate(130%);
+  -webkit-backdrop-filter: blur(12px) saturate(130%);
+  box-shadow: 0 4px 22px rgba(0, 0, 0, 0.30);
+}
+/* Accent rail color follows the agent mode (set as a CSS variable
+   on the parent, defaults to cyan). */
+.assistant-slab[data-mode="thinking"] { border-left-color: rgba(123, 47, 255, 0.40); }
+.assistant-slab[data-mode="acting"]   { border-left-color: rgba(157, 91, 255, 0.45); }
+.assistant-slab[data-mode="success"]  { border-left-color: rgba(0, 255, 179, 0.45); }
+.assistant-slab[data-mode="error"]    { border-left-color: rgba(255, 138, 74, 0.50); }
+.assistant-slab[data-mode="speaking"] { border-left-color: rgba(0, 212, 255, 0.55); }
 
 /* Composer dock — premium elevated glass at the bottom */
 .composer-dock {
