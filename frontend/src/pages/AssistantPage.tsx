@@ -6,7 +6,8 @@ import {
   CheckCircle2, RefreshCw, Mail, SendHorizontal, Calendar, Clock, Brain, Radio, X,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
-import { OrbAnimation, type OrbMode } from '../components/OrbAnimation'
+import { type OrbMode } from '../components/OrbAnimation'
+import IntelligenceOrb from '../components/IntelligenceOrb'
 import { ConversationStream, type ChatMessage } from '../components/ConversationStream'
 import { VoiceButton } from '../components/VoiceButton'
 import { ConversationMenu } from '../components/ConversationMenu'
@@ -449,11 +450,11 @@ export default function AssistantPage() {
                 exit={{ opacity: 0, scale: 0.5 }}
                 transition={{ type: 'spring', stiffness: 400, damping: 30 }}
               >
-                <OrbAnimation
-                  size={36}
-                  mode={orbMode}
+                <IntelligenceOrb
+                  size={40}
+                  mode={orbMode as OrbMode}
                   amplitude={voice.amplitude}
-                  amplitudeArray={voice.amplitudeArray}
+                  analyserNode={voice.analyserNode}
                 />
               </motion.div>
             ) : (
@@ -542,11 +543,11 @@ export default function AssistantPage() {
               exit={{ opacity: 0, scale: 0.97 }}
               className="h-full flex flex-col items-center justify-center px-6 text-center"
             >
-              <OrbAnimation
-                size={180}
-                mode={orbMode}
+              <IntelligenceOrb
+                size={220}
+                mode={orbMode as OrbMode}
                 amplitude={voice.amplitude}
-                amplitudeArray={voice.amplitudeArray}
+                analyserNode={voice.analyserNode}
               />
 
               <motion.h1
@@ -773,11 +774,11 @@ export default function AssistantPage() {
             className="fixed inset-0 z-[120] flex flex-col items-center justify-center gap-8 px-6"
             style={{ background: 'rgba(20,23,34,0.86)', backdropFilter: 'blur(2px)' }}
           >
-            <OrbAnimation
-              size={240}
-              mode={orbMode}
+            <IntelligenceOrb
+              size={280}
+              mode={orbMode as OrbMode}
               amplitude={voice.amplitude}
-              amplitudeArray={voice.amplitudeArray}
+              analyserNode={voice.analyserNode}
             />
             <div className="text-center max-w-lg">
               <div className="t-label mb-2 flex items-center justify-center gap-2">

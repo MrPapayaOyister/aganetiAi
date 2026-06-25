@@ -31,13 +31,15 @@ import AgentPixelField from './AgentPixelField'
  *  Only one WebGL context exists (Layer 2); other layers are pure CSS.
  */
 
-// Mask shape: one large central ellipse + two off-center satellites for
-// organic thinning/asymmetry. The center is offset ~52% so the visual
-// weight balances against the sidebar at the left edge.
+// Mask shape: nucleus OFFSET LEFT of the chat column so the brightest
+// field zone sits in the gap between the sidebar and the conversation
+// lane.  The chat column itself receives only the outer thinning ring,
+// which keeps text readable on top of the field.  Two satellite blobs
+// (lower-right, upper-right) add organic asymmetry.
 const FIELD_MASK = `
-  radial-gradient(ellipse 70% 75% at 52% 48%, #000 12%, rgba(0,0,0,0.85) 32%, rgba(0,0,0,0.45) 58%, rgba(0,0,0,0.12) 82%, transparent 95%),
-  radial-gradient(circle 28% at 28% 32%, rgba(0,0,0,0.38), transparent 65%),
-  radial-gradient(circle 22% at 78% 68%, rgba(0,0,0,0.32), transparent 70%)
+  radial-gradient(ellipse 58% 70% at 30% 48%, #000 8%, rgba(0,0,0,0.86) 28%, rgba(0,0,0,0.40) 58%, rgba(0,0,0,0.10) 82%, transparent 95%),
+  radial-gradient(circle 22% at 78% 65%, rgba(0,0,0,0.36), transparent 70%),
+  radial-gradient(circle 18% at 82% 22%, rgba(0,0,0,0.22), transparent 72%)
 `.trim()
 
 // Tint of the deep core glow shifts with mode — pure CSS, no canvas churn.
@@ -73,8 +75,8 @@ export default function IntelligenceCore() {
           className="absolute inset-0"
           animate={{
             background: `
-              radial-gradient(ellipse 55% 60% at 52% 48%, ${tint.inner}${tintAlpha}), transparent 60%),
-              radial-gradient(ellipse 80% 80% at 52% 48%, ${tint.outer}${(tintAlpha * 0.5).toFixed(3)}), transparent 78%)
+              radial-gradient(ellipse 55% 60% at 30% 48%, ${tint.inner}${tintAlpha}), transparent 60%),
+              radial-gradient(ellipse 80% 80% at 30% 48%, ${tint.outer}${(tintAlpha * 0.5).toFixed(3)}), transparent 78%)
             `,
           }}
           transition={{ duration: 1.2, ease: 'easeOut' }}
@@ -104,7 +106,7 @@ export default function IntelligenceCore() {
           aria-hidden
           className="absolute inset-0"
           animate={{
-            background: `radial-gradient(ellipse 32% 36% at 52% 48%,
+            background: `radial-gradient(ellipse 32% 36% at 30% 48%,
                           transparent 58%,
                           ${tint.inner}${(tintAlpha * 0.6).toFixed(3)}) 72%,
                           transparent 88%)`,

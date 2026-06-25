@@ -1,0 +1,8 @@
+[
+  {
+    "summary": "- User asks what they can do.\n- Assistant lists tasks including schedule management, email handling, task creation, and information provision from the company knowledge base.\n- User asks if the assistant can access their Google calendar.\n- Assistant states they can manage the calendar but only with the Microsoft 365 account.\n- User asks for their name.\n- Assistant remembers the user's name as Abhinav MS.\n- User requests a text at exactly 1:17 AM on June 26, 2026.\n- Assistant sets a reminder for Abhinav MS at 1:17 AM on June 26, 2026.\n- Assistant informs Abhinav MS that the reminder has been set and asks if there is anything else needed.",
+    "timestamp": "2026-06-25T22:28:49.099540Z",
+    "covered_turns": 16,
+    "indexed": true
+  }
+]
