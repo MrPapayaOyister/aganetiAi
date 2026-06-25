@@ -16,17 +16,16 @@ import ProtectedRoute from './components/ProtectedRoute'
 import { ToastContext, useToastState } from './hooks/useToast'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { AmbientProvider, useAmbient } from './contexts/AmbientContext'
-import type { UserID } from './api/client'
 
-// ── Legacy app context (userId + TTS pref) ──────────────────────
+// ── App context (userId = real Supabase UUID + TTS pref) ────────
 interface AppCtxType {
-  userId: UserID
-  setUserId: (id: UserID) => void
+  userId: string
+  setUserId: (id: string) => void
   ttsEnabled: boolean
   setTtsEnabled: (v: boolean) => void
 }
 const AppCtx = createContext<AppCtxType>({
-  userId: 'user_1', setUserId: () => {}, ttsEnabled: true, setTtsEnabled: () => {},
+  userId: '', setUserId: () => {}, ttsEnabled: true, setTtsEnabled: () => {},
 })
 export function useAppContext() { return useContext(AppCtx) }
 
@@ -71,7 +70,8 @@ function AuthenticatedShell() {
     () => localStorage.getItem('aria_tts') !== 'false'   // default ON
   )
 
-  const setUserId = (id: UserID) => localStorage.setItem('aria_user_id', id)
+  // userId comes from auth — no switching, no mutation.
+  const setUserId = (_: string) => {}
   const setTtsEnabled = (v: boolean) => {
     setTtsEnabledState(v)
     localStorage.setItem('aria_tts', String(v))

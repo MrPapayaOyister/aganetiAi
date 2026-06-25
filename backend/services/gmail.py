@@ -20,12 +20,7 @@ log = logging.getLogger("aria.gmail")
 
 GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me"
 
-_MOCK_INBOX = [{
-    "id": "mock1", "subject": "Welcome to Aria (mock)", "from_name": "Aria",
-    "from_email": "aria@example.com", "preview": "Connect Google to see real mail.",
-    "received_at": "2026-01-01T09:00:00Z", "is_read": False, "is_important": True,
-    "has_attachments": False, "labels": ["INBOX", "UNREAD"],
-}]
+_MOCK_INBOX: list[dict] = []  # no fake data — routes return connected:False when Google is unconfigured
 
 
 def _b64url_decode(data: str) -> bytes:
@@ -172,9 +167,8 @@ async def send_gmail_message(user_id: str, to: str, subject: str, body: str,
 async def get_gmail_email_digest(user_id: str) -> dict:
     """Summarize the latest unread messages for the dashboard digest panel."""
     if not GOOGLE_CONFIGURED:
-        return {"unread_count": 1, "important_count": 1, "senders": ["Aria"],
-                "subjects": ["Welcome to Aria (mock)"],
-                "summary": "Connect Google to see your real email digest."}
+        return {"unread_count": 0, "important_count": 0, "senders": [], "subjects": [],
+                "summary": "Connect Google in Settings → Account to see your email digest."}
     headers = await get_google_headers(user_id)
     listing = await google_request("GET", f"{GMAIL}/messages", headers=headers,
                                    params={"q": "is:unread in:inbox", "maxResults": 10})

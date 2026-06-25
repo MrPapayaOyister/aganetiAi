@@ -17,10 +17,7 @@ log = logging.getLogger("aria.gcontacts")
 PEOPLE = "https://people.googleapis.com/v1"
 PERSON_FIELDS = "names,emailAddresses,phoneNumbers,photos,organizations"
 
-_MOCK = [{
-    "id": "mockc1", "name": "Connect Google Contacts", "email": None, "phone": None,
-    "photo_url": None, "company": None, "job_title": None, "source": "mock",
-}]
+_MOCK: list[dict] = []  # no fake data — routes return connected:False when Google is unconfigured
 
 
 def _parse_person(p: dict) -> dict:

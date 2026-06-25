@@ -16,12 +16,7 @@ log = logging.getLogger("aria.gcal")
 
 CAL = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
 
-_MOCK_AGENDA = [{
-    "id": "mockev1", "title": "Connect Google Calendar (mock)",
-    "start": "2026-01-01T10:00:00Z", "end": "2026-01-01T10:30:00Z",
-    "location": None, "attendees": [], "is_online": False, "meet_link": None,
-    "organizer": "aria@example.com", "description": None, "calendar": "primary",
-}]
+_MOCK_AGENDA: list[dict] = []  # no fake data — routes return connected:False when Google is unconfigured
 
 
 def _iso(dt: datetime) -> str:
@@ -104,7 +99,7 @@ async def create_google_event(user_id: str, title: str, start: str, end: str,
 async def get_next_event(user_id: str) -> dict | None:
     """Return the single next upcoming event from now, or None."""
     if not GOOGLE_CONFIGURED:
-        return _MOCK_AGENDA[0]
+        return None
     headers = await get_google_headers(user_id)
     now = datetime.now(timezone.utc)
     r = await google_request("GET", CAL, headers=headers, params={

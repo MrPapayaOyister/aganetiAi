@@ -3,7 +3,8 @@ import axios from 'axios'
 export const http = axios.create({ baseURL: '/api' })
 
 // ── Types ──────────────────────────────────────────────
-export type UserID = 'user_1' | 'user_2'
+// UserID is the real Supabase auth.users.id (UUID string).
+export type UserID = string
 
 export interface Task {
   id: string
@@ -135,6 +136,23 @@ export const ingestUpload = (file: File, user_id: UserID) => {
   form.append('user_id', user_id)
   return http.post('/ingest/upload', form)
 }
+
+// ── Provider connections ──────────────────────────────
+export interface ProviderInfo {
+  connected: boolean
+  email?: string
+  scopes?: string[]
+  connected_at?: string
+}
+export interface ProviderStatus {
+  google: ProviderInfo
+  microsoft: ProviderInfo
+}
+export const getProviderStatus = (user_id: string) =>
+  http.get<ProviderStatus>('/auth/provider/status', { params: { user_id } })
+
+export const disconnectProvider = (provider: string, user_id: string) =>
+  http.delete(`/auth/provider/${provider}`, { params: { user_id } })
 
 // ── Health ────────────────────────────────────────────
 export const getHealth = () => http.get('/health')
