@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from pydantic import BaseModel
 from typing import TypedDict
 from langgraph.graph import StateGraph, END
@@ -616,6 +616,14 @@ async def lifespan(app: FastAPI):
         replace_existing=True
     )
 
+    # Feature 2: evict idle in-memory chat sessions every 30 minutes.
+    scheduler.add_job(
+        _cleanup_sessions,
+        "interval", minutes=30,
+        id="session_cleanup",
+        replace_existing=True,
+    )
+
     scheduler.start()
     asyncio.create_task(start_bot())
 
@@ -1026,16 +1034,18 @@ async def health_services_endpoint():
 
     services: dict = {}
 
-    async def probe(name: str, url: str, timeout: float = 2.5):
+    async def probe(name: str, url: str):
+        """Probe one service. Hard-capped at 1.5s; any failure → down / null latency.
+        Returns (name, result) so gather(return_exceptions=True) can't lose a slot."""
         t0 = time.monotonic()
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                r = await client.get(url)
+            async with asyncio.timeout(1.5):
+                async with httpx.AsyncClient(timeout=1.5) as client:
+                    r = await client.get(url)
             ms = round((time.monotonic() - t0) * 1000)
-            services[name] = {"status": "ok" if r.status_code < 500 else "error", "latency_ms": ms}
+            return name, {"status": "ok" if r.status_code < 500 else "down", "latency_ms": ms}
         except Exception:
-            ms = round((time.monotonic() - t0) * 1000)
-            services[name] = {"status": "error", "latency_ms": ms}
+            return name, {"status": "down", "latency_ms": None}
 
     services["fastapi"] = {"status": "ok", "latency_ms": 0}
 
@@ -1046,13 +1056,25 @@ async def health_services_endpoint():
     llm_smart_port = llm_parsed.port or 8080
     llm_fast_port = llm_smart_port + 1  # convention: smart=8080, fast=8081
 
-    await asyncio.gather(
-        probe("llm_smart", f"http://{llm_host}:{llm_smart_port}/health"),
-        probe("llm_fast",  f"http://{llm_host}:{llm_fast_port}/health"),
-        probe("vector_db", f"{QDRANT_URL}/healthz"),
-        probe("tts",       f"{TTS_URL}/health", timeout=1.5),
-        probe("stt",       f"{STT_URL}/health", timeout=1.5),
+    probes = [
+        ("llm_smart", f"http://{llm_host}:{llm_smart_port}/health"),
+        ("llm_fast",  f"http://{llm_host}:{llm_fast_port}/health"),
+        ("vector_db", f"{QDRANT_URL}/healthz"),
+        ("tts",       f"{TTS_URL}/health"),
+        ("stt",       f"{STT_URL}/health"),
+    ]
+
+    # All probes run in parallel; a crashed probe never propagates.
+    results = await asyncio.gather(
+        *(probe(n, u) for n, u in probes), return_exceptions=True
     )
+    for i, res in enumerate(results):
+        if isinstance(res, tuple):
+            name, payload = res
+            services[name] = payload
+        else:
+            # Probe coroutine itself raised → mark that service down.
+            services[probes[i][0]] = {"status": "down", "latency_ms": None}
 
     overall = "ok" if all(v["status"] == "ok" for v in services.values()) else "degraded"
     return {"overall": overall, "services": services}
@@ -1217,8 +1239,176 @@ class ChatRequest(BaseModel):
     stream: bool = False
     user_id: str | None = None
 
+
+# ════════════════════════════════════════════════════════════════
+# Chat infrastructure additions (typed SSE, session store, prompts)
+# ════════════════════════════════════════════════════════════════
+
+# ── Feature 2: in-memory session store ──────────────────────────
+# Separate, ephemeral conversation cache used by GET /chat/history and as a
+# fallback history source when the persistent memory store is empty. The
+# durable per-session history (memory.store) is left untouched.
+session_store: dict[str, list[dict]] = {}
+SESSION_MAX_MESSAGES = 20      # hard cap per session (oldest evicted)
+SESSION_INJECT       = 10      # how many recent msgs to feed the LLM as context
+SESSION_TTL_HOURS    = 2       # idle sessions older than this are cleaned up
+
+
+def _session_now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _session_record(session_id: str, user_msg: str, assistant_msg: str) -> None:
+    """Append the user+assistant turn to the in-memory store, evicting oldest
+    beyond SESSION_MAX_MESSAGES. Never raises."""
+    try:
+        ts = _session_now_iso()
+        new = session_id not in session_store
+        buf = session_store.setdefault(session_id, [])
+        if user_msg:
+            buf.append({"role": "user", "content": user_msg, "timestamp": ts})
+        if assistant_msg:
+            buf.append({"role": "assistant", "content": assistant_msg, "timestamp": ts})
+        if len(buf) > SESSION_MAX_MESSAGES:
+            del buf[: len(buf) - SESSION_MAX_MESSAGES]
+        if new:
+            log.info("session_store: created session %s", session_id)
+    except Exception:
+        log.exception("session_store record failed for %s", session_id)
+
+
+def _session_recent(session_id: str, n: int) -> list[dict]:
+    return session_store.get(session_id, [])[-n:]
+
+
+def _cleanup_sessions() -> None:
+    """APScheduler job (every 30 min): drop sessions whose last message is older
+    than SESSION_TTL_HOURS. Sync function — safe to run in the scheduler thread."""
+    from datetime import datetime, timezone, timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=SESSION_TTL_HOURS)
+    removed = 0
+    for sid in list(session_store.keys()):
+        buf = session_store.get(sid) or []
+        if not buf:
+            session_store.pop(sid, None)
+            removed += 1
+            continue
+        try:
+            last_ts = datetime.fromisoformat(buf[-1]["timestamp"])
+            if last_ts.tzinfo is None:
+                last_ts = last_ts.replace(tzinfo=timezone.utc)
+        except Exception:
+            last_ts = cutoff  # malformed → treat as stale
+        if last_ts < cutoff:
+            session_store.pop(sid, None)
+            removed += 1
+    if removed:
+        log.info("session_store cleanup: removed %d stale session(s)", removed)
+
+
+# ── Feature 4: thinking messages per tool ───────────────────────
+THINKING_MESSAGES = {
+    # spec-provided mapping
+    "get_agenda":       "Checking your calendar...",
+    "get_emails":       "Reading your inbox...",
+    "get_unread_count": "Checking unread emails...",
+    "create_task":      "Creating that task...",
+    "update_task":      "Updating task...",
+    "delete_task":      "Removing task...",
+    "send_email":       "Composing your email...",
+    "draft_email":      "Drafting email...",
+    "search_rag":       "Searching your documents...",
+    "get_contacts":     "Looking up contacts...",
+    "get_tasks":        "Fetching your tasks...",
+    "create_event":     "Scheduling that for you...",
+    "generate_report":  "Generating report...",
+    "get_memory":       "Recalling what I know...",
+    "delegate":         "Coordinating with other agents...",
+    # this codebase's actual native tool names
+    "complete_task":    "Marking that as done...",
+    "schedule_meeting": "Scheduling that for you...",
+    "get_analytics":    "Crunching your numbers...",
+    "resolve_contact":  "Looking up contacts...",
+    "search_knowledge": "Searching your documents...",
+    "recall_memory":    "Recalling what I know...",
+    "remember_fact":    "Saving that to memory...",
+    "set_reminder":     "Setting your reminder...",
+    "web_search":       "Searching the web...",
+}
+DEFAULT_THINKING = "Working on it..."
+
+
+# ── Feature 1: typed SSE helpers ────────────────────────────────
+def _sse(obj: dict) -> str:
+    """Serialize a typed SSE event: data: {json}\\n\\n"""
+    return "data: " + json.dumps(obj) + "\n\n"
+
+SSE_DONE = "data: [DONE]\n\n"
+
+
+def _action_event(tool_name: str, raw_args) -> dict | None:
+    """Map a successful action tool call → a structured `action` SSE event.
+    Payload fields are best-effort, read from the tool arguments."""
+    try:
+        args = raw_args if isinstance(raw_args, dict) else (json.loads(raw_args) if raw_args else {})
+    except Exception:
+        args = {}
+    if tool_name == "create_task":
+        return {"type": "action", "action": "task_created",
+                "payload": {"title": args.get("title"),
+                            "priority": args.get("priority", "medium"),
+                            "due": args.get("due")}}
+    if tool_name == "complete_task":
+        return {"type": "action", "action": "task_updated",
+                "payload": {"title": args.get("title"), "status": "done"}}
+    if tool_name == "draft_email":
+        return {"type": "action", "action": "email_drafted",
+                "payload": {"to": args.get("to"), "subject": args.get("subject")}}
+    if tool_name == "schedule_meeting":
+        return {"type": "action", "action": "event_created",
+                "payload": {"title": args.get("title") or "Meeting",
+                            "with": args.get("with"), "time": args.get("time")}}
+    if tool_name == "set_reminder":
+        return {"type": "action", "action": "reminder_set",
+                "payload": {"message": args.get("message"), "remind_at": args.get("remind_at")}}
+    if tool_name == "remember_fact":
+        return {"type": "action", "action": "memory_saved",
+                "payload": {"fact": args.get("fact")}}
+    return None
+
+
+# ── Feature 5: dynamic system prompt builder ────────────────────
+def build_system_prompt(user_id: str) -> str:
+    from datetime import datetime
+    now = datetime.now()
+    day_time = now.strftime("%A, %B %d, %Y at %I:%M %p")
+
+    return f"""You are Aria, an intelligent enterprise AI assistant.
+
+Current date and time: {day_time}
+User: {user_id}
+
+Your capabilities:
+- Email: read inbox, triage, draft, send via Microsoft 365
+- Calendar: view agenda, check availability, create events
+- Tasks: create, update, complete, prioritize
+- Documents: search and retrieve from knowledge base
+- Memory: recall past conversations and user preferences
+- Reports: generate structured summaries
+- Delegation: coordinate tasks with other agents
+
+Guidelines:
+- Be concise and direct. Professionals are busy.
+- When you take an action, confirm it in one sentence.
+- If you can't do something, say why briefly and suggest an alternative.
+- When multiple items are relevant, summarize don't list everything.
+- Use the user's name if known from memory.
+- Always end tool-heavy responses with a 1-line summary of what you did."""
+
+
 @app.post("/chat")
-async def chat_endpoint(request: ChatRequest):
+async def chat_endpoint(request: ChatRequest, http_request: Request):
     save_message(request.session_id, "user", request.message)
 
     # Load session state
@@ -1253,6 +1443,7 @@ async def chat_endpoint(request: ChatRequest):
             save_session_state(session_id, session_state)
             reply = f"✅ Task added: **{pending_task.get('title', 'Task')}**"
             append_message(user_id, "assistant", reply)
+            _session_record(session_id, user_message, reply)
             return {"reply": reply}
 
         elif intent == "no":
@@ -1261,6 +1452,7 @@ async def chat_endpoint(request: ChatRequest):
             save_session_state(session_id, session_state)
             reply = "Got it, task cancelled."
             append_message(user_id, "assistant", reply)
+            _session_record(session_id, user_message, reply)
             return {"reply": reply}
 
         elif intent == "amend":
@@ -1305,6 +1497,7 @@ async def chat_endpoint(request: ChatRequest):
                      f"({pending_task.get('priority', 'medium')} priority{due_str}). "
                      f"Add this task? Yes or no?")
             append_message(user_id, "assistant", reply)
+            _session_record(session_id, user_message, reply)
             return {"reply": reply}
 
         else:  # unrelated
@@ -1350,39 +1543,19 @@ async def chat_endpoint(request: ChatRequest):
     tsk_ctx = tasks_context if tasks_context and tasks_context.strip() else "No pending tasks."
 
     prompt_parts = []
-    
-    # [IDENTITY]
+
+    # [IDENTITY + CAPABILITIES] — Feature 5: dynamic builder (date/time aware).
+    # Replaces the former static [IDENTITY] and [WHAT YOU CAN DO] blocks. The
+    # personality line keeps the original warmth; live context blocks below
+    # (calendar/tasks/memory/RAG) are preserved unchanged.
+    prompt_parts.append(build_system_prompt(user_id))
     prompt_parts.append(
-        f"[IDENTITY]\n"
-        f"Your name is Aria. You are the dedicated personal AI assistant for {user_name}, \n"
-        f"working at {company_name}.\n"
-        f"Your personality: professional, concise, proactive, and warm.\n"
-        f"You remember past conversations and use that context naturally.\n"
-        f"Always respond in clear English.\n"
-        f"You never say \"I cannot do that.\" Instead, you say what you need to proceed."
+        f"You are {user_name}'s dedicated assistant at {company_name}. "
+        f"Personality: professional, concise, proactive, and warm. "
+        f"You never say \"I cannot do that\" — instead you say what you need to proceed. "
+        f"When asked what you can do, summarize naturally — don't dump the list verbatim."
     )
-    
-    # [WHAT YOU CAN DO]
-    prompt_parts.append(
-        f"[WHAT YOU CAN DO]\n"
-        f"You are {user_name}'s capable executive assistant. Your abilities include:\n"
-        f"- Email: read, triage, and draft replies for approval; draft new emails\n"
-        f"- Tasks: create, list, update, and complete tasks; set due dates\n"
-        f"- Reminders: set one-time alerts ('remind me to call Ahmed at 4pm') — I will Telegram you at that time\n"
-        f"- Calendar: check today's agenda and brief upcoming meetings\n"
-        f"- Meetings: schedule meetings and calendar events (creates a real Teams event with invite)\n"
-        f"- Web search: look up current information, news, or facts I may not know\n"
-        f"- Documents: draft branded PDFs — memos, proposals, SOPs, one-pagers, letters, "
-        f"briefs (say e.g. \"draft a one-pager on Q3 priorities, include my tasks\")\n"
-        f"- Analytics: answer stats about your own data (\"how many tasks did I finish last week?\")\n"
-        f"- Memory: remember facts across conversations, and let you review/correct what I remember\n"
-        f"- Knowledge: answer from company policy documents (RAG over the data vault)\n"
-        f"- Delegation: hand tasks to colleagues' agents with accept/reject approval\n"
-        f"- Documents in: read and analyze PDFs/Word/Excel you upload\n"
-        f"- Voice: transcribe voice notes and reply by voice when enabled\n"
-        f"When asked what you can do, summarize these naturally — don't dump the list verbatim."
-    )
-    
+
     # [TODAY'S CONTEXT]
     today_str = date.today().strftime("%A, %Y-%m-%d")
     prompt_parts.append(
@@ -1510,9 +1683,16 @@ async def chat_endpoint(request: ChatRequest):
     sys_prompt = "\n\n".join(prompt_parts)
 
     history = load_history(request.session_id)
-    messages = [{"role": "system", "content": sys_prompt}] + [
-        {"role": m["role"], "content": m["content"]} for m in history
-    ]
+    messages = [{"role": "system", "content": sys_prompt}]
+    if history:
+        # Durable per-session history already includes the just-saved user message.
+        messages += [{"role": m["role"], "content": m["content"]} for m in history]
+    else:
+        # Feature 2: fall back to the in-memory session store (last 10) when there is
+        # no persistent history, then append the current user message explicitly.
+        messages += [{"role": m["role"], "content": m["content"]}
+                     for m in _session_recent(session_id, SESSION_INJECT)]
+        messages.append({"role": "user", "content": user_message})
 
     # ── Native function-calling path (B2): replaces the [ACTION:{json}] tag flow.
     # One tool-aware call to the 14B; structured tool_calls are executed via the
@@ -1551,11 +1731,7 @@ async def chat_endpoint(request: ChatRequest):
                                {"pending_task": None, "awaiting_task_confirmation": False})
             return reply
 
-        def _sse(text: str) -> str:
-            return "data: " + json.dumps(
-                {"choices": [{"delta": {"content": text}, "index": 0, "finish_reason": None}]}) + "\n\n"
-
-        # ---- streaming path ----
+        # ---- streaming path (typed SSE events: thinking/token/action/error/done) ----
         # Detect tools with one non-stream call (reliable). Pure chat then streams
         # token-by-token WITHOUT tools (clean). Tool turns run the loop and emit the
         # confirmation. (Streaming WITH tools leaks raw tool markup as content on this build.)
@@ -1569,18 +1745,26 @@ async def chat_endpoint(request: ChatRequest):
                     first = await call_llm_tools(convo)
                 except Exception:
                     log.exception(f"tool detect failed (user={user_id})")
+                    yield _sse({"type": "error", "message": "I had trouble reaching my reasoning engine."})
                     first = {"content": "", "tool_calls": None}
 
                 if not (first.get("tool_calls") or []):
+                    # Pure chat → stream tokens
                     streamed = ""
                     try:
                         async for tok in stream_plain_answer(messages):
                             streamed += tok
-                            yield _sse(tok)
+                            yield _sse({"type": "token", "content": tok})
+                            if await http_request.is_disconnected():
+                                log.info("Client disconnected, cancelling stream for %s", session_id)
+                                return
                     except Exception:
                         log.exception(f"plain stream failed (user={user_id})")
+                        yield _sse({"type": "error", "message": "My response was interrupted."})
                     base_reply = streamed.strip() or (first.get("content") or "").strip()
                 else:
+                    # Tools required → opening thinking event, then the agentic loop
+                    yield _sse({"type": "thinking", "message": "Let me check on that..."})
                     assistant_msg = first
                     final_text = ""
                     for _round in range(MAX_TOOL_ROUNDS):
@@ -1594,11 +1778,29 @@ async def chat_endpoint(request: ChatRequest):
                                       "content": assistant_msg.get("content") or "", "tool_calls": tcs})
                         for tc in tcs:
                             fn = tc.get("function", {})
-                            result, is_action = await asyncio.to_thread(
-                                execute_single_tool, fn.get("name"), fn.get("arguments"), user_id)
+                            name = fn.get("name")
+                            raw_args = fn.get("arguments")
+                            # Feature 4: human-readable thinking before each tool runs
+                            log.info("thinking → %s (user=%s)", name, user_id)
+                            yield _sse({"type": "thinking",
+                                        "message": THINKING_MESSAGES.get(name, DEFAULT_THINKING)})
+                            if await http_request.is_disconnected():
+                                log.info("Client disconnected, cancelling stream for %s", session_id)
+                                return
+                            try:
+                                result, is_action = await asyncio.to_thread(
+                                    execute_single_tool, name, raw_args, user_id)
+                            except Exception:
+                                log.exception(f"tool {name} failed (user={user_id})")
+                                result, is_action = (f"⚠️ I couldn't complete {name}.", False)
+                                yield _sse({"type": "error",
+                                            "message": f"Could not complete {name}."})
                             if is_action:
                                 action_taken = True
                                 confirmations.append(result)
+                                evt = _action_event(name, raw_args)
+                                if evt:
+                                    yield _sse(evt)
                             convo.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": result})
                         try:
                             assistant_msg = await call_llm_tools(convo)
@@ -1608,15 +1810,16 @@ async def chat_endpoint(request: ChatRequest):
                     base_reply = ("\n\n".join(c for c in confirmations if c).strip() or "Done.") \
                         if action_taken else final_text
                     if base_reply:
-                        yield _sse(base_reply)
+                        yield _sse({"type": "token", "content": base_reply})
 
                 full_reply = _apply_post_turn(base_reply, action_taken)
                 if not base_reply.strip() and full_reply.strip():
-                    yield _sse(full_reply)
+                    yield _sse({"type": "token", "content": full_reply})
                 elif full_reply.startswith(base_reply) and len(full_reply) > len(base_reply):
-                    yield _sse(full_reply[len(base_reply):])
+                    yield _sse({"type": "token", "content": full_reply[len(base_reply):]})
                 save_message(request.session_id, "assistant", full_reply)
-                yield "data: [DONE]\n\n"
+                _session_record(session_id, user_message, full_reply)
+                yield SSE_DONE
             return StreamingResponse(native_stream(), media_type="text/event-stream")
 
         # ---- non-stream path: agentic loop ----
@@ -1649,22 +1852,32 @@ async def chat_endpoint(request: ChatRequest):
             if action_taken else final_text
         final_reply = _apply_post_turn(base_reply, action_taken)
         save_message(request.session_id, "assistant", final_reply)
+        _session_record(session_id, user_message, final_reply)
         return {"reply": final_reply}
 
     if request.stream:
         # Streaming Mode
         async def event_generator():
             collected_reply = ""
-            async for chunk in call_llm(messages, user_message=request.message, stream=True):
-                yield chunk + "\n"
-                if chunk.strip() and chunk.strip() != "data: [DONE]":
+            try:
+                async for chunk in call_llm(messages, user_message=request.message, stream=True):
+                    if not chunk.strip() or chunk.strip() == "data: [DONE]":
+                        continue
                     try:
                         line = chunk.removeprefix("data: ").strip()
                         data = json.loads(line)
                         token = data["choices"][0]["delta"].get("content", "")
-                        collected_reply += token
                     except Exception:
-                        pass
+                        token = ""
+                    if token:
+                        collected_reply += token
+                        yield _sse({"type": "token", "content": token})
+                        if await http_request.is_disconnected():
+                            log.info("Client disconnected, cancelling stream for %s", session_id)
+                            return
+            except Exception:
+                log.exception(f"legacy stream failed (user={user_id})")
+                yield _sse({"type": "error", "message": "My response was interrupted."})
 
             llm_reply = collected_reply
             from backend.action_parser import extract_action, execute_action
@@ -1699,16 +1912,7 @@ async def chat_endpoint(request: ChatRequest):
                 outcome_text = ""
 
             if outcome_text:
-                chunk_data = {
-                    "choices": [
-                        {
-                            "delta": {"content": outcome_text},
-                            "index": 0,
-                            "finish_reason": None
-                        }
-                    ]
-                }
-                yield f"data: {json.dumps(chunk_data)}\n\n"
+                yield _sse({"type": "token", "content": outcome_text})
 
             if should_append_reminder:
                 session_state["awaiting_task_confirmation"] = True
@@ -1716,17 +1920,7 @@ async def chat_endpoint(request: ChatRequest):
                 reminder = (f"\n\n_By the way — did you still want to add the task: "
                             f"**{pending_task.get('title', 'that task')}**? Yes or no?_")
                 final_reply += reminder
-                
-                chunk_data = {
-                    "choices": [
-                        {
-                            "delta": {"content": reminder},
-                            "index": 0,
-                            "finish_reason": None
-                        }
-                    ]
-                }
-                yield f"data: {json.dumps(chunk_data)}\n\n"
+                yield _sse({"type": "token", "content": reminder})
             else:
                 if action is None:
                     from tasks.intent import detect_task_intent
@@ -1739,24 +1933,15 @@ async def chat_endpoint(request: ChatRequest):
                             save_session_state(request.session_id, {"pending_task": task_dict, "awaiting_task_confirmation": True})
                             reminder = f"\n\n📋 I noticed a potential task: **{title}** (Priority: {task_dict.get('priority', 'medium')}). Should I add this to your task list? Reply **yes** or **no**."
                             final_reply += reminder
-                            
-                            chunk_data = {
-                                "choices": [
-                                    {
-                                        "delta": {"content": reminder},
-                                        "index": 0,
-                                        "finish_reason": None
-                                    }
-                                ]
-                            }
-                            yield f"data: {json.dumps(chunk_data)}\n\n"
+                            yield _sse({"type": "token", "content": reminder})
                     else:
                         save_session_state(request.session_id, {"pending_task": None, "awaiting_task_confirmation": False})
                 else:
                     save_session_state(request.session_id, {"pending_task": None, "awaiting_task_confirmation": False})
 
             save_message(request.session_id, "assistant", clean_reply)
-            yield "data: [DONE]\n\n"
+            _session_record(session_id, user_message, final_reply)
+            yield SSE_DONE
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -1818,7 +2003,66 @@ async def chat_endpoint(request: ChatRequest):
                 save_session_state(request.session_id, {"pending_task": None, "awaiting_task_confirmation": False})
                 
         save_message(request.session_id, "assistant", clean_reply)
+        _session_record(session_id, user_message, final_reply)
         return {"reply": final_reply}
+
+
+# ── Feature 3 & 6: chat history + suggestions ───────────────────
+@app.get("/chat/history")
+async def chat_history_endpoint(session_id: str, limit: int = 20):
+    """Return the in-memory conversation history for a session (newest last)."""
+    msgs = session_store.get(session_id, [])
+    if limit and limit > 0:
+        msgs = msgs[-limit:]
+    return {"session_id": session_id, "messages": msgs}
+
+
+@app.get("/chat/suggestions")
+async def chat_suggestions_endpoint(user_id: str = "user_1"):
+    """Three contextual prompt suggestions built from the user's live data.
+    Never errors — always returns exactly 3 suggestions."""
+    fallback = [
+        "What can you help me with today?",
+        "Check my calendar for today",
+        "Show me my pending tasks",
+    ]
+    suggestions: list[str] = []
+
+    async def _safe(coro_fn, timeout=2.0):
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(coro_fn), timeout=timeout)
+        except Exception:
+            return None
+
+    try:
+        # 1) Unread email count
+        unread = await _safe(lambda: _unread_count(user_id))
+        if isinstance(unread, int) and unread > 0:
+            suggestions.append(f"Summarize my {unread} unread emails")
+
+        # 2) Pending tasks
+        pending = await _safe(lambda: get_all_tasks(user_id, status="pending"))
+        if pending:
+            suggestions.append("What are my most urgent tasks today?")
+
+        # 3) Next calendar event within 4 hours
+        from integrations.m365_calendar import get_upcoming_events
+        events = await _safe(lambda: get_upcoming_events(user_id, 240))
+        if events:
+            ev = events[0]
+            title = ev.get("subject") or "next"
+            suggestions.append(f"Brief me on my {title} meeting")
+    except Exception:
+        log.exception("suggestions build failed for %s", user_id)
+
+    # Pad with fallbacks to always return exactly 3
+    for f in fallback:
+        if len(suggestions) >= 3:
+            break
+        if f not in suggestions:
+            suggestions.append(f)
+
+    return {"suggestions": suggestions[:3]}
 
 
 # ==========================================
