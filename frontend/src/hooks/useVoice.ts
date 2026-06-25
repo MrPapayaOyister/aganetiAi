@@ -20,7 +20,13 @@ export function useVoice() {
   const recognitionRef = useRef<any>(null)
   const chunksRef = useRef<Blob[]>([])
 
-  // shared analyser + RAF sampler (drives orb/particle amplitude from real audio)
+  // PERSISTENT audio chain — built once per AudioContext, never disconnected.
+  // Eliminates the click/pop produced by connect/disconnect on every speak()
+  // or listen() call. Topology:
+  //   ttsSource → ttsGain ┐
+  //   micStream → micSplit (via analyser) ┴→ analyser → destination
+  // We swap inputs by stopping/starting source nodes, not by rewiring.
+  const ttsGainRef = useRef<GainNode | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
   const rafRef = useRef<number>(0)
   const tickRef = useRef(0)
@@ -33,12 +39,29 @@ export function useVoice() {
     if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
       audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)()
     }
-    // iOS: resume on user gesture
-    if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume()
-    return audioCtxRef.current
+    const ctx = audioCtxRef.current
+    if (ctx.state === 'suspended') ctx.resume()
+    // Build the persistent chain once: gain → analyser → destination.
+    if (!ttsGainRef.current) {
+      const gain = ctx.createGain()
+      gain.gain.value = 1
+      const analyser = ctx.createAnalyser()
+      analyser.fftSize = 256
+      gain.connect(analyser)
+      analyser.connect(ctx.destination)
+      ttsGainRef.current = gain
+      analyserRef.current = analyser
+      setAnalyserNode(analyser)
+      startSampler(analyser)
+    }
+    return ctx
   }
 
   const startSampler = useCallback((analyser: AnalyserNode) => {
+    // Cancel any prior RAF loop before starting a new one — otherwise
+    // each ensureCtx/startListening leaks a parallel loop that fights
+    // for the same amplitude state, causing audio-visual jitter.
+    cancelAnimationFrame(rafRef.current)
     analyserRef.current = analyser
     const freq = new Uint8Array(analyser.frequencyBinCount)
     const loop = () => {
@@ -164,17 +187,17 @@ export function useVoice() {
   }, [])
 
   // ── Trim leading/trailing silence from a decoded TTS buffer.
-  //    Kokoro chunks have ~30-80ms of silent padding that, combined with
-  //    abrupt source connection, produces an audible click. Returns a new
-  //    AudioBuffer containing only the non-silent region.
-  const trimSilence = (ctx: AudioContext, buf: AudioBuffer, threshold = 0.005): AudioBuffer => {
+  // Higher threshold (0.015) catches Kokoro's quiet hiss too — the
+  // 0.005 threshold left audible noise tails that produced clicks.
+  const trimSilence = (ctx: AudioContext, buf: AudioBuffer, threshold = 0.015): AudioBuffer => {
     const ch = buf.getChannelData(0)
     let start = 0
     let end = ch.length - 1
     while (start < ch.length && Math.abs(ch[start]) < threshold) start++
     while (end > start && Math.abs(ch[end]) < threshold) end--
-    const len = Math.max(1, end - start + 1)
-    if (len === ch.length) return buf                                  // nothing to trim
+    if (start >= end) return buf
+    const len = end - start + 1
+    if (len === ch.length) return buf
     const out = ctx.createBuffer(buf.numberOfChannels, len, buf.sampleRate)
     for (let c = 0; c < buf.numberOfChannels; c++) {
       const src = buf.getChannelData(c)
@@ -188,41 +211,46 @@ export function useVoice() {
     if (!text || text.length > 2000) return
     setState('speaking')
     try {
-      const ctx = ensureCtx()
+      const ctx = ensureCtx()                                          // builds persistent chain
+      const persistentGain = ttsGainRef.current!
       const buffer = await tts(text)
       const decoded = await ctx.decodeAudioData(buffer)
       const audioBuffer = trimSilence(ctx, decoded)
+
+      // Per-utterance gain envelope.  10ms attack + 18ms release prevents
+      // any DC step from clicking when the buffer connects/disconnects.
+      // This temporary gain feeds into the PERSISTENT analyser/destination
+      // chain — we never disconnect from the destination, so no system-
+      // level click fires at end-of-speech.
+      const envGain = ctx.createGain()
+      const ATTACK = 0.010
+      const RELEASE = 0.018
+      const t0 = ctx.currentTime + 0.020                               // 20ms scheduling lead
+      const dur = audioBuffer.duration
+      envGain.gain.setValueAtTime(0, t0)
+      envGain.gain.linearRampToValueAtTime(1, t0 + ATTACK)
+      envGain.gain.setValueAtTime(1, t0 + Math.max(ATTACK, dur - RELEASE))
+      envGain.gain.linearRampToValueAtTime(0, t0 + dur)
+
       const source = ctx.createBufferSource()
       audioSourceRef.current = source
       source.buffer = audioBuffer
-
-      // GainNode envelope — 6ms attack + 8ms release ramps eliminate the
-      // click that fires when a non-zero waveform is abruptly connected.
-      const gain = ctx.createGain()
-      const RAMP = 0.006
-      const REL = 0.008
-      const t0 = ctx.currentTime
-      const dur = audioBuffer.duration
-      gain.gain.setValueAtTime(0, t0)
-      gain.gain.linearRampToValueAtTime(1, t0 + RAMP)
-      gain.gain.setValueAtTime(1, t0 + Math.max(RAMP, dur - REL))
-      gain.gain.linearRampToValueAtTime(0, t0 + dur)
-
-      // analyser on the TTS chain → real speaking amplitude
-      const analyser = ctx.createAnalyser()
-      analyser.fftSize = 256
-      source.connect(gain)
-      gain.connect(analyser)
-      analyser.connect(ctx.destination)
-      setAnalyserNode(analyser)
-      startSampler(analyser)
+      source.connect(envGain)
+      envGain.connect(persistentGain)                                  // join persistent chain
 
       source.start(t0)
-      await new Promise<void>(resolve => { source.onended = () => resolve() })
+      await new Promise<void>(resolve => {
+        source.onended = () => {
+          // Disconnect the per-utterance node AFTER the buffer is fully done.
+          // Persistent gain/analyser/destination remain attached — no click.
+          try { envGain.disconnect() } catch { /* ignore */ }
+          resolve()
+        }
+      })
     } catch { /* TTS optional */ } finally {
-      stopSampler(); setAnalyserNode(null); setState('idle')
+      setState('idle')
     }
-  }, [startSampler, stopSampler])
+  }, [])
 
   // Public: pre-warm the AudioContext on first user gesture.
   // Mobile Safari silences the very first AudioContext output (the "unlock"
@@ -242,10 +270,14 @@ export function useVoice() {
   }, [])
 
   const stopSpeaking = useCallback(() => {
+    // Stop the source — onended fires and disconnects the per-utterance gain.
+    // Do NOT touch the persistent analyser/destination chain or stop the
+    // sampler; the orb keeps reading amplitude (which decays to 0 naturally
+    // since there's no signal) and no click fires.
     try { audioSourceRef.current?.stop() } catch { /* already stopped */ }
     audioSourceRef.current = null
-    stopSampler(); setAnalyserNode(null); setState('idle')
-  }, [stopSampler])
+    setState('idle')
+  }, [])
 
   return {
     state,

@@ -45,12 +45,14 @@ const MODE_MAP: Record<AgentFieldMode, Partial<ModeConfig>> = {
   error:     { color: '#FF8A4A', patternDensity: 1.25, speed: 0.45, rippleIntensityScale: 1.8 },
 }
 
-// Intensity preset → density/speed multipliers
+// Intensity preset → density/speed multipliers.
+// Standard tuned DOWN — the field was reading too dense in the conversation
+// area on production. Refined to a subtle atmosphere.
 const INTENSITY_PRESETS: Record<BgIntensity, { density: number; speed: number; ripple: number }> = {
   off:       { density: 0,    speed: 0,    ripple: 0 },
-  calm:      { density: 0.55, speed: 0.55, ripple: 0.6 },
-  standard:  { density: 0.85, speed: 0.85, ripple: 1.0 },
-  cinematic: { density: 1.1,  speed: 1.15, ripple: 1.25 },
+  calm:      { density: 0.35, speed: 0.50, ripple: 0.5 },
+  standard:  { density: 0.55, speed: 0.70, ripple: 0.8 },
+  cinematic: { density: 0.85, speed: 1.0,  ripple: 1.1 },
 }
 
 function resolveConfig(mode: AgentFieldMode, amplitude: number, intensity: BgIntensity): ModeConfig {

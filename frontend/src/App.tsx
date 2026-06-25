@@ -92,7 +92,7 @@ function AuthenticatedShell() {
           Mounted ONCE; never remounts across routes. */}
       <div
         className="fixed inset-0 z-0 pointer-events-none"
-        style={{ opacity: calm ? 0.62 : 1.0, transition: 'opacity 600ms ease' }}
+        style={{ opacity: calm ? 0.42 : 0.70, transition: 'opacity 600ms ease' }}
       >
         <IntelligenceCore />
       </div>

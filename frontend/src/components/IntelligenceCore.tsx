@@ -56,14 +56,14 @@ function useNucleusX(): number {
 }
 
 function buildFieldMask(nx: number): string {
-  // Right-side satellite blob positions also shift slightly so the
-  // composition stays balanced when the nucleus moves to center.
-  const sat1X = nx === 30 ? 78 : 82   // mobile: push slightly further right
+  // Refined: peak opacity lowered + faster outward falloff so the
+  // field reads as a subtle atmosphere, not a dot wallpaper.
+  const sat1X = nx === 30 ? 78 : 82
   const sat2X = nx === 30 ? 82 : 86
   return `
-    radial-gradient(ellipse 58% 70% at ${nx}% 48%, #000 8%, rgba(0,0,0,0.86) 28%, rgba(0,0,0,0.40) 58%, rgba(0,0,0,0.10) 82%, transparent 95%),
-    radial-gradient(circle 22% at ${sat1X}% 65%, rgba(0,0,0,0.36), transparent 70%),
-    radial-gradient(circle 18% at ${sat2X}% 22%, rgba(0,0,0,0.22), transparent 72%)
+    radial-gradient(ellipse 50% 60% at ${nx}% 48%, rgba(0,0,0,0.78) 5%, rgba(0,0,0,0.55) 28%, rgba(0,0,0,0.22) 55%, rgba(0,0,0,0.05) 78%, transparent 92%),
+    radial-gradient(circle 18% at ${sat1X}% 65%, rgba(0,0,0,0.22), transparent 70%),
+    radial-gradient(circle 14% at ${sat2X}% 22%, rgba(0,0,0,0.14), transparent 72%)
   `.trim()
 }
 

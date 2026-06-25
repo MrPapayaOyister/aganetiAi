@@ -80,10 +80,11 @@ const VERT = /* glsl */ `
     gl_Position = projectionMatrix * mv;
 
     // Manual size attenuation (perspective camera: in-front mv.z is negative).
-    // Capped at 18px to avoid mobile-GPU square-rendering at large sizes
-    // (some Mali/Adreno drivers skip smoothstep AA above ~20px).
+    // Hard-capped at 11px — at larger sizes the smoothstep AA band
+    // collapses to too few device pixels on mobile GPUs and renders
+    // as squares.  11px keeps the soft-circle math working everywhere.
     float dist = max(0.1, -mv.z);
-    gl_PointSize = min(18.0, uPointSize * uPixelRatio * (1.0 + disp * 0.30) / dist);
+    gl_PointSize = min(11.0, uPointSize * uPixelRatio * (1.0 + disp * 0.30) / dist);
 
     // Depth proxy — closer to camera (smaller dist) → vDepth near 1.
     vDepth = clamp(1.0 - (dist - 2.1) / 2.0, 0.0, 1.0);
@@ -99,18 +100,19 @@ const FRAG = /* glsl */ `
   varying float vDepth;
   varying float vDisp;
   void main() {
-    // Hard-discard outside the circle, then a 0.35→0.5 smoothstep edge
-    // for soft AA. Works on mobile GPUs that skip native point AA.
+    // Hard-discard outside circle. AA band widened to 0.15→0.50 so even
+    // at low point sizes (5-11 device px) the soft falloff covers
+    // multiple pixels — eliminates the square-on-mobile bug.
     vec2 coord = gl_PointCoord - vec2(0.5);
     float dist = length(coord);
     if (dist > 0.5) discard;
-    float edge = 1.0 - smoothstep(0.35, 0.5, dist);
+    float edge = 1.0 - smoothstep(0.15, 0.50, dist);
 
     vec3 col = mix(uColorBack, uColorFront, vDepth);
     // Bright accent on ridges of positive displacement
     col += vec3(0.22, 0.55, 0.95) * max(vDisp, 0.0) * 0.55;
 
-    float a = edge * (0.18 + vDepth * 0.85) * uAlpha;
+    float a = edge * (0.22 + vDepth * 0.85) * uAlpha;
     gl_FragColor = vec4(col, a);
   }
 `

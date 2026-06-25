@@ -42,7 +42,7 @@ function ConversationStreamBase({
   renderActionCards, onPlay, onRegenerate, agentMode = 'idle',
 }: ConversationStreamProps) {
   return (
-    <div className="conv-surface conv-lane max-w-3xl mx-auto w-full px-4 sm:px-7 py-7 space-y-5">
+    <div className="conv-surface conv-lane max-w-3xl mx-auto w-full px-4 sm:px-7 py-6 space-y-3">
       <AnimatePresence initial={false}>
         {messages.map((m, i) => (
           <ConvTurn
@@ -95,7 +95,7 @@ function ConvTurn({
         transition={{ duration: 0.20, ease: 'easeOut' }}
         className="flex flex-col items-end"
       >
-        <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#5C6B85] mb-1.5
+        <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#5C6B85] mb-1
                          opacity-45">
           You
         </span>
@@ -115,18 +115,12 @@ function ConvTurn({
     >
       {/* Hairline separator above (except the very first message) */}
       {!isFirst && (
-        <div className="h-px mb-5 bg-gradient-to-r from-transparent via-white/[0.06] to-transparent" />
+        <div className="h-px mb-3 bg-gradient-to-r from-transparent via-white/[0.06] to-transparent" />
       )}
 
-      {/* Assistant label — small caps, tinted by mode */}
-      <div className="flex items-center gap-2 mb-1.5">
-        <span
-          className="text-[10px] font-semibold uppercase tracking-[0.18em] opacity-60"
-          style={{
-            background: 'linear-gradient(90deg, #00D4FF, #7B2FFF)',
-            WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent',
-          }}
-        >
+      {/* Assistant label — solid cyan (was a distracting cyan→violet gradient) */}
+      <div className="flex items-center gap-2 mb-1">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#00D4FF] opacity-70">
           Assistant{speaking ? '  ·  speaking' : ''}
         </span>
       </div>

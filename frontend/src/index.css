@@ -146,38 +146,36 @@ body {
   position: relative;
 }
 
-/* Conversation depth plane — real backdrop blur creates a spatial layer
-   between the PixelBlast field and the message text.  Soft alpha fade
-   at top and bottom keeps it from reading as a hard panel. */
+/* Conversation depth plane — heavier glass for clear separation from
+   the field, with a soft alpha fade at the very top/bottom so it never
+   reads as a hard rectangular panel. */
 .conv-surface {
   position: relative;
   background: linear-gradient(
     to bottom,
-    rgba(8, 11, 20, 0.08) 0%,
-    rgba(8, 11, 20, 0.40) 14%,
-    rgba(8, 11, 20, 0.44) 86%,
-    rgba(8, 11, 20, 0.08) 100%
+    rgba(8, 11, 20, 0.20) 0%,
+    rgba(8, 11, 20, 0.62) 10%,
+    rgba(8, 11, 20, 0.64) 90%,
+    rgba(8, 11, 20, 0.20) 100%
   );
-  backdrop-filter: blur(14px) saturate(140%);
-  -webkit-backdrop-filter: blur(14px) saturate(140%);
-  border-left: 1px solid rgba(255, 255, 255, 0.04);
-  border-right: 1px solid rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(22px) saturate(150%);
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.035),
-    0 24px 60px rgba(0, 0, 0, 0.45);
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 24px 70px rgba(0, 0, 0, 0.55);
 }
 @media (max-width: 768px) {
   .conv-surface {
-    /* Mobile needs MORE blur, not less — text reads over a brighter
-       full-bleed field with no sidebar gap to dim the column. */
-    backdrop-filter: blur(14px) saturate(140%);
-    -webkit-backdrop-filter: blur(14px) saturate(140%);
+    backdrop-filter: blur(18px) saturate(145%);
+    -webkit-backdrop-filter: blur(18px) saturate(145%);
     background: linear-gradient(
       to bottom,
-      rgba(8, 11, 20, 0.18) 0%,
-      rgba(8, 11, 20, 0.55) 8%,
-      rgba(8, 11, 20, 0.58) 92%,
-      rgba(8, 11, 20, 0.18) 100%
+      rgba(8, 11, 20, 0.28) 0%,
+      rgba(8, 11, 20, 0.72) 6%,
+      rgba(8, 11, 20, 0.74) 94%,
+      rgba(8, 11, 20, 0.28) 100%
     );
   }
 }
@@ -189,15 +187,17 @@ body {
    output emerging from the intelligence layer, not a chatbot bubble.
    ─────────────────────────────────────────────────────────────── */
 .user-pill {
-  background: rgba(30, 40, 70, 0.78);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(36, 48, 80, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 16px;
-  padding: 12px 16px;
-  color: #F0F4FB;
+  padding: 11px 15px;
+  color: #F2F5FB;
   font-size: 14.5px;
-  line-height: 1.55;
+  line-height: 1.5;
   max-width: 85%;
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.32);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.38);
+  backdrop-filter: blur(8px) saturate(140%);
+  -webkit-backdrop-filter: blur(8px) saturate(140%);
   word-wrap: break-word;
   overflow-wrap: anywhere;
 }
@@ -206,13 +206,13 @@ body {
 }
 
 .assistant-slab {
-  background: rgba(10, 14, 28, 0.55);
-  border-left: 2px solid rgba(0, 212, 255, 0.30);
+  background: rgba(12, 16, 30, 0.75);
+  border-left: 2px solid rgba(0, 212, 255, 0.45);
   border-radius: 0 16px 16px 0;
-  padding: 14px 18px;
-  backdrop-filter: blur(12px) saturate(130%);
-  -webkit-backdrop-filter: blur(12px) saturate(130%);
-  box-shadow: 0 4px 22px rgba(0, 0, 0, 0.30);
+  padding: 13px 17px;
+  backdrop-filter: blur(20px) saturate(150%);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  box-shadow: 0 6px 26px rgba(0, 0, 0, 0.45);
 }
 /* Accent rail color follows the agent mode (set as a CSS variable
    on the parent, defaults to cyan). */
@@ -222,15 +222,15 @@ body {
 .assistant-slab[data-mode="error"]    { border-left-color: rgba(255, 138, 74, 0.50); }
 .assistant-slab[data-mode="speaking"] { border-left-color: rgba(0, 212, 255, 0.55); }
 
-/* Composer dock — premium elevated glass at the bottom */
+/* Composer dock — heavier premium glass, less transparent */
 .composer-dock {
-  background: rgba(10, 13, 20, 0.55);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  backdrop-filter: blur(26px) saturate(170%);
-  -webkit-backdrop-filter: blur(26px) saturate(170%);
+  background: rgba(10, 13, 20, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  backdrop-filter: blur(34px) saturate(180%);
+  -webkit-backdrop-filter: blur(34px) saturate(180%);
   box-shadow:
-    0 18px 50px rgba(0, 0, 0, 0.65),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    0 18px 56px rgba(0, 0, 0, 0.70),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 .neu, .neu-strong {

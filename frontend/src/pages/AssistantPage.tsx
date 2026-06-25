@@ -798,12 +798,25 @@ export default function AssistantPage() {
             className="fixed inset-0 z-[120] flex flex-col items-center justify-center gap-8 px-6"
             style={{ background: 'rgba(20,23,34,0.86)', backdropFilter: 'blur(2px)' }}
           >
-            <IntelligenceOrb
-              size={280}
-              mode={orbMode as OrbMode}
-              amplitude={voice.amplitude}
-              analyserNode={voice.analyserNode}
-            />
+            {/* Live overlay: orb scales UP visibly when speaking so the
+                "alive" state reads at glance. 1.0 idle · 1.18 speaking
+                · 1.08 listening · 1.05 thinking. */}
+            <motion.div
+              animate={{
+                scale: voice.isSpeaking ? 1.18
+                  : voice.isListening ? 1.08
+                  : streaming ? 1.05
+                  : 1.0,
+              }}
+              transition={{ type: 'spring', stiffness: 110, damping: 18 }}
+            >
+              <IntelligenceOrb
+                size={300}
+                mode={orbMode as OrbMode}
+                amplitude={voice.amplitude}
+                analyserNode={voice.analyserNode}
+              />
+            </motion.div>
             <div className="text-center max-w-lg">
               <div className="t-label mb-2 flex items-center justify-center gap-2">
                 <span className="relative flex h-2 w-2">
