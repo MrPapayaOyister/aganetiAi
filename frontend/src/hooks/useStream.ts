@@ -13,7 +13,7 @@ interface UseStreamCallbacks {
   onAction?: (action: string, payload: Record<string, unknown>) => void
   onSources?: (sources: Array<{ source: string }>) => void
   onError?: (msg: string) => void
-  onDone: () => void
+  onDone: () => void | Promise<void>
 }
 
 export const useStream = () => {
@@ -63,7 +63,7 @@ export const useStream = () => {
         for (const line of lines) {
           if (!line.startsWith('data:')) continue
           const raw = line.slice(line.indexOf(':') + 1).trim()
-          if (raw === '[DONE]') { callbacks.onDone(); return }
+          if (raw === '[DONE]') { await callbacks.onDone(); return }
 
           try {
             const parsed = JSON.parse(raw)
@@ -89,12 +89,12 @@ export const useStream = () => {
           }
         }
       }
-      callbacks.onDone()
+      await callbacks.onDone()
     } catch (e: unknown) {
       if (e instanceof Error && e.name !== 'AbortError') {
         callbacks.onError?.('Connection lost')
       }
-      callbacks.onDone()
+      await callbacks.onDone()
     } finally {
       setStreaming(false)
     }

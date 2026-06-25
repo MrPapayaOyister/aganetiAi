@@ -3,7 +3,7 @@ import { generateId } from '../utils/uuid'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Send, Paperclip, Volume2, VolumeX, StopCircle, Zap, Music,
-  CheckCircle2, RefreshCw, Mail, SendHorizontal, Calendar, Clock, Brain,
+  CheckCircle2, RefreshCw, Mail, SendHorizontal, Calendar, Clock, Brain, Radio, X,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { OrbAnimation, type OrbMode } from '../components/OrbAnimation'
@@ -11,6 +11,7 @@ import { MessageBubble } from '../components/MessageBubble'
 import { VoiceButton } from '../components/VoiceButton'
 import { useStream } from '../hooks/useStream'
 import { useVoice } from '../hooks/useVoice'
+import { useLiveChat } from '../hooks/useLiveChat'
 import { useSound } from '../hooks/useSound'
 import { useToast } from '../hooks/useToast'
 import { useAppContext } from '../App'
@@ -69,6 +70,7 @@ export default function AssistantPage() {
   const { setAmbient } = useAmbient()
   const { stream, streaming, abort } = useStream()
   const voice = useVoice()
+  const live = useLiveChat()
   const sound = useSound()
   const lastTickRef = useRef(0)
 
@@ -91,6 +93,7 @@ export default function AssistantPage() {
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const fullReplyRef = useRef('')
+  const liveRef = useRef(false)
 
   const isIdle = messages.length === 0 && !streaming
   const lastAssistant = messages[messages.length - 1]
@@ -105,6 +108,7 @@ export default function AssistantPage() {
     : voice.isSpeaking                                ? 'speaking'
     : (streaming && (thinkingMsg || awaitingFirstToken)) ? 'thinking'
     : streaming                                       ? 'speaking'
+    : (live.active)                                   ? 'listening'  // live: awaiting speech
     : 'idle'
 
   // Drive the global particle field. Keyed on the discrete phase only (NOT the
@@ -219,7 +223,7 @@ export default function AssistantPage() {
         setMessages(prev => prev.map(m =>
           m.id === assistantId ? { ...m, streaming: false } : m
         ))
-        if (ttsEnabled && fullReplyRef.current) {
+        if ((ttsEnabled || liveRef.current) && fullReplyRef.current) {
           const plain = fullReplyRef.current.replace(/[*_`#>[\]()]/g, '').substring(0, 600)
           await voice.speak(plain)
         }
@@ -248,6 +252,15 @@ export default function AssistantPage() {
       handleSend(input)
     }
   }
+
+  // Live conversation toggle.
+  const toggleLive = useCallback(() => {
+    if (live.active) { liveRef.current = false; live.stop(); return }
+    if (!window.isSecureContext) { addToast('Live chat needs a secure (HTTPS) connection', 'info'); return }
+    if (!live.hasWebSpeech) { addToast('Live chat needs Chrome or Edge', 'info'); return }
+    liveRef.current = true
+    live.start(async (text) => { await handleSend(text) })
+  }, [live, addToast, handleSend])
 
   // Regenerate: re-send the user message that preceded this assistant reply.
   const regenerate = (assistantId: string) => {
@@ -538,13 +551,25 @@ export default function AssistantPage() {
             }}
           />
 
+          {/* Live conversation toggle */}
+          <motion.button
+            whileTap={{ scale: 0.88 }}
+            onClick={toggleLive}
+            title="Live conversation"
+            className={`shrink-0 mb-0.5 w-9 h-9 rounded-full flex items-center justify-center
+                        transition-all min-w-[40px] min-h-[40px]
+                        ${live.active ? 'text-[#00FF88] bg-[#00FF88]/10' : 'text-[#5C6B85] hover:text-[#38DBFF]'}`}
+          >
+            <Radio size={16} />
+          </motion.button>
+
           {/* Voice */}
           <VoiceButton
             voiceState={voice.state}
             analyserNode={voice.analyserNode}
             onStart={handleVoiceStart}
             onStop={voice.stopListening}
-            disabled={streaming}
+            disabled={streaming || live.active}
           />
 
           {/* Send */}
@@ -570,6 +595,44 @@ export default function AssistantPage() {
           </motion.button>
         </div>
       </div>
+
+      {/* ── Live conversation overlay ── */}
+      <AnimatePresence>
+        {live.active && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[120] flex flex-col items-center justify-center gap-8 px-6"
+            style={{ background: 'rgba(20,23,34,0.86)', backdropFilter: 'blur(2px)' }}
+          >
+            <OrbAnimation
+              size={240}
+              mode={orbMode}
+              amplitude={voice.amplitude}
+              amplitudeArray={voice.amplitudeArray}
+            />
+            <div className="text-center max-w-lg">
+              <div className="t-label mb-2 flex items-center justify-center gap-2">
+                <span className="relative flex h-2 w-2">
+                  <span className="absolute inline-flex h-full w-full rounded-full bg-[#00FF88] opacity-60 animate-ping" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-[#00FF88]" />
+                </span>
+                {voice.isSpeaking ? 'Aria is speaking…' : streaming ? 'Thinking…' : 'Listening…'}
+              </div>
+              <p className="t-body text-[var(--text-primary)] min-h-[1.5em]">
+                {live.transcript || (streaming || voice.isSpeaking ? '' : 'Say something…')}
+              </p>
+            </div>
+            <button
+              onClick={toggleLive}
+              className="neu-pill px-5 h-11 flex items-center gap-2 text-[#FF4466] t-label"
+            >
+              <X size={16} /> End live chat
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }
