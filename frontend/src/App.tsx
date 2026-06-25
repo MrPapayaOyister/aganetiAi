@@ -1,51 +1,74 @@
 import { createContext, useContext, useState } from 'react'
-import { Routes, Route, Navigate } from 'react-router-dom'
-import { AnimatePresence } from 'framer-motion'
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { AnimatePresence, motion } from 'framer-motion'
 import Layout from './components/Layout'
 import { Toast } from './components/Toast'
+import CommandPalette from './components/CommandPalette'
+import ParticleCanvas from './components/ParticleCanvas'
 import AssistantPage from './pages/AssistantPage'
 import AnalyticsPage from './pages/AnalyticsPage'
 import FilesPage from './pages/FilesPage'
 import InboxPage from './pages/InboxPage'
 import SettingsPage from './pages/SettingsPage'
 import LoginPage from './pages/LoginPage'
-import AuthCallbackPage from './pages/AuthCallbackPage'
 import ProtectedRoute from './components/ProtectedRoute'
 import { ToastContext, useToastState } from './hooks/useToast'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
+import { AmbientProvider, useAmbient } from './contexts/AmbientContext'
 import type { UserID } from './api/client'
 
-// ── Legacy app context (TTS preference, kept for compat) ──────
-// userId is now derived from Supabase session — see useAuth()
+// ── Legacy app context (userId + TTS pref) ──────────────────────
 interface AppCtxType {
-  userId: UserID                  // will be replaced by auth.user.userId post-migration
-  setUserId: (id: UserID) => void // kept temporarily for Sidebar switcher
+  userId: UserID
+  setUserId: (id: UserID) => void
   ttsEnabled: boolean
   setTtsEnabled: (v: boolean) => void
 }
-
 const AppCtx = createContext<AppCtxType>({
-  userId:       'user_1',
-  setUserId:    () => {},
-  ttsEnabled:   false,
-  setTtsEnabled: () => {},
+  userId: 'user_1', setUserId: () => {}, ttsEnabled: true, setTtsEnabled: () => {},
 })
-
 export function useAppContext() { return useContext(AppCtx) }
 
-// ── Authenticated shell ────────────────────────────────────────
-// Reads the real user ID from Supabase session and injects it
-// into the legacy AppCtx so existing components keep working
-// during the migration period.
+// ── Page transition wrapper ─────────────────────────────────────
+function Page({ children }: { children: React.ReactNode }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, x: 20 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: -20 }}
+      transition={{ duration: 0.25, ease: 'easeOut' }}
+      className="h-full"
+    >
+      {children}
+    </motion.div>
+  )
+}
+
+// ── Animated routes (needs router context for useLocation) ──────
+function AnimatedRoutes() {
+  const location = useLocation()
+  return (
+    <AnimatePresence mode="wait">
+      <Routes location={location} key={location.pathname}>
+        <Route path="/"          element={<Page><AssistantPage /></Page>} />
+        <Route path="/analytics" element={<Page><AnalyticsPage /></Page>} />
+        <Route path="/files"     element={<Page><FilesPage /></Page>} />
+        <Route path="/inbox"     element={<Page><InboxPage /></Page>} />
+        <Route path="/settings"  element={<Page><SettingsPage /></Page>} />
+        <Route path="*"          element={<Navigate to="/" replace />} />
+      </Routes>
+    </AnimatePresence>
+  )
+}
+
+// ── Authenticated shell ─────────────────────────────────────────
 function AuthenticatedShell() {
-  const { user } = useAuth()
-  const [ttsEnabled, setTtsEnabledState] = useState<boolean>(() =>
-    localStorage.getItem('aria_tts') === 'true'
+  const { userId } = useAuth()
+  const { mode, amplitude } = useAmbient()
+  const [ttsEnabled, setTtsEnabledState] = useState<boolean>(
+    () => localStorage.getItem('aria_tts') !== 'false'   // default ON
   )
 
-  // During migration: map real user UUID to legacy user_1/user_2 if needed,
-  // or just pass the UUID — routes that already accept user_id as a string will work.
-  const userId = (user?.userId ?? localStorage.getItem('aria_user_id') ?? 'user_1') as UserID
   const setUserId = (id: UserID) => localStorage.setItem('aria_user_id', id)
   const setTtsEnabled = (v: boolean) => {
     setTtsEnabledState(v)
@@ -54,51 +77,46 @@ function AuthenticatedShell() {
 
   return (
     <AppCtx.Provider value={{ userId, setUserId, ttsEnabled, setTtsEnabled }}>
-      <Layout>
-        <Routes>
-          <Route path="/" element={<AssistantPage />} />
-          <Route path="/analytics" element={<AnalyticsPage />} />
-          <Route path="/files" element={<FilesPage />} />
-          <Route path="/inbox" element={<InboxPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </Layout>
+      {/* Global ambient particle field — reacts to assistant state */}
+      <div className="fixed inset-0 z-0 pointer-events-none">
+        <ParticleCanvas mode={mode} amplitude={amplitude} />
+      </div>
+      <div className="relative z-10 h-full">
+        <Layout>
+          <AnimatedRoutes />
+        </Layout>
+      </div>
+      <CommandPalette />
     </AppCtx.Provider>
   )
 }
 
-// ── Root ──────────────────────────────────────────────────────
-
+// ── Root ────────────────────────────────────────────────────────
 export default function App() {
   const toastCtx = useToastState()
-
   return (
     <AuthProvider>
-      <ToastContext.Provider value={toastCtx}>
-        <Routes>
-          {/* Public routes */}
-          <Route path="/login"         element={<LoginPage />} />
-          <Route path="/auth/callback" element={<AuthCallbackPage />} />
+      <AmbientProvider>
+        <ToastContext.Provider value={toastCtx}>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+            <Route
+              path="/*"
+              element={
+                <ProtectedRoute>
+                  <AuthenticatedShell />
+                </ProtectedRoute>
+              }
+            />
+          </Routes>
 
-          {/* Protected shell — all app routes */}
-          <Route
-            path="/*"
-            element={
-              <ProtectedRoute>
-                <AuthenticatedShell />
-              </ProtectedRoute>
-            }
-          />
-        </Routes>
-
-        {/* Toasts rendered outside layout */}
-        <AnimatePresence>
-          {toastCtx.toasts.map(t => (
-            <Toast key={t.id} toast={t} onDismiss={toastCtx.removeToast} />
-          ))}
-        </AnimatePresence>
-      </ToastContext.Provider>
+          <AnimatePresence>
+            {toastCtx.toasts.map(t => (
+              <Toast key={t.id} toast={t} onDismiss={toastCtx.removeToast} />
+            ))}
+          </AnimatePresence>
+        </ToastContext.Provider>
+      </AmbientProvider>
     </AuthProvider>
   )
 }

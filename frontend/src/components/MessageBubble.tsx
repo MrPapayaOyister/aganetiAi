@@ -1,3 +1,5 @@
+import { memo } from 'react'
+import { motion } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { OrbAnimation } from './OrbAnimation'
@@ -12,62 +14,74 @@ export interface ChatMessage {
 interface MessageBubbleProps {
   message: ChatMessage
   streaming?: boolean
+  speaking?: boolean         // active TTS playback → animated border
+  userInitial?: string
 }
 
-export function MessageBubble({ message, streaming }: MessageBubbleProps) {
+function ThinkingDots() {
+  return (
+    <div className="flex items-center gap-1.5 h-5">
+      <span className="text-[#4A6080] text-xs mr-1">Thinking</span>
+      {[0, 0.15, 0.3].map((d, i) => (
+        <span
+          key={i}
+          className="w-1.5 h-1.5 rounded-full bg-[#00D4FF]"
+          style={{ animation: `blink 1.1s ${d}s ease-in-out infinite` }}
+        />
+      ))}
+    </div>
+  )
+}
+
+function MessageBubbleBase({ message, streaming, speaking, userInitial = 'U' }: MessageBubbleProps) {
   const isUser = message.role === 'user'
   const isEmpty = !message.content && streaming
 
   return (
-    <div className={`flex gap-3 px-4 py-2 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}>
+    <motion.div
+      initial={{ opacity: 0, y: 16, scale: 0.97 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      transition={{ type: 'spring', stiffness: 260, damping: 24 }}
+      className={`flex gap-3 px-4 py-2 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}
+    >
       {/* Avatar */}
-      <div className="shrink-0 mt-1">
+      <div className="shrink-0 mt-0.5">
         {isUser ? (
           <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#00D4FF]/30 to-[#7B2FFF]/30
                           border border-[#00D4FF]/30 flex items-center justify-center
-                          text-[#00D4FF] text-xs font-bold">
-            U
+                          text-[#00D4FF] text-xs font-bold uppercase">
+            {userInitial}
           </div>
         ) : (
-          <OrbAnimation size="sm" streaming={streaming} />
+          <OrbAnimation mode={speaking ? 'speaking' : streaming ? 'thinking' : 'idle'} size={30} />
         )}
       </div>
 
       {/* Bubble */}
       <div
-        className={`max-w-[75%] md:max-w-[65%] rounded-2xl px-4 py-3 text-sm leading-relaxed
+        className={`max-w-[78%] md:max-w-[68%] px-4 py-3 text-sm leading-relaxed border
           ${isUser
-            ? 'bg-[#00D4FF]/10 border border-[#00D4FF]/25 text-[#E2E8F0] rounded-tr-sm'
-            : 'glass border border-[#1E3A5F]/40 text-[#E2E8F0] rounded-tl-sm'
+            ? 'bg-[#00D4FF]/[0.06] border-l-2 border-[#00D4FF]/60 border-y-transparent border-r-transparent text-[#E2E8F0]'
+            : `glass-strong text-[#E2E8F0] ${speaking ? 'border-pulse' : 'border-[#1E3A5F]/40'}`
           }`}
+        style={{ borderRadius: isUser ? '16px 4px 16px 16px' : '4px 16px 16px 16px' }}
       >
         {isEmpty ? (
-          <div className="flex gap-1 items-center h-4">
-            {[0, 0.2, 0.4].map((d, i) => (
-              <span
-                key={i}
-                className="w-1.5 h-1.5 rounded-full bg-[#4A6080]"
-                style={{ animation: `blink 1.2s ${d}s ease-in-out infinite` }}
-              />
-            ))}
-          </div>
+          <ThinkingDots />
+        ) : isUser ? (
+          <p className="whitespace-pre-wrap">{message.content}</p>
         ) : (
-          <>
-            {isUser ? (
-              <p className="whitespace-pre-wrap">{message.content}</p>
-            ) : (
-              <div className="prose-chat">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {message.content}
-                </ReactMarkdown>
-              </div>
+          <div className="prose-chat">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+            {streaming && (
+              <span className="inline-block w-[2px] h-4 bg-[#00D4FF] cursor-blink ml-0.5 align-middle" />
             )}
-            {streaming && !isUser && (
-              <span className="inline-block w-0.5 h-4 bg-[#00D4FF] cursor-blink ml-0.5 align-middle" />
-            )}
-          </>
+          </div>
         )}
       </div>
-    </div>
+    </motion.div>
   )
 }
+
+export const MessageBubble = memo(MessageBubbleBase)
+export default MessageBubble

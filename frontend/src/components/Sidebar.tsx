@@ -1,9 +1,14 @@
 import { NavLink } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { MessageSquare, BarChart2, FolderOpen, Inbox, Settings } from 'lucide-react'
+import { MessageSquare, BarChart2, FolderOpen, Inbox, Settings, LogOut } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useAppContext } from '../App'
+import { useAuth } from '../contexts/AuthContext'
 import axios from 'axios'
+
+const HEALTH_COLORS: Record<string, string> = {
+  ok: '#00FF88', degraded: '#FFB800', down: '#FF4466',
+}
 
 const links = [
   { to: '/',          icon: MessageSquare, label: 'Assistant' },
@@ -14,7 +19,8 @@ const links = [
 ]
 
 export default function Sidebar() {
-  const { userId, setUserId } = useAppContext()
+  const { userId } = useAppContext()
+  const { user, signOut } = useAuth()
 
   const { data: agentSummary } = useQuery({
     queryKey: ['agent-inbox-summary', userId],
@@ -22,6 +28,17 @@ export default function Sidebar() {
     refetchInterval: 60_000,
     retry: false,
   })
+
+  const { data: health } = useQuery({
+    queryKey: ['health-services'],
+    queryFn: () => axios.get('/api/health/services').then(r => r.data),
+    refetchInterval: 30_000,
+    retry: false,
+  })
+
+  const overall: string = health?.overall ?? 'down'
+  const healthColor = HEALTH_COLORS[overall] ?? '#4A6080'
+  const initial = (user?.email?.[0] ?? 'A').toUpperCase()
 
   const badgeCounts: Record<string, number> = {
     '/inbox': agentSummary?.pending ?? agentSummary?.total ?? 0,
@@ -85,22 +102,32 @@ export default function Sidebar() {
 
       <div className="flex-1" />
 
-      {/* User switcher */}
-      <div className="flex flex-col items-center gap-1">
-        {(['user_1', 'user_2'] as const).map(id => (
-          <button
-            key={id}
-            onClick={() => setUserId(id)}
-            title={id}
-            className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold
-                        transition-all ${userId === id
-                          ? 'bg-gradient-to-br from-[#00D4FF]/40 to-[#7B2FFF]/40 text-[#00D4FF] border border-[#00D4FF]/30'
-                          : 'bg-[#1E3A5F]/30 text-[#4A6080] hover:text-[#94A3B8]'}`}
-          >
-            {id.slice(-1)}
-          </button>
-        ))}
+      {/* System health */}
+      <div
+        className="flex items-center gap-1.5 mb-3 px-2 py-1 rounded-full bg-white/[0.03]"
+        title={`System: ${overall}`}
+      >
+        <motion.span
+          className="w-2 h-2 rounded-full"
+          style={{ background: healthColor, boxShadow: `0 0 8px ${healthColor}` }}
+          animate={{ opacity: [1, 0.4, 1] }}
+          transition={{ duration: 2, repeat: Infinity }}
+        />
       </div>
+
+      {/* User avatar → sign out */}
+      <motion.button
+        whileHover={{ scale: 1.08 }}
+        whileTap={{ scale: 0.92 }}
+        onClick={signOut}
+        title={`${user?.email ?? 'Account'} — sign out`}
+        className="group relative w-9 h-9 rounded-full flex items-center justify-center
+                   bg-gradient-to-br from-[#00D4FF]/30 to-[#7B2FFF]/30
+                   border border-[#00D4FF]/30 text-[#00D4FF] text-sm font-bold"
+      >
+        <span className="group-hover:opacity-0 transition-opacity">{initial}</span>
+        <LogOut size={15} className="absolute opacity-0 group-hover:opacity-100 transition-opacity text-[#FF4466]" />
+      </motion.button>
     </aside>
   )
 }

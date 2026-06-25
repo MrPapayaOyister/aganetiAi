@@ -9,6 +9,7 @@ import { useStream } from '../hooks/useStream'
 import { useVoice } from '../hooks/useVoice'
 import { useToast } from '../hooks/useToast'
 import { useAppContext } from '../App'
+import { useAmbient } from '../contexts/AmbientContext'
 import axios from 'axios'
 import type { ChatMessage } from '../components/MessageBubble'
 
@@ -28,8 +29,20 @@ function getGreeting() {
 export default function AssistantPage() {
   const { userId, ttsEnabled, setTtsEnabled } = useAppContext()
   const { addToast } = useToast()
+  const { setAmbient } = useAmbient()
   const { stream, streaming, abort } = useStream()
   const voice = useVoice()
+
+  // Drive the global particle field from the assistant's live state
+  useEffect(() => {
+    if (voice.isListening)      setAmbient('listening', 0.6)
+    else if (voice.isSpeaking)  setAmbient('speaking', 0.7)
+    else if (streaming)         setAmbient('thinking', 0.8)
+    else                        setAmbient('idle', 0)
+  }, [streaming, voice.isListening, voice.isSpeaking, setAmbient])
+
+  // Reset the field to idle when leaving the page
+  useEffect(() => () => setAmbient('idle', 0), [setAmbient])
 
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
@@ -48,6 +61,7 @@ export default function AssistantPage() {
   const fullReplyRef = useRef('')
 
   const isIdle = messages.length === 0 && !streaming
+  const lastAssistantId = [...messages].reverse().find(m => m.role === 'assistant')?.id
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -136,7 +150,12 @@ export default function AssistantPage() {
                 exit={{ opacity: 0, scale: 0.5 }}
                 transition={{ type: 'spring', stiffness: 400, damping: 30 }}
               >
-                <OrbAnimation size="sm" streaming={streaming} speaking={voice.isSpeaking} />
+                <OrbAnimation
+                  size={36}
+                  mode={voice.isSpeaking ? 'speaking' : streaming ? 'thinking' : 'idle'}
+                  amplitude={voice.amplitude}
+                  amplitudeArray={voice.amplitudeArray}
+                />
               </motion.div>
             ) : (
               <motion.div key="icon" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
@@ -191,7 +210,12 @@ export default function AssistantPage() {
               exit={{ opacity: 0, scale: 0.97 }}
               className="h-full flex flex-col items-center justify-center px-6 text-center"
             >
-              <OrbAnimation size="lg" speaking={voice.isSpeaking} />
+              <OrbAnimation
+                size={180}
+                mode={voice.isListening ? 'listening' : voice.isSpeaking ? 'speaking' : 'idle'}
+                amplitude={voice.amplitude}
+                amplitudeArray={voice.amplitudeArray}
+              />
 
               <motion.h1
                 initial={{ opacity: 0, y: 16 }}
@@ -248,6 +272,7 @@ export default function AssistantPage() {
                     <MessageBubble
                       message={msg}
                       streaming={msg.streaming && streaming}
+                      speaking={voice.isSpeaking && msg.role === 'assistant' && msg.id === lastAssistantId}
                     />
                   </motion.div>
                 ))}
@@ -257,6 +282,27 @@ export default function AssistantPage() {
           )}
         </AnimatePresence>
       </div>
+
+      {/* Live transcript while listening */}
+      <AnimatePresence>
+        {voice.isListening && (
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 8 }}
+            className="shrink-0 px-4 pb-1 max-w-3xl mx-auto w-full"
+          >
+            <div className="flex items-center gap-2 text-sm">
+              <span className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full rounded-full bg-[#00D4FF] opacity-60 animate-ping" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-[#00D4FF]" />
+              </span>
+              <span className="text-[#4A6080]">Listening…</span>
+              <span className="text-[#E2E8F0] truncate">{voice.transcript}</span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Input bar */}
       <div className="shrink-0 px-3 py-2.5 pb-safe border-t border-[#1E3A5F]/30 bg-[#070B14]/80">
