@@ -43,7 +43,8 @@ export function AgendaTimeline({ userId }: AgendaTimelineProps) {
     return () => clearInterval(t)
   }, [])
 
-  const events: AgendaEvent[] = data?.agenda ?? []
+  // Guard: backend historically returned a formatted string here; only ever map an array.
+  const events: AgendaEvent[] = Array.isArray(data?.agenda) ? data.agenda : []
 
   if (isLoading) return <SkeletonCard lines={4} className="mt-2" />
 

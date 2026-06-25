@@ -701,32 +701,48 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── TTS proxy ────────────────────────────────────────────────
+# ── TTS (local Kokoro) ───────────────────────────────────────
 @app.post("/tts")
 async def tts_endpoint(payload: dict):
-    text = payload.get("text", "")
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as c:
-            r = await c.post(f"{TTS_URL}/api/tts", json={"text": text})
-        return StreamingResponse(iter([r.content]), media_type="audio/wav")
-    except Exception:
-        from fastapi import HTTPException
-        raise HTTPException(503, "TTS service unavailable")
+    """Synthesize speech locally (Kokoro) and return a WAV. No remote dependency."""
+    import tempfile, os as _os
+    from fastapi import HTTPException
+    from integrations.tts import synthesize_speech
 
-# ── STT proxy ────────────────────────────────────────────────
+    text = (payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "No text provided")
+
+    tmp = _os.path.join(tempfile.gettempdir(), f"_tts_{_uuid.uuid4().hex}.wav")
+    try:
+        ok = await asyncio.to_thread(synthesize_speech, text, tmp)
+        if not ok or not _os.path.exists(tmp):
+            raise HTTPException(503, "TTS synthesis failed")
+        data = await asyncio.to_thread(lambda: open(tmp, "rb").read())
+        return StreamingResponse(iter([data]), media_type="audio/wav")
+    finally:
+        try: _os.remove(tmp)
+        except Exception: pass
+
+# ── STT (local faster-whisper) ───────────────────────────────
 @app.post("/stt")
 async def stt_endpoint(audio: UploadFile = File(...)):
+    """Transcribe uploaded audio locally (faster-whisper). No remote dependency."""
+    import tempfile, os as _os
+    from integrations.whisper_transcriber import transcribe_audio
+
+    raw = await audio.read()
+    suffix = _os.path.splitext(audio.filename or "")[1] or ".webm"
+    tmp = _os.path.join(tempfile.gettempdir(), f"_stt_{_uuid.uuid4().hex}{suffix}")
     try:
-        async with httpx.AsyncClient(timeout=30.0) as c:
-            r = await c.post(
-                f"{STT_URL}/asr",
-                files={"audio_file": (audio.filename, await audio.read(), audio.content_type)},
-                params={"encode": "true", "task": "transcribe", "language": "en", "output": "json"},
-            )
-        return r.json()
-    except Exception:
-        from fastapi import HTTPException
-        raise HTTPException(503, "STT service unavailable")
+        await asyncio.to_thread(lambda: open(tmp, "wb").write(raw))
+        text = await asyncio.to_thread(transcribe_audio, tmp)
+        if text in ("[No speech detected]", "[Transcription failed]"):
+            text = ""
+        return {"text": text}
+    finally:
+        try: _os.remove(tmp)
+        except Exception: pass
 
 # ── File ingest ───────────────────────────────────────────────
 @app.post("/ingest/upload")
@@ -2213,12 +2229,18 @@ async def get_inbox_count_endpoint(user_id: str = "user_1"):
 
 @app.get("/calendar/agenda")
 async def get_calendar_agenda(user_id: str = "user_1"):
-    """Returns today's agenda for user_id. Used by Telegram + dashboard."""
+    """Returns the dashboard agenda for user_id as a STRUCTURED list of events
+    (raw Graph shape: subject, start.dateTime, end.dateTime, attendees). The
+    frontend AgendaTimeline maps over this — it must be an array, never a string.
+    Never 500s; returns an empty list if the calendar is unavailable."""
     try:
-        agenda = await asyncio.to_thread(get_todays_agenda, user_id)
-        return {"user_id": user_id, "agenda": agenda}
+        from integrations.m365_calendar import get_upcoming_events
+        # Rest of today (cap window at 16h) as structured events.
+        events = await asyncio.to_thread(get_upcoming_events, user_id, 16 * 60)
+        return {"user_id": user_id, "agenda": events if isinstance(events, list) else []}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        log.warning("calendar agenda unavailable for %s: %s", user_id, e)
+        return {"user_id": user_id, "agenda": []}
 
 @app.post("/calendar/invalidate")
 async def invalidate_calendar_cache(user_id: str = None):
