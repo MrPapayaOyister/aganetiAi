@@ -205,6 +205,44 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_emails",
+            "description": "Read the user's recent Gmail inbox messages (subject, sender, "
+                           "preview, read/unread). Use when the user asks about their email, "
+                           "unread messages, or what's in their inbox.",
+            "parameters": {
+                "type": "object",
+                "properties": {"max_results": {"type": "integer", "description": "Default 10"}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_agenda",
+            "description": "Read the user's upcoming Google Calendar events (title, time, "
+                           "attendees). Use for 'what's on my calendar', 'my agenda', "
+                           "'next meeting'.",
+            "parameters": {
+                "type": "object",
+                "properties": {"days_ahead": {"type": "integer", "description": "Default 1"}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_contacts",
+            "description": "Read or search the user's real Google contacts (name, email, "
+                           "phone, company). Pass `query` to search; omit to list.",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "Optional search text"}},
+            },
+        },
+    },
 ]
 
 # Tools that produce a user-facing side effect (vs read-only tools whose result the
@@ -212,7 +250,34 @@ TOOL_SCHEMAS = [
 ACTION_TOOLS = {"create_task", "complete_task", "draft_email", "schedule_meeting",
                 "remember_fact", "set_reminder"}
 READ_TOOLS = {"get_analytics", "resolve_contact", "search_knowledge", "recall_memory",
-              "web_search"}
+              "web_search", "get_emails", "get_agenda", "get_contacts"}
+
+
+# ── Sync→async bridge for the Google services (dispatch runs in a worker thread) ──
+def _run_async(coro):
+    """Run an async coroutine from the sync tool dispatcher (which executes inside
+    asyncio.to_thread, so a fresh event loop here is safe)."""
+    import asyncio
+    return asyncio.run(coro)
+
+
+_GOOGLE_CTA = ("To use email, calendar, or contacts features, connect your Google "
+               "account in Settings → Connected Apps.")
+
+
+def _google_call(coro):
+    """Run a Google-service coroutine, mapping a not-connected error to a friendly
+    string. Returns (result, error_message)."""
+    from fastapi import HTTPException
+    try:
+        return _run_async(coro), None
+    except HTTPException as he:
+        detail = he.detail if isinstance(he.detail, dict) else {}
+        if str(detail.get("error", "")).startswith("google_"):
+            return None, _GOOGLE_CTA
+        return None, "That action isn't available right now."
+    except Exception:
+        return None, "That action failed — please try again."
 
 
 def _lead_in(name: str, args: dict) -> str:
@@ -328,12 +393,60 @@ def dispatch_tool_call(name: str, raw_args, user_id: str) -> str:
         return result.get("human") or str(result)
 
     if name == "resolve_contact":
-        from integrations.contacts import resolve_contact as _rc
-        c = _rc(args.get("name", ""))
-        if not c:
-            return f"No saved contact found for '{args.get('name','')}'."
-        return (f"Contact: {c.get('full_name','')} | email: {c.get('email') or 'none on file'}"
-                f" | role: {c.get('role') or '-'} | company: {c.get('company') or '-'}")
+        from backend.services import gcontacts
+        q = args.get("name", "")
+        res, err = _google_call(gcontacts.search_contacts(user_id, q))
+        if err:
+            return err
+        if not res:
+            return f"No contact found for '{q}'."
+        c = res[0]
+        return (f"Contact: {c.get('name','')} | email: {c.get('email') or 'none on file'}"
+                f" | phone: {c.get('phone') or '-'} | company: {c.get('company') or '-'}")
+
+    # ── Real Google read tools ──
+    if name == "get_emails":
+        from backend.services import gmail
+        try:
+            n = int(args.get("max_results", 10))
+        except (TypeError, ValueError):
+            n = 10
+        res, err = _google_call(gmail.get_gmail_inbox(user_id, n))
+        if err:
+            return err
+        if not res:
+            return "Your inbox is empty."
+        lines = [f"{'•' if not m['is_read'] else ' '} {m['subject']} — {m['from_name']}"
+                 for m in res[:n]]
+        unread = sum(1 for m in res if not m["is_read"])
+        return f"{unread} unread of {len(res)} recent emails:\n" + "\n".join(lines)
+
+    if name == "get_agenda":
+        from backend.services import gcalendar
+        try:
+            days = int(args.get("days_ahead", 1))
+        except (TypeError, ValueError):
+            days = 1
+        res, err = _google_call(gcalendar.get_google_agenda(user_id, days))
+        if err:
+            return err
+        if not res:
+            return "No upcoming events."
+        return "Upcoming events:\n" + "\n".join(
+            f"- {e['title']} at {e['start']}" + (f" ({e['location']})" if e.get('location') else "")
+            for e in res)
+
+    if name == "get_contacts":
+        from backend.services import gcontacts
+        q = (args.get("query") or "").strip()
+        coro = gcontacts.search_contacts(user_id, q) if q else gcontacts.get_google_contacts(user_id)
+        res, err = _google_call(coro)
+        if err:
+            return err
+        if not res:
+            return "No contacts found."
+        return "Contacts:\n" + "\n".join(
+            f"- {c['name']}" + (f" <{c['email']}>" if c.get('email') else "") for c in res[:15])
 
     if name == "search_knowledge":
         from backend.ingest import search_corporate
@@ -392,6 +505,35 @@ def dispatch_tool_call(name: str, raw_args, user_id: str) -> str:
             return f"🌐 Web results for *{query}*:\n\n" + "\n\n".join(lines)
         except Exception as e:
             return f"⚠️ Web search failed: {e}"
+
+    # Schedule a real Google Calendar event (replaces the M365 path).
+    if name == "schedule_meeting":
+        who = (args.get("with") or "").strip()
+        when = (args.get("time") or "").strip()
+        title = (args.get("title") or (f"Meeting with {who}" if who else "Meeting")).strip()
+        if not when:
+            return "When should I schedule it?"
+        try:
+            from integrations.m365_calendar import parse_meeting_time
+            start, end = parse_meeting_time(when)
+        except Exception:
+            return "I couldn't understand that time — try e.g. 'tomorrow at 3pm'."
+        attendees = None
+        if who:
+            if "@" in who:
+                attendees = [who]
+            else:
+                from backend.services import gcontacts
+                res, _ = _google_call(gcontacts.search_contacts(user_id, who))
+                if res and res[0].get("email"):
+                    attendees = [res[0]["email"]]
+        from backend.services import gcalendar
+        created, err = _google_call(gcalendar.create_google_event(
+            user_id, title, start, end, attendees=attendees))
+        if err:
+            return err
+        link = created.get("htmlLink") if isinstance(created, dict) else None
+        return f"Scheduled **{title}** for {start}." + (f"\n{link}" if link else "")
 
     action = {"type": name, **args}
     outcome = execute_action(action, user_id).strip()  # "✅ Task created.", etc.

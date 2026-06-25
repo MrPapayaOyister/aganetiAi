@@ -657,11 +657,27 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Collaborative AI Enterprise OS", lifespan=lifespan)
 
+# Per-user Google OAuth (connect/callback/status/disconnect)
+from backend.routes.provider_auth import router as provider_router
+app.include_router(provider_router, tags=["provider-auth"])
+
 # ── Structured logging + per-request trace IDs ─────────────
 import uuid as _uuid
 from backend.logging_config import setup_logging, set_trace_id, get_trace_id, get_logger
 setup_logging()
 log = get_logger("aganeti.api")
+
+
+# ── Helper: turn a Google "not connected" 403 into a soft 200 ──────────────
+def _not_connected_payload(user_id: str, extra: dict | None = None) -> dict:
+    base = {
+        "connected": False,
+        "message": "Connect your Google account to see this data",
+        "connect_url": f"/auth/google/connect?user_id={user_id}",
+    }
+    if extra:
+        base.update(extra)
+    return base
 
 @app.middleware("http")
 async def _trace_middleware(request, call_next):
@@ -1006,9 +1022,17 @@ async def get_tasks_endpoint(user_id: str = "user_1", status: str | None = None)
 
 @app.get("/digest/email/{user_id}")
 async def email_digest_endpoint(user_id: str):
-    from reports.email_digest import get_digest_for_user
-    digest = await asyncio.to_thread(get_digest_for_user, user_id)
-    return {"digest": digest}
+    """Gmail-based unread digest. `digest` stays a string (the summary) for the
+    existing panel; `data` carries the structured breakdown."""
+    from backend.services import gmail
+    try:
+        d = await gmail.get_gmail_email_digest(user_id)
+        return {"digest": d.get("summary", ""), "data": d, "connected": True}
+    except HTTPException:
+        return {"digest": "", "data": None, **_not_connected_payload(user_id)}
+    except Exception as e:
+        log.warning("email digest failed for %s: %s", user_id, e)
+        return {"digest": "", "data": None}
 
 @app.post("/report/generate")
 async def generate_report_endpoint(payload: dict):
@@ -1158,8 +1182,22 @@ from integrations.contacts import (
 )
 
 @app.get("/contacts")
-async def get_contacts(is_agent: int = None):
-    return {"contacts": list_contacts(is_agent=is_agent)}
+async def get_contacts(user_id: str = "user_1", q: str = None, is_agent: int = None):
+    """Human contacts come from the user's Google account (People API). The
+    agent-registry path (is_agent set) still uses the local contact store so
+    inter-agent messaging keeps working. Never 500s."""
+    if is_agent is not None:
+        return {"contacts": list_contacts(is_agent=is_agent)}
+    from backend.services import gcontacts
+    try:
+        contacts = (await gcontacts.search_contacts(user_id, q)) if q \
+            else (await gcontacts.get_google_contacts(user_id))
+        return {"contacts": contacts, "connected": True}
+    except HTTPException:
+        return {"contacts": [], **_not_connected_payload(user_id)}
+    except Exception as e:
+        log.warning("contacts failed for %s: %s", user_id, e)
+        return {"contacts": []}
 
 @app.get("/contacts/resolve/{name_or_email}")
 async def resolve_contact_endpoint(name_or_email: str):
@@ -2055,48 +2093,42 @@ async def chat_history_endpoint(session_id: str, limit: int = 20):
 
 @app.get("/chat/suggestions")
 async def chat_suggestions_endpoint(user_id: str = "user_1"):
-    """Three contextual prompt suggestions built from the user's live data.
-    Never errors — always returns exactly 3 suggestions."""
-    fallback = [
-        "What can you help me with today?",
-        "Check my calendar for today",
-        "Show me my pending tasks",
-    ]
+    """Three contextual prompt suggestions from real Gmail + Calendar + tasks.
+    Never errors — always returns exactly 3."""
+    from backend.services import gmail, gcalendar
     suggestions: list[str] = []
 
-    async def _safe(coro_fn, timeout=2.0):
-        try:
-            return await asyncio.wait_for(asyncio.to_thread(coro_fn), timeout=timeout)
-        except Exception:
-            return None
+    try:
+        unread = await gmail.get_gmail_unread_count(user_id)
+        if unread > 0:
+            suggestions.append(f"Summarize my {unread} unread emails")
+    except Exception:
+        pass
 
     try:
-        # 1) Unread email count
-        unread = await _safe(lambda: _unread_count(user_id))
-        if isinstance(unread, int) and unread > 0:
-            suggestions.append(f"Summarize my {unread} unread emails")
-
-        # 2) Pending tasks
-        pending = await _safe(lambda: get_all_tasks(user_id, status="pending"))
-        if pending:
-            suggestions.append("What are my most urgent tasks today?")
-
-        # 3) Next calendar event within 4 hours
-        from integrations.m365_calendar import get_upcoming_events
-        events = await _safe(lambda: get_upcoming_events(user_id, 240))
-        if events:
-            ev = events[0]
-            title = ev.get("subject") or "next"
-            suggestions.append(f"Brief me on my {title} meeting")
+        ev = await gcalendar.get_next_event(user_id)
+        if ev and ev.get("title"):
+            suggestions.append(f"Brief me on my {ev['title']} meeting")
     except Exception:
-        log.exception("suggestions build failed for %s", user_id)
+        pass
 
-    # Pad with fallbacks to always return exactly 3
-    for f in fallback:
-        if len(suggestions) >= 3:
-            break
-        if f not in suggestions:
-            suggestions.append(f)
+    try:
+        pending = get_all_tasks(user_id, status="pending")
+        if pending:
+            suggestions.append(f"What are my {len(pending)} pending tasks?")
+    except Exception:
+        pass
+
+    fallbacks = [
+        "What can you help me with today?",
+        "Show me my schedule for today",
+        "Any important emails I should know about?",
+    ]
+    i = 0
+    while len(suggestions) < 3 and i < len(fallbacks):
+        if fallbacks[i] not in suggestions:
+            suggestions.append(fallbacks[i])
+        i += 1
 
     return {"suggestions": suggestions[:3]}
 
@@ -2198,52 +2230,64 @@ class SendEmailRequest(BaseModel):
 
 @app.post("/send_email")
 async def send_email_outbox(request: SendEmailRequest):
+    """Send an email as the user via Gmail. Same URL/shape as before."""
+    from backend.services import gmail
     try:
         _, clean_recipient = parseaddr(request.to_email)
         subject = request.subject if request.subject.lower().startswith("re:") else f"Re: {request.subject}"
-        # Send via Microsoft Graph on behalf of request.user_id (Text preserves the old
-        # plain-text reply behavior). Runs off-thread — send_email uses sync httpx.
-        await asyncio.to_thread(
-            send_email, request.user_id, clean_recipient, subject, request.body, "Text"
-        )
-        # Log accepted draft for writing-style learning
+        await gmail.send_gmail_message(request.user_id, clean_recipient, subject, request.body)
         try:
             from backend.writing_style import record_sent_draft
             record_sent_draft(request.user_id, subject, request.body, clean_recipient)
         except Exception:
             pass
         return {"status": "success", "message": "Dispatched successfully"}
+    except HTTPException as he:
+        if isinstance(he.detail, dict) and he.detail.get("error", "").startswith("google_"):
+            return {"status": "error", **_not_connected_payload(request.user_id)}
+        return {"status": "error", "message": "Failed to send"}
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        log.warning("send_email failed for %s: %s", request.user_id, e)
+        return {"status": "error", "message": "Failed to send"}
 
 @app.get("/mail/inbox")
 async def get_inbox(user_id: str = "user_1"):
-    """Returns unread emails for user_id via Microsoft Graph. Used by the dashboard."""
+    """Returns the user's Gmail inbox. Soft-fails to {connected:false} if Google
+    isn't connected; never 500s."""
+    from backend.services import gmail
     try:
-        emails = await asyncio.to_thread(fetch_unread_emails, user_id, 20)
-        return {"user_id": user_id, "count": len(emails), "emails": emails}
+        emails = await gmail.get_gmail_inbox(user_id, 20)
+        return {"user_id": user_id, "count": len(emails), "emails": emails, "connected": True}
+    except HTTPException as he:
+        if isinstance(he.detail, dict) and he.detail.get("error", "").startswith("google_"):
+            return _not_connected_payload(user_id, {"emails": [], "count": 0})
+        return _not_connected_payload(user_id, {"emails": [], "count": 0})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        log.warning("inbox failed for %s: %s", user_id, e)
+        return {"user_id": user_id, "count": 0, "emails": [], "connected": True}
 
 @app.get("/mail/inbox/count")
 async def get_inbox_count_endpoint(user_id: str = "user_1"):
-    """Cheap unread count check — no message bodies."""
+    """Cheap Gmail unread count."""
+    from backend.services import gmail
     try:
-        return await asyncio.to_thread(get_inbox_count, user_id)
+        return {"unread": await gmail.get_gmail_unread_count(user_id)}
+    except HTTPException:
+        return {"unread": 0, "connected": False}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        log.warning("inbox count failed for %s: %s", user_id, e)
+        return {"unread": 0}
 
 @app.get("/calendar/agenda")
 async def get_calendar_agenda(user_id: str = "user_1"):
-    """Returns the dashboard agenda for user_id as a STRUCTURED list of events
-    (raw Graph shape: subject, start.dateTime, end.dateTime, attendees). The
-    frontend AgendaTimeline maps over this — it must be an array, never a string.
-    Never 500s; returns an empty list if the calendar is unavailable."""
+    """Returns the dashboard agenda as a STRUCTURED list of events (Google Calendar).
+    Must be an array (frontend maps over it). Never 500s."""
+    from backend.services import gcalendar
     try:
-        from integrations.m365_calendar import get_upcoming_events
-        # Rest of today (cap window at 16h) as structured events.
-        events = await asyncio.to_thread(get_upcoming_events, user_id, 16 * 60)
+        events = await gcalendar.get_google_agenda(user_id, days_ahead=2)
         return {"user_id": user_id, "agenda": events if isinstance(events, list) else []}
+    except HTTPException:
+        return {"user_id": user_id, "agenda": [], **_not_connected_payload(user_id)}
     except Exception as e:
         log.warning("calendar agenda unavailable for %s: %s", user_id, e)
         return {"user_id": user_id, "agenda": []}
