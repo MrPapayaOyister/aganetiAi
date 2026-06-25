@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
+import { generateId } from '../utils/uuid'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Send, Paperclip, Volume2, VolumeX, StopCircle, Zap } from 'lucide-react'
 import { OrbAnimation } from '../components/OrbAnimation'
@@ -36,7 +37,7 @@ export default function AssistantPage() {
     const k = `aria_session_${userId}`
     const stored = sessionStorage.getItem(k)
     if (stored) return stored
-    const id = crypto.randomUUID()
+    const id = generateId()
     sessionStorage.setItem(k, id)
     return id
   })
@@ -68,8 +69,8 @@ export default function AssistantPage() {
   const handleSend = useCallback(async (text: string) => {
     if (!text.trim() || streaming) return
 
-    const userMsg: ChatMessage = { id: crypto.randomUUID(), role: 'user', content: text }
-    const assistantId = crypto.randomUUID()
+    const userMsg: ChatMessage = { id: generateId(), role: 'user', content: text }
+    const assistantId = generateId()
     const assistantMsg: ChatMessage = { id: assistantId, role: 'assistant', content: '', streaming: true }
 
     fullReplyRef.current = ''

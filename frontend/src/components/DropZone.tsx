@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback } from 'react'
+import { generateId } from '../utils/uuid'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Upload, FileText, CheckCircle, XCircle, X, Loader2 } from 'lucide-react'
 import axios from 'axios'
@@ -30,7 +31,7 @@ export function DropZone({ userId }: DropZoneProps) {
   const { addToast } = useToast()
 
   const uploadFile = useCallback(async (file: File) => {
-    const id = crypto.randomUUID()
+    const id = generateId()
     setFiles(prev => [...prev, { id, name: file.name, size: file.size, status: 'uploading', progress: 0 }])
 
     const form = new FormData()
