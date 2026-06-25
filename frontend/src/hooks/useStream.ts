@@ -11,6 +11,7 @@ interface UseStreamCallbacks {
   onToken: (t: string) => void
   onThinking?: (msg: string) => void
   onAction?: (action: string, payload: Record<string, unknown>) => void
+  onSources?: (sources: Array<{ source: string }>) => void
   onError?: (msg: string) => void
   onDone: () => void
 }
@@ -74,6 +75,8 @@ export const useStream = () => {
               callbacks.onThinking?.(parsed.message ?? '')
             } else if (parsed.type === 'action') {
               callbacks.onAction?.(parsed.action ?? '', parsed.payload ?? {})
+            } else if (parsed.type === 'sources') {
+              callbacks.onSources?.(parsed.payload?.sources ?? [])
             } else if (parsed.type === 'error') {
               callbacks.onError?.(parsed.message ?? 'An error occurred')
             }

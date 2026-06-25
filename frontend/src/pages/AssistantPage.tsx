@@ -76,6 +76,7 @@ export default function AssistantPage() {
   const [input, setInput] = useState('')
   const [thinkingMsg, setThinkingMsg] = useState<string | null>(null)
   const [actionCards, setActionCards] = useState<ActionCard[]>([])
+  const [sourcesByMsg, setSourcesByMsg] = useState<Record<string, { source: string }[]>>({})
   const [errorFlash, setErrorFlash] = useState(false)
   const [sessionId] = useState(() => {
     const k = `aria_session_${userId}`
@@ -204,6 +205,9 @@ export default function AssistantPage() {
       onAction: (action, payload) => {
         setActionCards(prev => [...prev, { id: generateId(), action, payload, messageId: assistantId }])
       },
+      onSources: (srcs) => {
+        if (srcs.length) setSourcesByMsg(prev => ({ ...prev, [assistantId]: srcs }))
+      },
       onError: (msg) => {
         addToast(msg, 'error')
         setErrorFlash(true)
@@ -242,6 +246,14 @@ export default function AssistantPage() {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend(input)
+    }
+  }
+
+  // Regenerate: re-send the user message that preceded this assistant reply.
+  const regenerate = (assistantId: string) => {
+    const idx = messages.findIndex(m => m.id === assistantId)
+    for (let i = idx - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') { handleSend(messages[i].content); return }
     }
   }
 
@@ -409,6 +421,9 @@ export default function AssistantPage() {
                       message={msg}
                       streaming={msg.streaming && streaming}
                       speaking={voice.isSpeaking && msg.role === 'assistant' && msg.id === lastAssistantId}
+                      sources={sourcesByMsg[msg.id]}
+                      onPlay={(t) => voice.speak(t.replace(/[*_`#>[\]()]/g, '').slice(0, 600))}
+                      onRegenerate={msg.role === 'assistant' ? () => regenerate(msg.id) : undefined}
                     />
                     {/* Action cards belonging to this message */}
                     {actionCards.filter(c => c.messageId === msg.id).map(card => (
