@@ -139,3 +139,17 @@ export const ingestUpload = (file: File, user_id: UserID) => {
 // ── Health ────────────────────────────────────────────
 export const getHealth = () => http.get('/health')
 export const getHealthServices = () => http.get('/health/services')
+
+export interface EmailDraft {
+  _index: number
+  sender?: string
+  to?: string
+  subject?: string
+  draft_reply?: string
+  body?: string
+  triage_notes?: string
+}
+export const getDrafts = (user_id: UserID) =>
+  http.get<{ drafts: EmailDraft[] }>(`/drafts/${user_id}`)
+export const deleteDraft = (user_id: UserID, index: number) =>
+  http.delete(`/drafts/${user_id}/${index}`)

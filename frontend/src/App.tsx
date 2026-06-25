@@ -9,6 +9,7 @@ import AssistantPage from './pages/AssistantPage'
 import AnalyticsPage from './pages/AnalyticsPage'
 import FilesPage from './pages/FilesPage'
 import InboxPage from './pages/InboxPage'
+import DraftsPage from './pages/DraftsPage'
 import SettingsPage from './pages/SettingsPage'
 import LoginPage from './pages/LoginPage'
 import ProtectedRoute from './components/ProtectedRoute'
@@ -54,6 +55,7 @@ function AnimatedRoutes() {
         <Route path="/analytics" element={<Page><AnalyticsPage /></Page>} />
         <Route path="/files"     element={<Page><FilesPage /></Page>} />
         <Route path="/inbox"     element={<Page><InboxPage /></Page>} />
+        <Route path="/drafts"    element={<Page><DraftsPage /></Page>} />
         <Route path="/settings"  element={<Page><SettingsPage /></Page>} />
         <Route path="*"          element={<Navigate to="/" replace />} />
       </Routes>

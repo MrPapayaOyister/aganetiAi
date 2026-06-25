@@ -1,6 +1,6 @@
 import { NavLink } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { MessageSquare, BarChart2, FolderOpen, Inbox, Settings, LogOut } from 'lucide-react'
+import { MessageSquare, BarChart2, FolderOpen, Inbox, Mail, Settings, LogOut } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useAppContext } from '../App'
 import { useAuth } from '../contexts/AuthContext'
@@ -15,6 +15,7 @@ const links = [
   { to: '/analytics', icon: BarChart2,     label: 'Analytics' },
   { to: '/files',     icon: FolderOpen,    label: 'Files'     },
   { to: '/inbox',     icon: Inbox,         label: 'Inbox'     },
+  { to: '/drafts',    icon: Mail,          label: 'Drafts'    },
   { to: '/settings',  icon: Settings,      label: 'Settings'  },
 ]
 
