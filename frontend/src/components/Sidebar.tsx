@@ -2,8 +2,10 @@ import { NavLink } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { MessageSquare, BarChart2, FolderOpen, Inbox, Mail, Settings, LogOut } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
+import { useEffect, useRef } from 'react'
 import { useAppContext } from '../App'
 import { useAuth } from '../contexts/AuthContext'
+import { useToast } from '../hooks/useToast'
 import axios from 'axios'
 
 const HEALTH_COLORS: Record<string, string> = {
@@ -41,9 +43,18 @@ export default function Sidebar() {
   const healthColor = HEALTH_COLORS[overall] ?? '#4A6080'
   const initial = (user?.email?.[0] ?? 'A').toUpperCase()
 
-  const badgeCounts: Record<string, number> = {
-    '/inbox': agentSummary?.pending ?? agentSummary?.total ?? 0,
-  }
+  const inboxCount: number = agentSummary?.pending ?? agentSummary?.total ?? 0
+  const badgeCounts: Record<string, number> = { '/inbox': inboxCount }
+
+  // Live notification: toast when the agent inbox grows.
+  const { addToast } = useToast()
+  const prevCount = useRef<number | null>(null)
+  useEffect(() => {
+    if (prevCount.current !== null && inboxCount > prevCount.current) {
+      addToast(`New agent message (${inboxCount} pending)`, 'info')
+    }
+    prevCount.current = inboxCount
+  }, [inboxCount, addToast])
 
   return (
     <aside className="w-20 h-screen flex flex-col items-center pt-6 pb-4 gap-1

@@ -9,6 +9,8 @@ import { useQuery } from '@tanstack/react-query'
 import { OrbAnimation, type OrbMode } from '../components/OrbAnimation'
 import { MessageBubble } from '../components/MessageBubble'
 import { VoiceButton } from '../components/VoiceButton'
+import { ConversationMenu } from '../components/ConversationMenu'
+import { useConversations } from '../hooks/useConversations'
 import { useStream } from '../hooks/useStream'
 import { useVoice } from '../hooks/useVoice'
 import { useLiveChat } from '../hooks/useLiveChat'
@@ -80,14 +82,8 @@ export default function AssistantPage() {
   const [actionCards, setActionCards] = useState<ActionCard[]>([])
   const [sourcesByMsg, setSourcesByMsg] = useState<Record<string, { source: string }[]>>({})
   const [errorFlash, setErrorFlash] = useState(false)
-  const [sessionId] = useState(() => {
-    const k = `aria_session_${userId}`
-    const stored = sessionStorage.getItem(k)
-    if (stored) return stored
-    const id = generateId()
-    sessionStorage.setItem(k, id)
-    return id
-  })
+  const convos = useConversations(userId)
+  const sessionId = convos.activeId
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -122,13 +118,17 @@ export default function AssistantPage() {
   // Reset the field to idle when leaving the page
   useEffect(() => () => setAmbient('idle', 0), [setAmbient])
 
-  // Load prior conversation for this session on mount / session change
+  // Load the active conversation's messages on switch: localStorage first,
+  // backend /chat/history as a fallback.
   useEffect(() => {
     let cancelled = false
-    const loadHistory = async () => {
-      try {
-        const res = await fetch(`/api/chat/history?session_id=${encodeURIComponent(sessionId)}&limit=20`)
-        const data = await res.json()
+    let local: ChatMessage[] = []
+    try { local = JSON.parse(localStorage.getItem(`aria_msgs_${sessionId}`) || '[]') } catch { /* noop */ }
+    if (local.length) { setMessages(local); return }
+    setMessages([])
+    fetch(`/api/chat/history?session_id=${encodeURIComponent(sessionId)}&limit=20`)
+      .then(r => r.json())
+      .then(data => {
         if (!cancelled && Array.isArray(data.messages) && data.messages.length > 0) {
           setMessages(data.messages.map((m: { role: string; content: string }) => ({
             id: generateId(),
@@ -137,11 +137,17 @@ export default function AssistantPage() {
             streaming: false,
           })))
         }
-      } catch { /* ignore — fresh session */ }
-    }
-    loadHistory()
+      })
+      .catch(() => { /* fresh session */ })
     return () => { cancelled = true }
   }, [sessionId])
+
+  // Persist messages for the active conversation (skip while streaming).
+  useEffect(() => {
+    if (!streaming && messages.length) {
+      try { localStorage.setItem(`aria_msgs_${sessionId}`, JSON.stringify(messages)) } catch { /* quota */ }
+    }
+  }, [messages, streaming, sessionId])
 
   // Contextual quick-action suggestions (real data from the backend)
   const { data: suggestionsData } = useQuery({
@@ -192,6 +198,7 @@ export default function AssistantPage() {
     fullReplyRef.current = ''
     setMessages(prev => [...prev, userMsg, assistantMsg])
     setInput('')
+    convos.touch(sessionId, text)
     sound.playSend()
 
     await stream(text, sessionId, userId, {
@@ -323,7 +330,14 @@ export default function AssistantPage() {
           )}
         </div>
 
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1.5">
+          <ConversationMenu
+            sessions={convos.sessions}
+            activeId={convos.activeId}
+            onNew={convos.newConversation}
+            onSwitch={convos.switchTo}
+            onDelete={convos.remove}
+          />
           <motion.button
             whileTap={{ scale: 0.88 }}
             data-mute-click
