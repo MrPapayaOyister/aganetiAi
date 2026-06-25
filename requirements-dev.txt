@@ -1,0 +1,4 @@
+# Dev / test dependencies (not needed at runtime)
+pytest
+pytest-asyncio
+httpx

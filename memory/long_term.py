@@ -11,9 +11,31 @@ from qdrant_client.models import (
 )
 
 QDRANT_URL = "http://localhost:6333"
-EMBED_URL  = "http://localhost:8080/v1/embeddings"
 COLLECTION_PREFIX = "user_memory_"
-VECTOR_SIZE = 3584
+
+# Embeddings are unified on the SAME fastembed model the corporate RAG uses
+# (BAAI/bge-small-en-v1.5, 384-dim). Previously memory used the llama.cpp embeddings
+# endpoint, whose dimension changed with the loaded model (3584 on a 7B, 5120 on the
+# 14B) and silently broke every upsert after a model swap. Sharing one local embedder
+# means memory survives model swaps and there is a single dimension to reason about.
+_embedder = None
+
+def _get_embedder():
+    global _embedder
+    if _embedder is None:
+        from fastembed import TextEmbedding
+        from config.settings import EMBED_MODEL_NAME
+        _embedder = TextEmbedding(model_name=EMBED_MODEL_NAME)
+    return _embedder
+
+_VECTOR_SIZE = None
+
+def get_vector_size() -> int:
+    global _VECTOR_SIZE
+    if _VECTOR_SIZE is None:
+        probe = embed_text("dimension probe")
+        _VECTOR_SIZE = len(probe) if probe else 384
+    return _VECTOR_SIZE
 
 def ensure_collection(user_id: str):
     collection_name = f"{COLLECTION_PREFIX}{user_id}"
@@ -22,18 +44,15 @@ def ensure_collection(user_id: str):
         if not client.collection_exists(collection_name):
             client.create_collection(
                 collection_name=collection_name,
-                vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE)
+                vectors_config=VectorParams(size=get_vector_size(), distance=Distance.COSINE)
             )
     except Exception as e:
         print(f"Error ensuring collection {collection_name}: {e}")
 
 def embed_text(text: str) -> list[float] | None:
-    payload = {"model": "qwen2.5-7b-instruct", "input": text}
     try:
-        response = httpx.post(EMBED_URL, json=payload, timeout=30.0)
-        if response.status_code == 200:
-            data = response.json()
-            return data["data"][0]["embedding"]
+        vecs = list(_get_embedder().embed([text]))
+        return vecs[0].tolist()
     except Exception as e:
         print(f"Error in embed_text: {e}")
     return None

@@ -251,3 +251,129 @@ def create_calendar_event(
     # Invalidate agenda cache — new event just added
     invalidate_agenda_cache(user_id)
     return resp.json()
+
+
+def parse_meeting_time(time_str: str, tz_offset_hours: int = 4) -> tuple[str, str]:
+    """
+    Convert natural language or ISO time → (start_iso, end_iso) suitable for Graph API.
+    Times are expressed in Asia/Dubai (UTC+4) local time. Returns naive ISO strings
+    (no offset) because Graph API takes timeZone separately.
+    Default duration: 1 hour.
+    """
+    import re
+    from datetime import datetime, timezone, timedelta
+
+    local_now = datetime.now(timezone.utc) + timedelta(hours=tz_offset_hours)
+
+    def _apply_time(base: datetime, h: int, m: int) -> datetime:
+        return base.replace(hour=h, minute=m, second=0, microsecond=0)
+
+    def _extract_hm(s: str):
+        match = re.search(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", s.lower())
+        if not match:
+            return None
+        hour, minute = int(match.group(1)), int(match.group(2) or 0)
+        period = match.group(3)
+        if period == "pm" and hour != 12:
+            hour += 12
+        if period == "am" and hour == 12:
+            hour = 0
+        return hour, minute
+
+    ts = time_str.strip()
+
+    # Already ISO: "2026-06-24T10:00:00" or "2026-06-24 10:00"
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            start = datetime.strptime(ts, fmt)
+            end = start + timedelta(hours=1)
+            return start.strftime("%Y-%m-%dT%H:%M:%S"), end.strftime("%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            pass
+
+    ts_lower = ts.lower()
+
+    # "in X minutes/hours"
+    m = re.search(r"in\s+(\d+)\s+(minute|hour|min|hr)s?", ts_lower)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        delta = timedelta(hours=n) if "hour" in unit or unit == "hr" else timedelta(minutes=n)
+        start = local_now + delta
+        end = start + timedelta(hours=1)
+        return start.strftime("%Y-%m-%dT%H:%M:%S"), end.strftime("%Y-%m-%dT%H:%M:%S")
+
+    # Day offset words
+    day_delta = 0
+    if "tomorrow" in ts_lower:
+        day_delta = 1
+    elif "day after tomorrow" in ts_lower:
+        day_delta = 2
+    elif re.search(r"next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)", ts_lower):
+        day_map = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+                   "friday": 4, "saturday": 5, "sunday": 6}
+        m2 = re.search(r"(monday|tuesday|wednesday|thursday|friday|saturday|sunday)", ts_lower)
+        target_wd = day_map[m2.group(1)]
+        current_wd = local_now.weekday()
+        day_delta = (target_wd - current_wd) % 7 or 7
+
+    base_date = local_now + timedelta(days=day_delta)
+
+    hm = _extract_hm(ts)
+    if hm:
+        start = _apply_time(base_date, hm[0], hm[1])
+        # If no day offset and time is in the past, push to tomorrow
+        if day_delta == 0 and start <= local_now:
+            start += timedelta(days=1)
+        end = start + timedelta(hours=1)
+        return start.strftime("%Y-%m-%dT%H:%M:%S"), end.strftime("%Y-%m-%dT%H:%M:%S")
+
+    # Fallback: 1 hour from now
+    start = local_now + timedelta(hours=1)
+    end = start + timedelta(hours=1)
+    return start.strftime("%Y-%m-%dT%H:%M:%S"), end.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def find_free_slots(user_id: str, date_iso: str, duration_min: int = 60,
+                    work_start: int = 9, work_end: int = 18) -> list[str]:
+    """
+    Return list of free start times (HH:MM, Asia/Dubai local) on date_iso that fit
+    duration_min without overlapping existing events. Slots are in 30-min increments
+    within working hours. Empty list means no gaps found.
+    """
+    from datetime import date, datetime, timezone, timedelta
+    TZ_OFFSET = 4
+
+    day = datetime.strptime(date_iso, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    start_utc = day.replace(hour=work_start - TZ_OFFSET, minute=0)
+    end_utc   = day.replace(hour=work_end   - TZ_OFFSET, minute=0)
+
+    url    = f"{GRAPH_BASE}/me/calendarView"
+    params = {
+        "startDateTime": start_utc.isoformat().replace("+00:00", ""),
+        "endDateTime":   end_utc.isoformat().replace("+00:00", ""),
+        "$select":       "start,end,isCancelled",
+        "$top":          50,
+    }
+    try:
+        resp = httpx.get(url, headers=_headers(user_id), params=params, timeout=TIMEOUT)
+        resp.raise_for_status()
+        events = [e for e in resp.json().get("value", []) if not e.get("isCancelled")]
+    except Exception:
+        return []
+
+    busy = []
+    for e in events:
+        s = datetime.fromisoformat(e["start"]["dateTime"].replace("Z", "+00:00") if "Z" in e["start"]["dateTime"] else e["start"]["dateTime"] + "+00:00")
+        en = datetime.fromisoformat(e["end"]["dateTime"].replace("Z", "+00:00") if "Z" in e["end"]["dateTime"] else e["end"]["dateTime"] + "+00:00")
+        busy.append((s, en))
+
+    slots = []
+    cursor = start_utc
+    while cursor + timedelta(minutes=duration_min) <= end_utc:
+        slot_end = cursor + timedelta(minutes=duration_min)
+        conflict = any(s < slot_end and en > cursor for s, en in busy)
+        if not conflict:
+            local_hour = (cursor.hour + TZ_OFFSET) % 24
+            slots.append(f"{local_hour:02d}:{cursor.minute:02d}")
+        cursor += timedelta(minutes=30)
+    return slots

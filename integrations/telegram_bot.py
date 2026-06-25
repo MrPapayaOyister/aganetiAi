@@ -389,6 +389,56 @@ async def enable_digest_command_handler(message: Message) -> None:
         flag_path.unlink()
     await message.answer("📬 Daily email digest has been enabled (scheduled for 8:00 AM). ✅")
 
+@router.message(F.audio)
+async def audio_meeting_handler(message: Message) -> None:
+    """
+    Handles audio file uploads (not voice notes) as meeting recordings.
+    Routes through /meeting/transcribe_path for full meeting-brief extraction.
+    """
+    user_id = resolve_user_id(message.chat.id)
+    if user_id is None:
+        await message.answer(UNAUTHORIZED_MSG)
+        return
+
+    ack = await message.answer("🎙️ Detected an audio file — processing as meeting recording...")
+
+    audio = message.audio
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    temp_dir = os.path.join(project_root, "temp")
+    os.makedirs(temp_dir, exist_ok=True)
+    ext = ".mp3" if (audio.mime_type or "").startswith("audio/mpeg") else ".ogg"
+    temp_path = os.path.join(temp_dir, f"meet_{audio.file_id}{ext}")
+
+    try:
+        file_info = await bot.get_file(audio.file_id)
+        await bot.download_file(file_info.file_path, destination=temp_path)
+
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                "http://127.0.0.1:8000/meeting/transcribe_path",
+                json={"user_id": user_id, "path": temp_path,
+                      "title": audio.file_name or "Meeting Recording"},
+                timeout=300.0,
+            )
+        data = r.json() if r.status_code == 200 else {}
+        if data.get("status") == "ok":
+            await ack.edit_text(
+                f"✅ Meeting processed.\n"
+                f"• {data.get('tasks_created', 0)} task(s) created\n"
+                f"• Draft follow-up: {'queued ✉️' if data.get('draft_queued') else 'not needed'}"
+            )
+        else:
+            await ack.edit_text(f"⚠️ Processing failed: {data.get('message', 'unknown error')}")
+    except Exception as e:
+        await ack.edit_text(f"⚠️ Meeting recorder error: {e}")
+    finally:
+        try:
+            import os as _os
+            _os.unlink(temp_path)
+        except Exception:
+            pass
+
+
 @router.message(F.document | F.photo)
 async def document_message_handler(message: Message):
     user_id = resolve_user_id(message.chat.id)
@@ -581,6 +631,45 @@ async def telegram_message_handler(message: Message) -> None:
         await message.answer("🔍 Checking your inbox...")
         digest = await asyncio.to_thread(get_digest_for_user, user_id, True)
         await message.answer(digest, parse_mode="Markdown")
+        return   # do not pass to /chat endpoint
+
+    # ── Document drafting intent (memo / proposal / SOP / one-pager / letter) ──
+    # Checked before reports so "draft a memo" isn't swallowed by report triggers.
+    DOC_TYPE_WORDS = {
+        "one-pager": "one-pager", "one pager": "one-pager", "onepager": "one-pager",
+        "memo": "memo", "proposal": "proposal", "sop": "sop", "procedure": "sop",
+        "letter": "letter", "briefing": "brief", "brief": "brief",
+    }
+    DOC_VERBS = ("draft", "write", "create", "prepare", "compose")
+    if any(v in msg_lower for v in DOC_VERBS) and any(w in msg_lower for w in DOC_TYPE_WORDS):
+        import re as _re_doc
+        doc_type = "memo"
+        for w, t in DOC_TYPE_WORDS.items():
+            if w in msg_lower:
+                doc_type = t
+                break
+        topic = message.text
+        m = _re_doc.search(r'\b(?:about|on|regarding|covering|for)\b\s+(.*)', message.text, _re_doc.IGNORECASE)
+        if m:
+            topic = m.group(1).strip()
+        includes = []
+        for kw, flag in (("calendar", "calendar"), ("task", "tasks"),
+                         ("delegat", "agents"), ("memory", "memory"), ("agenda", "calendar")):
+            if kw in msg_lower and flag not in includes:
+                includes.append(flag)
+        status_msg = await message.answer(f"📝 Drafting your {doc_type}...")
+        try:
+            from backend.documents import draft_document
+            pdf_path = await asyncio.to_thread(draft_document, user_id, doc_type, topic, includes, None)
+            from datetime import datetime
+            from aiogram.types import FSInputFile
+            await message.answer_document(
+                document=FSInputFile(str(pdf_path)),
+                caption=f"📄 Your {doc_type} — {datetime.now().strftime('%B %d, %Y')}",
+            )
+            await status_msg.delete()
+        except Exception as e:
+            await status_msg.edit_text(f"⚠️ Drafting failed: {str(e)[:120]}")
         return   # do not pass to /chat endpoint
 
     REPORT_TRIGGERS = [

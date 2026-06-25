@@ -1,0 +1,141 @@
+import axios from 'axios'
+
+const http = axios.create({ baseURL: '/api' })
+
+// ── Types ──────────────────────────────────────────────
+export type UserID = 'user_1' | 'user_2'
+
+export interface Task {
+  id: string
+  title: string
+  status: 'pending' | 'done'
+  priority: 'low' | 'medium' | 'high' | 'urgent'
+  due_date: string | null
+  notes: string
+}
+
+export interface ChatRequest {
+  message: string
+  session_id: string
+  stream: boolean
+  user_id: UserID
+}
+
+export interface Email {
+  id: string
+  from_name: string
+  from_email: string
+  subject: string
+  body: string
+  received_at: string
+}
+
+export interface AgendaEvent {
+  id: string
+  subject: string
+  start: { dateTime: string }
+  end: { dateTime: string }
+  attendees: { emailAddress: { address: string } }[]
+}
+
+// ── Chat ──────────────────────────────────────────────
+export const sendChat = (payload: ChatRequest) =>
+  http.post<{ reply: string }>('/chat', payload)
+
+// ── Tasks ─────────────────────────────────────────────
+export const getTasks = (user_id: UserID, status?: string) =>
+  http.get<Task[]>('/tasks', { params: { user_id, status } })
+
+export const createTask = (data: Partial<Task> & { user_id: UserID }) =>
+  http.post<Task>('/tasks', data)
+
+export const updateTask = (task_id: string, data: Partial<Task>, user_id: UserID) =>
+  http.patch<Task>(`/tasks/${task_id}`, data, { params: { user_id } })
+
+export const deleteTask = (task_id: string, user_id: UserID) =>
+  http.delete(`/tasks/${task_id}`, { params: { user_id } })
+
+// ── Mail ──────────────────────────────────────────────
+export const getInbox = (user_id: UserID) =>
+  http.get<{ emails: Email[] }>('/mail/inbox', { params: { user_id } })
+
+export const getInboxCount = (user_id: UserID) =>
+  http.get<{ unread: number }>('/mail/inbox/count', { params: { user_id } })
+
+export const sendEmail = (data: { to_email: string; subject: string; body: string; user_id: UserID }) =>
+  http.post('/send_email', data)
+
+// ── Calendar ──────────────────────────────────────────
+export const getAgenda = (user_id: UserID) =>
+  http.get<{ agenda: AgendaEvent[] }>('/calendar/agenda', { params: { user_id } })
+
+// ── Agent Inbox ───────────────────────────────────────
+export const getAgentInbox = (user_id: UserID) =>
+  http.get('/agent/inbox', { params: { user_id } })
+
+export const getAgentInboxSummary = (user_id: UserID) =>
+  http.get('/agent/inbox/summary', { params: { user_id } })
+
+export const resolveMessage = (message_id: string) =>
+  http.patch(`/agent/message/${message_id}/resolve`)
+
+export const rejectMessage = (message_id: string, reason?: string) =>
+  http.patch(`/agent/message/${message_id}/reject`, null, { params: { reason } })
+
+// ── Reports / Digest ──────────────────────────────────
+export const getEmailDigest = (user_id: UserID) =>
+  http.get<{ digest: string }>(`/digest/email/${user_id}`)
+
+export const generateReport = (data: { user_id: UserID; sections: string[]; title: string }) =>
+  http.post('/report/generate', data)
+
+// ── Schedules ─────────────────────────────────────────
+export const getSchedules = (user_id: UserID) =>
+  http.get(`/schedule/list/${user_id}`)
+
+export const createSchedule = (user_id: UserID, text: string) =>
+  http.post('/schedule/create', { user_id, text })
+
+export const deleteSchedule = (user_id: UserID, schedule_id: string) =>
+  http.delete(`/schedule/${user_id}/${schedule_id}`)
+
+// ── Contacts ──────────────────────────────────────────
+export const getContacts = () =>
+  http.get('/contacts')
+
+// ── Voice (proxied to DGX) ────────────────────────────
+export const tts = async (text: string): Promise<ArrayBuffer> => {
+  const r = await fetch('/api/tts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text })
+  })
+  return r.arrayBuffer()
+}
+
+export const stt = async (audioBlob: Blob): Promise<string> => {
+  const form = new FormData()
+  form.append('audio', audioBlob, 'recording.wav')
+  const r = await http.post<{ text: string }>('/stt', form)
+  return r.data.text
+}
+
+// ── Agent outbox / messaging ──────────────────────────
+export const getAgentOutbox = (user_id: UserID) =>
+  http.get('/agent/outbox', { params: { user_id } })
+
+export const sendAgentMessage = (data: {
+  from_user_id: UserID; to_user_id: UserID; type: string; payload: object
+}) => http.post('/agent/message', data)
+
+// ── Ingest files ──────────────────────────────────────
+export const ingestUpload = (file: File, user_id: UserID) => {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('user_id', user_id)
+  return http.post('/ingest/upload', form)
+}
+
+// ── Health ────────────────────────────────────────────
+export const getHealth = () => http.get('/health')
+export const getHealthServices = () => http.get('/health/services')

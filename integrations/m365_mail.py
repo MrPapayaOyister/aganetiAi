@@ -38,7 +38,7 @@ def fetch_unread_emails(user_id: str, top: int = 20) -> list[dict]:
         "$filter":  "isRead eq false",
         "$top":     top,
         "$orderby": "receivedDateTime desc",
-        "$select":  "id,subject,from,bodyPreview,receivedDateTime,body,isRead"
+        "$select":  "id,subject,from,bodyPreview,receivedDateTime,body,isRead,conversationId,importance,toRecipients"
     }
     resp = httpx.get(url, headers=_headers(user_id), params=params, timeout=TIMEOUT)
     resp.raise_for_status()
@@ -46,16 +46,42 @@ def fetch_unread_emails(user_id: str, top: int = 20) -> list[dict]:
     emails = []
     for msg in resp.json().get("value", []):
         emails.append({
-            "id":           msg["id"],
-            "subject":      msg.get("subject", "(no subject)"),
-            "from_name":    msg.get("from", {}).get("emailAddress", {}).get("name", ""),
-            "from_email":   msg.get("from", {}).get("emailAddress", {}).get("address", ""),
-            "body_preview": msg.get("bodyPreview", ""),
-            "received_at":  msg.get("receivedDateTime", ""),
-            "body_html":    msg.get("body", {}).get("content", "") if msg.get("body", {}).get("contentType") == "html" else "",
-            "body_text":    msg.get("body", {}).get("content", "") if msg.get("body", {}).get("contentType") == "text" else msg.get("bodyPreview", ""),
+            "id":              msg["id"],
+            "conversation_id": msg.get("conversationId", ""),
+            "subject":         msg.get("subject", "(no subject)"),
+            "from_name":       msg.get("from", {}).get("emailAddress", {}).get("name", ""),
+            "from_email":      msg.get("from", {}).get("emailAddress", {}).get("address", ""),
+            "body_preview":    msg.get("bodyPreview", ""),
+            "received_at":     msg.get("receivedDateTime", ""),
+            "importance":      msg.get("importance", "normal"),   # high/normal/low
+            "body_html":       msg.get("body", {}).get("content", "") if msg.get("body", {}).get("contentType") == "html" else "",
+            "body_text":       msg.get("body", {}).get("content", "") if msg.get("body", {}).get("contentType") == "text" else msg.get("bodyPreview", ""),
         })
     return emails
+
+
+def fetch_conversation(user_id: str, conversation_id: str, top: int = 20) -> list[dict]:
+    """Fetch all messages in a conversation thread (ordered oldest-first for summarization)."""
+    url = f"{GRAPH_BASE}/me/messages"
+    params = {
+        "$filter":  f"conversationId eq '{conversation_id}'",
+        "$orderby": "receivedDateTime asc",
+        "$top":     top,
+        "$select":  "id,subject,from,bodyPreview,receivedDateTime,body",
+    }
+    resp = httpx.get(url, headers=_headers(user_id), params=params, timeout=TIMEOUT)
+    resp.raise_for_status()
+    msgs = []
+    for msg in resp.json().get("value", []):
+        body = msg.get("body", {})
+        text = body.get("content", "") if body.get("contentType") == "text" else msg.get("bodyPreview", "")
+        msgs.append({
+            "from":    f"{msg.get('from',{}).get('emailAddress',{}).get('name','')} <{msg.get('from',{}).get('emailAddress',{}).get('address','')}>",
+            "subject": msg.get("subject", ""),
+            "date":    msg.get("receivedDateTime", "")[:10],
+            "body":    text[:800],
+        })
+    return msgs
 
 
 def send_email(

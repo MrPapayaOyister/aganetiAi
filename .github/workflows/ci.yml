@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "migration/**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Unit tests
+        run: python -m pytest -q
+    # NOTE: evals/ (tool-calling accuracy, LLM-judge) require a running llama.cpp
+    # server and are run on the DGX, not in CI: `python -m evals.tool_calling_eval`.

@@ -26,6 +26,7 @@ services:
       -c 8192
       --n-gpu-layers 999
       -fa on
+      --jinja
       --embeddings
       --pooling last
     restart: unless-stopped
@@ -70,4 +71,19 @@ services:
       --n-gpu-layers 999
       --n-predict 512
       --no-mmap
+    restart: unless-stopped
+  whisper_stt:
+    image: onerahmet/openai-whisper-asr-webservice:latest
+    container_name: whisper_stt
+    ports: ["5003:9000"]
+    environment:
+      - ASR_MODEL=base.en
+    restart: unless-stopped
+
+  piper_tts:
+    image: rhasspy/piper:latest
+    container_name: piper_tts
+    ports: ["5002:5002"]
+    volumes: ["./tts_models:/models"]
+    command: --model /models/en_US-lessac-medium.onnx --port 5002
     restart: unless-stopped

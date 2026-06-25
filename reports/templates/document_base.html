@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{{ doc_title }}</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family={{ font_family|default("Inter") }}:wght@400;600;700&display=swap');
+
+  @page {
+    size: A4;
+    margin: 64px 56px 72px 56px;
+    @bottom-right {
+      content: "Page " counter(page) " of " counter(pages);
+      font-family: '{{ font_family|default("Inter") }}', sans-serif;
+      font-size: 8px; color: #888; font-weight: 600;
+    }
+    @bottom-left {
+      content: "CONFIDENTIAL // {{ company_name|upper }}";
+      font-family: '{{ font_family|default("Inter") }}', sans-serif;
+      font-size: 8px; color: #888; font-weight: 600; letter-spacing: 0.06em;
+    }
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: '{{ font_family|default("Inter") }}', sans-serif; font-size: 11.5px; color: #222; line-height: 1.55; }
+
+  .masthead { border-bottom: 3px solid {{ primary_color }}; padding-bottom: 14px; margin-bottom: 22px; }
+  .masthead .company { font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: {{ primary_color }}; }
+  .masthead .doctype { font-size: 9px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #999; margin-top: 2px; }
+  h1.title { font-size: 22px; font-weight: 700; color: #111; margin-top: 8px; }
+  .meta { font-size: 9.5px; color: #777; margin-top: 6px; }
+
+  .body h1 { font-size: 16px; font-weight: 700; color: {{ primary_color }}; margin: 18px 0 6px; }
+  .body h2 { font-size: 13.5px; font-weight: 700; color: #1a1a1a; margin: 16px 0 5px; border-bottom: 1px solid #eee; padding-bottom: 3px; }
+  .body h3 { font-size: 12px; font-weight: 700; color: #333; margin: 12px 0 4px; }
+  .body p { margin: 0 0 9px; }
+  .body ul, .body ol { margin: 0 0 10px 20px; }
+  .body li { margin-bottom: 4px; }
+  .body strong { font-weight: 700; color: #111; }
+  .body code { background: #f3f3f3; padding: 1px 4px; border-radius: 3px; font-size: 10px; }
+</style>
+</head>
+<body>
+  {% if include_header %}
+  <div class="masthead">
+    <div class="company">{{ company_name }}</div>
+    <div class="doctype">{{ doc_type_label }}</div>
+    <h1 class="title">{{ doc_title }}</h1>
+    <div class="meta">Prepared for {{ user_name }} &middot; {{ generated_at }}</div>
+  </div>
+  {% endif %}
+
+  <div class="body">
+    {{ body_html|safe }}
+  </div>
+</body>
+</html>

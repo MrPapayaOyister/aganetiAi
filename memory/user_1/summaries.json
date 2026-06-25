@@ -1,0 +1,8 @@
+[
+  {
+    "summary": "- user1 initiates a conversation with the assistant.\n- user1 asks about the assistant's IP address, to which the assistant responds that it does not have an IP address or direct network access.\n- user1 asks for a list of tasks the assistant can perform.\n- The assistant lists tasks it can perform including drafting and sending emails, creating and managing tasks, scheduling meetings, providing analytics, and transcribing voice messages.\n- user1 repeats the question about the assistant's capabilities.\n- The conversation ends with the assistant offering assistance.",
+    "timestamp": "2026-06-23T18:15:56.730499Z",
+    "covered_turns": 16,
+    "indexed": true
+  }
+]

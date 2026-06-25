@@ -15,13 +15,15 @@ temp/
 email_store/
 email_drafts.json
 frontend/email_drafts.json
+data_vault/.ingest_state.json
 *.log
 *.db
 *.db-shm
 *.db-wal
 
-# ── Models (large GGUF files) ──────────────────────────────
+# ── Models (large GGUF / ONNX files) ──────────────────────
 models/
+tts_models/*.onnx
 
 # ── Qdrant vector storage (separated from the memory/ python package) ──
 # NOTE: the memory/ PYTHON PACKAGE (store.py, long_term.py, query_rewriter.py,

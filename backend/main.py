@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import TypedDict
 from langgraph.graph import StateGraph, END
@@ -8,6 +8,7 @@ from fastembed import TextEmbedding
 from email.utils import parseaddr
 import sys
 import os
+import re
 from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
@@ -15,6 +16,13 @@ import json
 import httpx
 import time
 from integrations.model_router import route_model
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],   # tighten later
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 from integrations.m365_mail import (
     fetch_unread_emails,
     send_email,
@@ -35,6 +43,7 @@ BASE_URL = "http://127.0.0.1:8000"
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from memory.store import load_history, save_message, load_session_state, save_session_state, append_message
 from config.settings import LLM_BASE_URL, QDRANT_URL, EMAIL_ACCOUNT, USER_1_M365_EMAIL, USER_2_M365_EMAIL
+from config.settings import LLM_SMART_URL, NATIVE_TOOLS, PASSIVE_TASK_DETECT
 from integrations.telegram_bot import start_bot, bot
 from aiogram.exceptions import TelegramBadRequest
 from config.settings import TELEGRAM_CHAT_ID
@@ -90,6 +99,133 @@ async def send_due_reminders(user_id: str):
                 print(f"[Reminders] Failed to send message for task {t['id']}: {e}")
     except Exception as e:
         print(f"[Reminders] Error for {user_id}: {e}")
+
+# TTS proxy
+@app.post("/tts")
+async def tts_endpoint(payload: dict):
+    text = payload.get("text", "")
+    async with httpx.AsyncClient(timeout=15.0) as c:
+        r = await c.post(f"{TTS_URL}/api/tts", json={"text": text})
+    return StreamingResponse(iter([r.content]), media_type="audio/wav")
+
+# STT proxy
+from fastapi import UploadFile, File
+@app.post("/stt")
+async def stt_endpoint(audio: UploadFile = File(...)):
+    async with httpx.AsyncClient(timeout=30.0) as c:
+        r = await c.post(f"{STT_URL}/asr",
+            files={"audio_file": (audio.filename, await audio.read(), audio.content_type)},
+            params={"encode": "true", "task": "transcribe", "language": "en", "output": "json"}
+        )
+    return r.json()
+
+# File ingest
+@app.post("/ingest/upload")
+async def ingest_upload(file: UploadFile = File(...), user_id: str = "user_1"):
+    dest = Path(f"data_vault/{user_id}/{file.filename}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(await file.read())
+    await asyncio.to_thread(__import__('backend.ingest', fromlist=['ingest_file']).ingest_file, str(dest))
+    return {"status": "indexed", "file": file.filename}
+
+
+@app.get("/files/{user_id}")
+async def list_user_files(user_id: str):
+    """List files that have been ingested for a user."""
+    vault = Path(f"data_vault/{user_id}")
+    if not vault.exists():
+        return {"files": []}
+    files = []
+    for p in sorted(vault.iterdir()):
+        if p.is_file():
+            files.append({
+                "name": p.name,
+                "size": p.stat().st_size,
+                "modified": p.stat().st_mtime,
+            })
+    return {"files": files}
+
+    
+
+def _unread_count(user_id: str) -> int:
+    try:
+        from config.settings import EMAIL_STORE
+        p = os.path.join(str(EMAIL_STORE), user_id, "unread.json")
+        if os.path.exists(p):
+            data = json.loads(open(p).read())
+            return len(data) if isinstance(data, list) else 0
+    except Exception:
+        pass
+    return 0
+
+
+def _top_pending(user_id: str, n: int = 5):
+    order = {"urgent": 0, "high": 1, "medium": 2, "low": 3}
+    tasks = get_all_tasks(user_id, status="pending")
+    tasks.sort(key=lambda t: order.get(t.get("priority", "medium"), 2))
+    return tasks, tasks[:n]
+
+
+def build_morning_brief(user_id: str) -> str:
+    """Build the morning-brief text (agenda + top tasks + unread). Pure/no-send so it
+    can back both the scheduled push and an on-demand endpoint / web dashboard."""
+    from integrations.telegram_bot import _task_id_cache
+    try:
+        agenda = format_agenda_for_prompt(user_id)
+    except Exception:
+        agenda = ""
+    agenda = agenda.strip() if agenda and agenda.strip() else "No events scheduled today."
+    all_pending, top = _top_pending(user_id)
+    if top:
+        lines = []
+        for t in top:
+            sid = t["id"][:8]
+            _task_id_cache[sid] = t["id"]
+            due = f" (due {t['due_date']})" if t.get("due_date") else ""
+            lines.append(f"• [{t.get('priority', 'medium')}] {t['title']}{due}")
+        tasks_str = "\n".join(lines)
+    else:
+        tasks_str = "No pending tasks. 🎉"
+    return (f"☀️ *Good morning, {get_user_name(user_id)}!*\n\n"
+            f"📅 *Today*\n{agenda}\n\n"
+            f"✅ *Top tasks* ({len(all_pending)} pending)\n{tasks_str}\n\n"
+            f"📧 {_unread_count(user_id)} unread email(s) — say \"show my emails\" for the digest.")
+
+
+async def send_morning_brief(user_id: str):
+    """Proactive 08:00 brief pushed to the user's Telegram chat."""
+    if not bot:
+        return
+    try:
+        from integrations.telegram_bot import send_message_to_user
+        await send_message_to_user(user_id, build_morning_brief(user_id))
+    except Exception as e:
+        print(f"[MorningBrief] {user_id}: {e}")
+
+
+async def send_eod_summary(user_id: str):
+    """End-of-day nudge: tasks due today (or overdue) still open. Silent if nothing slipped."""
+    if not bot:
+        return
+    from integrations.telegram_bot import send_message_to_user, _task_id_cache
+    try:
+        today = date.today().isoformat()
+        slipped = [t for t in get_all_tasks(user_id, status="pending")
+                   if t.get("due_date") and t["due_date"] <= today]
+        if not slipped:
+            return
+        lines = []
+        for t in slipped[:8]:
+            sid = t["id"][:8]
+            _task_id_cache[sid] = t["id"]
+            lines.append(f"• [{t.get('priority', 'medium')}] {t['title']}  (/done {sid})")
+        await send_message_to_user(
+            user_id,
+            f"🌙 *End of day* — {len(slipped)} task(s) due today still open:\n\n"
+            + "\n".join(lines) + "\n\nWant me to reschedule any of these to tomorrow?")
+    except Exception as e:
+        print(f"[EOD] {user_id}: {e}")
+
 
 def log_triaged_email(sender: str, subject: str):
     """
@@ -373,9 +509,8 @@ async def poll_agent_inbox():
             print(f"[agent_inbox] poll error for {agent_id}: {e}")
 
 def _register_apscheduler_job(schedule: dict, user_id: str):
-    """Parse cron string and register job with APScheduler."""
-    parts = schedule["cron_expression"].split()
-    minute, hour, day, month, day_of_week = parts
+    """Parse cron string (or 'once:{ISO}' for one-shot) and register with APScheduler."""
+    cron_expr = schedule["cron_expression"]
 
     async def run_scheduled_action():
         from integrations.telegram_bot import send_message_to_user
@@ -410,17 +545,50 @@ def _register_apscheduler_job(schedule: dict, user_id: str):
 
         await send_message_to_user(user_id, msg)
 
-    scheduler.add_job(
-        lambda: asyncio.create_task(run_scheduled_action()),
-        "cron",
-        minute=minute,
-        hour=hour,
-        day=day,
-        month=month,
-        day_of_week=day_of_week,
-        id=f"user_schedule_{schedule['id']}",
-        replace_existing=True
-    )
+        # Mark one-shot reminders inactive after firing
+        if cron_expr.startswith("once:"):
+            try:
+                from scheduler.schedule_manager import delete_schedule
+                delete_schedule(user_id, schedule["id"])
+            except Exception:
+                pass
+
+    if cron_expr.startswith("once:"):
+        # One-shot reminder: "once:2026-06-23T16:00:00+04:00"
+        from datetime import datetime, timezone
+        fire_iso = cron_expr[5:]
+        try:
+            if "+" in fire_iso or fire_iso.endswith("Z"):
+                fire_dt = datetime.fromisoformat(fire_iso.replace("Z", "+00:00"))
+            else:
+                # Assume Asia/Dubai (UTC+4)
+                from datetime import timedelta
+                fire_dt = datetime.fromisoformat(fire_iso).replace(
+                    tzinfo=timezone(timedelta(hours=4))
+                )
+        except ValueError:
+            return  # Unparseable — skip
+        scheduler.add_job(
+            lambda: asyncio.create_task(run_scheduled_action()),
+            "date",
+            run_date=fire_dt,
+            id=f"user_schedule_{schedule['id']}",
+            replace_existing=True
+        )
+    else:
+        parts = cron_expr.split()
+        minute, hour, day, month, day_of_week = parts
+        scheduler.add_job(
+            lambda: asyncio.create_task(run_scheduled_action()),
+            "cron",
+            minute=minute,
+            hour=hour,
+            day=day,
+            month=month,
+            day_of_week=day_of_week,
+            id=f"user_schedule_{schedule['id']}",
+            replace_existing=True
+        )
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -430,23 +598,53 @@ async def lifespan(app: FastAPI):
     Coalesces missed runs and restricts concurrent runs to 1 to prevent CPU overload.
     Also starts the Telegram bot polling loop concurrently in a background task.
     """
+    from config.settings import RUN_BACKGROUND, RAG_WATCH_INTERVAL, PREWARM_MODELS, TTS_ENABLED
+    if not RUN_BACKGROUND:
+        # HTTP-only mode (testing / web-dashboard host): no inbox polling, no bot.
+        print("[lifespan] RUN_BACKGROUND=false — scheduler and Telegram bot disabled.")
+        yield
+        return
+
     scheduler.add_job(poll_inbox, "interval", seconds=30, max_instances=1, coalesce=True)
     scheduler.add_job(check_upcoming_meetings, "interval", minutes=5)
+
+    # RAG ingestion: keep corporate_memory in sync with the data_vault drop folder.
+    def _ingest_cycle():
+        from backend.ingest import ingest_all
+        ingest_all()
+    scheduler.add_job(_ingest_cycle, "interval", seconds=RAG_WATCH_INTERVAL,
+                      id="rag_ingest", replace_existing=True, max_instances=1, coalesce=True)
 
     from memory.long_term import extract_and_store
 
     # Per-user jobs: scheduled digest, due-task reminders, and memory extraction.
+    from config.settings import PROACTIVE_BRIEFINGS
     for uid in get_all_user_ids():
         scheduler.add_job(
             lambda u=uid: asyncio.create_task(send_scheduled_digest(u)),
             "cron", hour=8, minute=0,
             id=f"digest_{uid}", replace_existing=True
         )
-        scheduler.add_job(
-            lambda u=uid: asyncio.create_task(send_due_reminders(u)),
-            "cron", hour=8, minute=0,
-            id=f"due_tasks_{uid}", replace_existing=True
-        )
+        if PROACTIVE_BRIEFINGS:
+            # Unified morning brief (agenda + top tasks + unread) at 08:00; the EOD
+            # nudge at 18:00 surfaces tasks that slipped. Supersedes the bare due-task
+            # reminder (folded into the morning brief).
+            scheduler.add_job(
+                lambda u=uid: asyncio.create_task(send_morning_brief(u)),
+                "cron", hour=8, minute=0,
+                id=f"morning_brief_{uid}", replace_existing=True
+            )
+            scheduler.add_job(
+                lambda u=uid: asyncio.create_task(send_eod_summary(u)),
+                "cron", hour=18, minute=0,
+                id=f"eod_{uid}", replace_existing=True
+            )
+        else:
+            scheduler.add_job(
+                lambda u=uid: asyncio.create_task(send_due_reminders(u)),
+                "cron", hour=8, minute=0,
+                id=f"due_tasks_{uid}", replace_existing=True
+            )
         scheduler.add_job(
             lambda u=uid: extract_and_store(u),
             "interval", hours=6,
@@ -470,10 +668,65 @@ async def lifespan(app: FastAPI):
 
     scheduler.start()
     asyncio.create_task(start_bot())
+
+    # Pre-load heavy local models off-thread so the FIRST voice message doesn't
+    # trigger a multi-second download/load that starves the bot's event loop.
+    if PREWARM_MODELS:
+        async def _prewarm():
+            try:
+                from integrations.whisper_transcriber import get_model
+                await asyncio.to_thread(get_model)
+                print("[prewarm] whisper ready")
+            except Exception as e:
+                print(f"[prewarm] whisper failed: {e}")
+            if TTS_ENABLED:
+                try:
+                    import tempfile, os as _os
+                    from integrations.tts import synthesize_speech
+                    tmp = _os.path.join(tempfile.gettempdir(), "_tts_warm.wav")
+                    await asyncio.to_thread(synthesize_speech, "Ready.", tmp)
+                    try:
+                        _os.remove(tmp)
+                    except Exception:
+                        pass
+                    print("[prewarm] tts ready")
+                except Exception as e:
+                    print(f"[prewarm] tts failed: {e}")
+        asyncio.create_task(_prewarm())
+
     yield
     scheduler.shutdown()
 
 app = FastAPI(title="Collaborative AI Enterprise OS", lifespan=lifespan)
+
+# ── Structured logging + per-request trace IDs ─────────────
+import uuid as _uuid
+from backend.logging_config import setup_logging, set_trace_id, get_trace_id, get_logger
+setup_logging()
+log = get_logger("aganeti.api")
+
+@app.middleware("http")
+async def _trace_middleware(request, call_next):
+    tid = request.headers.get("x-trace-id") or _uuid.uuid4().hex[:8]
+    set_trace_id(tid)
+    start = time.time()
+    try:
+        response = await call_next(request)
+    except Exception:
+        log.exception(f"{request.method} {request.url.path} raised")
+        raise
+    log.info(f"{request.method} {request.url.path} -> {response.status_code} "
+             f"({(time.time()-start)*1000:.0f}ms)")
+    response.headers["x-trace-id"] = tid
+    return response
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request, exc):
+    # Centralized error envelope so every unexpected failure logs with its trace id
+    # and returns a consistent JSON shape instead of a bare 500.
+    log.exception(f"unhandled error on {request.url.path}")
+    return JSONResponse(status_code=500,
+                        content={"error": "internal_error", "trace_id": get_trace_id()})
 
 # ── CORS (for the Next.js dashboard) ───────────────────────
 # DASHBOARD_ORIGINS is a comma-separated allow-list (e.g.
@@ -544,6 +797,98 @@ async def call_llm(messages: list, user_message: str = "", stream: bool = True):
             resp.raise_for_status()
             data = resp.json()
             yield data["choices"][0]["message"]["content"]
+
+async def call_llm_tools(messages: list) -> dict:
+    """
+    Single non-streaming call to the SMART model with the native tool schema.
+    Returns the assistant message dict: {"content": str, "tool_calls": [...]}.
+    Tool calling needs the 14B + --jinja, so this always targets LLM_SMART_URL.
+    """
+    from backend.tools import TOOL_SCHEMAS
+    url = f"{LLM_SMART_URL}/v1/chat/completions"
+    payload = {
+        "messages": messages,
+        "tools": TOOL_SCHEMAS,
+        "tool_choice": "auto",
+        "temperature": 0.2,
+        "max_tokens": 512,
+        "stream": False,
+    }
+    async with httpx.AsyncClient(timeout=90.0) as client_http:
+        resp = await client_http.post(url, json=payload)
+        resp.raise_for_status()
+        msg = resp.json()["choices"][0]["message"]
+    # Fallback: this build sometimes emits tool calls as raw content (esp. with the
+    # full prompt) instead of structured tool_calls — recover them so actions aren't
+    # silently dropped / hallucinated.
+    if not (msg.get("tool_calls")):
+        from backend.tools import extract_text_tool_calls
+        recovered = extract_text_tool_calls(msg.get("content") or "")
+        if recovered:
+            msg["tool_calls"] = recovered
+            msg["content"] = ""
+    return msg
+
+async def call_llm_tools_stream(messages: list):
+    """
+    Streaming tool-aware call. Yields ("content", token) as the model writes a plain
+    answer, and ("tool_calls", [...]) once at the end if it requested tools (their
+    argument fragments are accumulated across deltas). Lets pure-chat replies stream
+    token-by-token while still supporting the agentic tool loop.
+    """
+    from backend.tools import TOOL_SCHEMAS
+    url = f"{LLM_SMART_URL}/v1/chat/completions"
+    payload = {"messages": messages, "tools": TOOL_SCHEMAS, "tool_choice": "auto",
+               "temperature": 0.2, "max_tokens": 700, "stream": True}
+    acc: dict = {}
+    async with httpx.AsyncClient(timeout=120.0) as client_http:
+        async with client_http.stream("POST", url, json=payload) as resp:
+            async for line in resp.aiter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    delta = json.loads(data)["choices"][0].get("delta", {})
+                except Exception:
+                    continue
+                if delta.get("content"):
+                    yield ("content", delta["content"])
+                for tc in (delta.get("tool_calls") or []):
+                    slot = acc.setdefault(tc.get("index", 0), {"id": "", "name": "", "arguments": ""})
+                    if tc.get("id"):
+                        slot["id"] = tc["id"]
+                    fn = tc.get("function") or {}
+                    if fn.get("name"):
+                        slot["name"] = fn["name"]
+                    if fn.get("arguments"):
+                        slot["arguments"] += fn["arguments"]
+    calls = [{"id": s["id"], "function": {"name": s["name"], "arguments": s["arguments"]}}
+             for s in acc.values() if s["name"]]
+    if calls:
+        yield ("tool_calls", calls)
+
+async def stream_plain_answer(messages: list):
+    """Stream a plain answer token-by-token from the smart model with NO tools. Used
+    once a turn is known to be pure chat (no tools), so the model can't leak tool-call
+    markup into the content (which this llama.cpp build does when streaming with tools)."""
+    url = f"{LLM_SMART_URL}/v1/chat/completions"
+    payload = {"messages": messages, "temperature": 0.4, "max_tokens": 700, "stream": True}
+    async with httpx.AsyncClient(timeout=120.0) as client_http:
+        async with client_http.stream("POST", url, json=payload) as resp:
+            async for line in resp.aiter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                d = line[5:].strip()
+                if d == "[DONE]":
+                    break
+                try:
+                    tok = json.loads(d)["choices"][0].get("delta", {}).get("content", "")
+                except Exception:
+                    continue
+                if tok:
+                    yield tok
 
 def retrieve_corporate_context(query: str) -> str:
     try:
@@ -674,6 +1019,46 @@ async def delete_schedule_endpoint(user_id: str, schedule_id: str):
 @app.get("/health")
 async def health_check_endpoint():
     return {"status": "ok"}
+
+
+@app.get("/health/services")
+async def health_services_endpoint():
+    """Check individual service health for the dashboard SystemStatus panel."""
+    import time, asyncio
+    from config.settings import TTS_URL, STT_URL, LLM_SMART_URL, QDRANT_URL
+
+    services: dict = {}
+
+    async def probe(name: str, url: str, timeout: float = 2.5):
+        t0 = time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                r = await client.get(url)
+            ms = round((time.monotonic() - t0) * 1000)
+            services[name] = {"status": "ok" if r.status_code < 500 else "error", "latency_ms": ms}
+        except Exception:
+            ms = round((time.monotonic() - t0) * 1000)
+            services[name] = {"status": "error", "latency_ms": ms}
+
+    services["fastapi"] = {"status": "ok", "latency_ms": 0}
+
+    # Parse ports from configured LLM URL (e.g. http://localhost:8080)
+    import urllib.parse
+    llm_parsed = urllib.parse.urlparse(LLM_SMART_URL)
+    llm_host = llm_parsed.hostname or "localhost"
+    llm_smart_port = llm_parsed.port or 8080
+    llm_fast_port = llm_smart_port + 1  # convention: smart=8080, fast=8081
+
+    await asyncio.gather(
+        probe("llm_smart", f"http://{llm_host}:{llm_smart_port}/health"),
+        probe("llm_fast",  f"http://{llm_host}:{llm_fast_port}/health"),
+        probe("vector_db", f"{QDRANT_URL}/healthz"),
+        probe("tts",       f"{TTS_URL}/health", timeout=1.5),
+        probe("stt",       f"{STT_URL}/health", timeout=1.5),
+    )
+
+    overall = "ok" if all(v["status"] == "ok" for v in services.values()) else "degraded"
+    return {"overall": overall, "services": services}
 
 @app.get("/tasks/summary")
 async def get_tasks_summary_endpoint(user_id: str = "user_1"):
@@ -928,16 +1313,29 @@ async def chat_endpoint(request: ChatRequest):
         else:  # unrelated
             should_append_reminder = True
 
-    # Mode A - Normal chat flow
+    # Mode A - Normal chat flow. Each context source is best-effort: a missing M365
+    # token, an empty Qdrant collection, or a cold user must NOT 500 the whole chat.
     context = retrieve_corporate_context(request.message)
-    calendar_context = format_agenda_for_prompt(user_id)  # imported from integrations.m365_calendar at top
-    tasks_context = get_pending_summary(user_id)
-    
+    try:
+        calendar_context = format_agenda_for_prompt(user_id)  # integrations.m365_calendar
+    except Exception as e:
+        print(f"[chat] calendar context unavailable for {user_id}: {e}")
+        calendar_context = ""
+    try:
+        tasks_context = get_pending_summary(user_id)
+    except Exception as e:
+        print(f"[chat] task context unavailable for {user_id}: {e}")
+        tasks_context = ""
+
     from memory.long_term import search_memory
     from memory.query_rewriter import rewrite_query
     recent_msgs = get_recent_history(request.session_id, n=3)
-    search_query = rewrite_query(recent_msgs, request.message)
-    long_term_context = search_memory(request.session_id, search_query, top_k=3)
+    try:
+        search_query = rewrite_query(recent_msgs, request.message)
+        long_term_context = search_memory(request.session_id, search_query, top_k=3)
+    except Exception as e:
+        print(f"[chat] long-term memory unavailable for {request.session_id}: {e}")
+        long_term_context = ""
     # USERS[user_id]["name"] from config/users.py, fallback "the user"
     try:
         from config.users import USERS
@@ -963,26 +1361,36 @@ async def chat_endpoint(request: ChatRequest):
         f"working at {company_name}.\n"
         f"Your personality: professional, concise, proactive, and warm.\n"
         f"You remember past conversations and use that context naturally.\n"
+        f"Always respond in clear English.\n"
         f"You never say \"I cannot do that.\" Instead, you say what you need to proceed."
     )
     
     # [WHAT YOU CAN DO]
     prompt_parts.append(
         f"[WHAT YOU CAN DO]\n"
-        f"You are fully capable of the following actions. Use them when appropriate:\n"
-        f"- Read and draft emails on behalf of {user_name}\n"
-        f"- Create, list, update, and complete tasks\n"
-        f"- Check today's calendar and upcoming meetings\n"
-        f"- Answer questions using company policy documents\n"
-        f"- Set reminders and due dates\n"
-        f"- Summarize past conversations and recall decisions made days ago\n"
-        f"- Delegate tasks to colleagues by routing through their agents\n"
-        f"- Transcribe voice messages and respond with voice when enabled"
+        f"You are {user_name}'s capable executive assistant. Your abilities include:\n"
+        f"- Email: read, triage, and draft replies for approval; draft new emails\n"
+        f"- Tasks: create, list, update, and complete tasks; set due dates\n"
+        f"- Reminders: set one-time alerts ('remind me to call Ahmed at 4pm') — I will Telegram you at that time\n"
+        f"- Calendar: check today's agenda and brief upcoming meetings\n"
+        f"- Meetings: schedule meetings and calendar events (creates a real Teams event with invite)\n"
+        f"- Web search: look up current information, news, or facts I may not know\n"
+        f"- Documents: draft branded PDFs — memos, proposals, SOPs, one-pagers, letters, "
+        f"briefs (say e.g. \"draft a one-pager on Q3 priorities, include my tasks\")\n"
+        f"- Analytics: answer stats about your own data (\"how many tasks did I finish last week?\")\n"
+        f"- Memory: remember facts across conversations, and let you review/correct what I remember\n"
+        f"- Knowledge: answer from company policy documents (RAG over the data vault)\n"
+        f"- Delegation: hand tasks to colleagues' agents with accept/reject approval\n"
+        f"- Documents in: read and analyze PDFs/Word/Excel you upload\n"
+        f"- Voice: transcribe voice notes and reply by voice when enabled\n"
+        f"When asked what you can do, summarize these naturally — don't dump the list verbatim."
     )
     
     # [TODAY'S CONTEXT]
+    today_str = date.today().strftime("%A, %Y-%m-%d")
     prompt_parts.append(
         f"[TODAY'S CONTEXT]\n"
+        f"Today is {today_str}. Resolve relative dates (today/tomorrow/next week) against this.\n\n"
         f"## Calendar — Today's Schedule\n"
         f"{cal_ctx}\n\n"
         f"## Pending Tasks\n"
@@ -1021,9 +1429,31 @@ async def chat_endpoint(request: ChatRequest):
         f"- NEVER output an [ACTION:...] tag for statements of intent like \"I need to send the report\" or \"I need to do X\". Only output [ACTION:...] if the user explicitly instructs you to draft an email, schedule a meeting, create a task, or complete a task."
     )
 
-    
-    # [ACTION PROTOCOL]
-    prompt_parts.append(
+
+    # [ACTION PROTOCOL] — only needed for the legacy [ACTION:{json}] tag path.
+    # With NATIVE_TOOLS the model uses real function-calling, so we skip the
+    # ~200 lines of brittle tag instructions and the hardcoded examples.
+    if NATIVE_TOOLS:
+        prompt_parts.append(
+            f"[TOOLS]\n"
+            f"Tools: create_task, complete_task, draft_email, schedule_meeting, get_analytics, "
+            f"resolve_contact, search_knowledge, recall_memory, remember_fact, set_reminder, web_search.\n"
+            f"- get_analytics: quantitative questions about the user's tasks/email ('how many tasks did I finish last week').\n"
+            f"- resolve_contact: when the user names a person instead of an email (\"email Akshay\"), call resolve_contact FIRST to get the address, then draft_email.\n"
+            f"- search_knowledge: questions about company policy/handbook/processes.\n"
+            f"- recall_memory: when you need a fact from past conversations; remember_fact: when the user says 'remember that ...'.\n"
+            f"- set_reminder: when the user says 'remind me to X at Y' — use this, NOT create_task. It sends a Telegram message at that exact time.\n"
+            f"- web_search: when the user asks about current events, live data, or anything that may have changed after your knowledge cutoff. Return key findings with source links.\n"
+            f"- You may chain tools (look something up, then act on it). After tool results come back, give a short natural reply.\n"
+            f"- Call a tool ONLY when the user explicitly asks for that action right now.\n"
+            f"- A mere statement of intent (\"I need to send the Q3 report\") is NOT a request to act — do not call a tool.\n"
+            f"- create_task: default priority to medium and due to null when unstated; only ask if the title itself is unclear.\n"
+            f"- draft_email: when the user asks to draft/write/send an email and you have a recipient (or clear topic), CALL the draft_email tool — do NOT just type the email into chat. Put your best draft in the body (placeholders are fine). The tool queues it for the user's approval.\n"
+            f"- schedule_meeting: needs BOTH who and when; if one is missing, ask only for that one piece.\n"
+            f"- When you ask a clarifying question instead of acting, do NOT call any tool."
+        )
+    else:
+        prompt_parts.append(
         f"[ACTION PROTOCOL]\n"
         f"When you decide to take an action, append a structured tag on a new line at the \n"
         f"very end of your reply, after your natural language response.\n"
@@ -1054,7 +1484,8 @@ async def chat_endpoint(request: ChatRequest):
 
     )
     
-    prompt_parts.append(
+    if not NATIVE_TOOLS:
+        prompt_parts.append(
         f"[EXAMPLES]\n"
         f"User: Add a task to call Ahmed tomorrow, high priority\n"
         f"Assistant: I've added a task to call Ahmed for tomorrow. [ACTION:{{\"type\":\"create_task\",\"title\":\"Call Ahmed\",\"priority\":\"high\",\"due\":\"2023-06-14\"}}]\n\n"
@@ -1070,13 +1501,159 @@ async def chat_endpoint(request: ChatRequest):
         f"Assistant: I've added a task to review slides. [ACTION:{{\"type\":\"create_task\",\"title\":\"Review slides\",\"priority\":\"medium\",\"due\":null}}]"
     )
     
+    # Inject writing-style context (few-shot from accepted email drafts)
+    try:
+        from backend.writing_style import get_style_context
+        style_block = get_style_context(user_id)
+        if style_block:
+            prompt_parts.append(style_block)
+    except Exception:
+        pass
+
     sys_prompt = "\n\n".join(prompt_parts)
-    
+
     history = load_history(request.session_id)
     messages = [{"role": "system", "content": sys_prompt}] + [
         {"role": m["role"], "content": m["content"]} for m in history
     ]
-    
+
+    # ── Native function-calling path (B2): replaces the [ACTION:{json}] tag flow.
+    # One tool-aware call to the 14B; structured tool_calls are executed via the
+    # same dispatcher the legacy path used. Returns early for both stream modes.
+    if NATIVE_TOOLS:
+        # Multi-step agentic loop: the model may chain tools (e.g. resolve_contact →
+        # draft_email). Read-tool results are fed back so it can reason on them; action
+        # tools' confirmations are surfaced to the user. Plain-chat replies stream
+        # token-by-token (#6); tool turns run the loop then emit confirmations.
+        from backend.tools import execute_single_tool
+        MAX_TOOL_ROUNDS = 4
+
+        def _apply_post_turn(reply: str, action_taken: bool) -> str:
+            """Append the task-confirmation reminder / passive suggestion and persist
+            session state. Shared by stream + non-stream paths. Returns the full reply."""
+            if not reply.strip():
+                reply = "I'm not sure how to help with that — could you rephrase?"
+            if should_append_reminder:
+                session_state["awaiting_task_confirmation"] = True
+                save_session_state(request.session_id, session_state)
+                return reply + (f"\n\n_By the way — did you still want to add the task: "
+                                f"**{pending_task.get('title', 'that task')}**? Yes or no?_")
+            if (PASSIVE_TASK_DETECT and not action_taken and not any(
+                    w in request.message.lower()
+                    for w in ("email", "mail", "draft", "meeting", "schedule", "calendar"))):
+                from tasks.intent import detect_task_intent
+                task_dict = detect_task_intent(request.message)
+                if task_dict is not None and task_dict.get("title", "").strip():
+                    save_session_state(request.session_id,
+                                       {"pending_task": task_dict, "awaiting_task_confirmation": True})
+                    title = task_dict["title"].strip()
+                    return reply + (f"\n\n📋 I noticed a potential task: **{title}** "
+                                    f"(Priority: {task_dict.get('priority', 'medium')}). "
+                                    f"Should I add this to your task list? Reply **yes** or **no**.")
+            save_session_state(request.session_id,
+                               {"pending_task": None, "awaiting_task_confirmation": False})
+            return reply
+
+        def _sse(text: str) -> str:
+            return "data: " + json.dumps(
+                {"choices": [{"delta": {"content": text}, "index": 0, "finish_reason": None}]}) + "\n\n"
+
+        # ---- streaming path ----
+        # Detect tools with one non-stream call (reliable). Pure chat then streams
+        # token-by-token WITHOUT tools (clean). Tool turns run the loop and emit the
+        # confirmation. (Streaming WITH tools leaks raw tool markup as content on this build.)
+        if request.stream:
+            async def native_stream():
+                convo = list(messages)
+                confirmations: list[str] = []
+                action_taken = False
+                base_reply = ""
+                try:
+                    first = await call_llm_tools(convo)
+                except Exception:
+                    log.exception(f"tool detect failed (user={user_id})")
+                    first = {"content": "", "tool_calls": None}
+
+                if not (first.get("tool_calls") or []):
+                    streamed = ""
+                    try:
+                        async for tok in stream_plain_answer(messages):
+                            streamed += tok
+                            yield _sse(tok)
+                    except Exception:
+                        log.exception(f"plain stream failed (user={user_id})")
+                    base_reply = streamed.strip() or (first.get("content") or "").strip()
+                else:
+                    assistant_msg = first
+                    final_text = ""
+                    for _round in range(MAX_TOOL_ROUNDS):
+                        tcs = assistant_msg.get("tool_calls") or []
+                        if not tcs:
+                            final_text = (assistant_msg.get("content") or "").strip()
+                            break
+                        log.info("chat tools round %d: %s (user=%s)", _round,
+                                 [tc.get("function", {}).get("name") for tc in tcs], user_id)
+                        convo.append({"role": "assistant",
+                                      "content": assistant_msg.get("content") or "", "tool_calls": tcs})
+                        for tc in tcs:
+                            fn = tc.get("function", {})
+                            result, is_action = await asyncio.to_thread(
+                                execute_single_tool, fn.get("name"), fn.get("arguments"), user_id)
+                            if is_action:
+                                action_taken = True
+                                confirmations.append(result)
+                            convo.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": result})
+                        try:
+                            assistant_msg = await call_llm_tools(convo)
+                        except Exception:
+                            log.exception(f"tool loop call failed (user={user_id})")
+                            assistant_msg = {"content": "", "tool_calls": None}
+                    base_reply = ("\n\n".join(c for c in confirmations if c).strip() or "Done.") \
+                        if action_taken else final_text
+                    if base_reply:
+                        yield _sse(base_reply)
+
+                full_reply = _apply_post_turn(base_reply, action_taken)
+                if not base_reply.strip() and full_reply.strip():
+                    yield _sse(full_reply)
+                elif full_reply.startswith(base_reply) and len(full_reply) > len(base_reply):
+                    yield _sse(full_reply[len(base_reply):])
+                save_message(request.session_id, "assistant", full_reply)
+                yield "data: [DONE]\n\n"
+            return StreamingResponse(native_stream(), media_type="text/event-stream")
+
+        # ---- non-stream path: agentic loop ----
+        convo = list(messages)
+        action_confirmations: list[str] = []
+        action_taken = False
+        final_text = ""
+        for _round in range(MAX_TOOL_ROUNDS):
+            try:
+                assistant_msg = await call_llm_tools(convo)
+            except Exception:
+                log.exception(f"tool-aware LLM call failed (user={user_id})")
+                assistant_msg = {"content": "", "tool_calls": None}
+            tcs = assistant_msg.get("tool_calls") or []
+            if not tcs:
+                final_text = (assistant_msg.get("content") or "").strip()
+                break
+            log.info("chat tools round %d: %s (user=%s)", _round,
+                     [tc.get("function", {}).get("name") for tc in tcs], user_id)
+            convo.append({"role": "assistant", "content": assistant_msg.get("content") or "", "tool_calls": tcs})
+            for tc in tcs:
+                fn = tc.get("function", {})
+                result, is_action = await asyncio.to_thread(
+                    execute_single_tool, fn.get("name"), fn.get("arguments"), user_id)
+                if is_action:
+                    action_taken = True
+                    action_confirmations.append(result)
+                convo.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": result})
+        base_reply = ("\n\n".join(c for c in action_confirmations if c).strip() or "Done.") \
+            if action_taken else final_text
+        final_reply = _apply_post_turn(base_reply, action_taken)
+        save_message(request.session_id, "assistant", final_reply)
+        return {"reply": final_reply}
+
     if request.stream:
         # Streaming Mode
         async def event_generator():
@@ -1352,6 +1929,12 @@ async def send_email_outbox(request: SendEmailRequest):
         await asyncio.to_thread(
             send_email, request.user_id, clean_recipient, subject, request.body, "Text"
         )
+        # Log accepted draft for writing-style learning
+        try:
+            from backend.writing_style import record_sent_draft
+            record_sent_draft(request.user_id, subject, request.body, clean_recipient)
+        except Exception:
+            pass
         return {"status": "success", "message": "Dispatched successfully"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -1390,29 +1973,445 @@ async def invalidate_calendar_cache(user_id: str = None):
 
 @app.post("/draft_email")
 async def draft_email_endpoint(payload: dict):
-    # Stub — full implementation in Task 7 polish
-    # For now: append to email_drafts.json and return success
+    """
+    Queue a chat-initiated email draft into the SAME approval queue the email
+    triage uses (DRAFTS_FILE = frontend/email_drafts.json, JSONL). Previously this
+    wrote a JSON *array* to the project-root email_drafts.json, which the Streamlit
+    approval UI never reads — so drafts created via chat/tool-calling silently
+    vanished. We now write the JSONL schema the UI renders (sender / subject /
+    triage_notes / draft_reply) plus canonical to/body fields.
+    """
     import json
-    from config.settings import BASE_DIR
-    drafts_path = BASE_DIR / "email_drafts.json"
-    drafts = json.loads(drafts_path.read_text()) if drafts_path.exists() else []
-    drafts.append({
-        "to": payload.get("to"),
-        "subject": payload.get("subject"),
-        "body": payload.get("body"),
+    from config.settings import DRAFTS_FILE
+    to = payload.get("to") or ""
+    subject = payload.get("subject") or ""
+    body = payload.get("body") or ""
+    record = {
+        "to": to,
+        "subject": subject,
+        "body": body,
         "user_id": payload.get("user_id"),
         "status": "pending",
-        "created_at": datetime.utcnow().isoformat()
-    })
-    drafts_path.write_text(json.dumps(drafts, indent=2))
+        "source": "chat",
+        "created_at": datetime.utcnow().isoformat(),
+        # Fields the approval UI renders with / sends to:
+        "sender": to,                 # UI shows "Reply to: {sender}", sends to_email=sender
+        "draft_reply": body,
+        "triage_notes": "Drafted from chat",
+    }
+    with open(DRAFTS_FILE, "a") as f:
+        json.dump(record, f)
+        f.write("\n")
     return {"status": "queued"}
 
 @app.post("/schedule_meeting")
 async def schedule_meeting_endpoint(payload: dict):
-    # Stub — full implementation in Task 22
-    # For now: log the request and return success
-    print(f"[STUB] Schedule meeting: {payload}")
-    return {"status": "received", "note": "Full calendar integration in Task 22"}
+    from integrations.m365_calendar import create_calendar_event, parse_meeting_time, find_free_slots
+    user_id     = payload.get("user_id", "user_1")
+    title       = payload.get("title") or ""
+    with_person = payload.get("with", "").strip()
+    time_str    = payload.get("time", "").strip()
+    check_free  = payload.get("check_free_slots", False)
+
+    # Resolve attendee name → email via contacts DB
+    attendee_emails: list[str] = []
+    resolved_name = with_person
+    if with_person:
+        if "@" in with_person:
+            attendee_emails = [with_person]
+        else:
+            try:
+                from integrations.contacts import resolve_contact
+                contact = await asyncio.to_thread(resolve_contact, with_person)
+                if contact and contact.get("email"):
+                    attendee_emails = [contact["email"]]
+                    resolved_name = contact.get("full_name", with_person)
+            except Exception:
+                pass
+
+    if not title:
+        title = f"Meeting with {resolved_name}" if resolved_name else "Meeting"
+
+    # Check free slots before booking if requested
+    free_note = ""
+    if check_free and time_str:
+        try:
+            date_part = time_str[:10] if len(time_str) >= 10 else ""
+            if date_part:
+                slots = await asyncio.to_thread(find_free_slots, user_id, date_part)
+                if slots:
+                    free_note = f" Free slots on {date_part}: {', '.join(slots[:5])}."
+        except Exception:
+            pass
+
+    # Parse time → ISO strings (naive, timezone passed separately to Graph)
+    try:
+        start_iso, end_iso = await asyncio.to_thread(parse_meeting_time, time_str)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Could not parse time '{time_str}': {e}")
+
+    try:
+        event = await asyncio.to_thread(
+            create_calendar_event,
+            user_id, title, start_iso, end_iso, attendee_emails, "", "Asia/Dubai"
+        )
+        join_url = (event.get("onlineMeeting") or {}).get("joinUrl", "")
+        return {
+            "status":    "created",
+            "event_id":  event.get("id", ""),
+            "subject":   title,
+            "start":     start_iso,
+            "end":       end_iso,
+            "attendees": attendee_emails,
+            "join_url":  join_url,
+            "note":      free_note.strip(),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Graph API error: {e}")
+
+
+@app.post("/set_reminder")
+async def set_reminder_endpoint(payload: dict):
+    """Create a one-shot Telegram reminder at a specific future time."""
+    from scheduler.schedule_manager import create_schedule
+    from integrations.m365_calendar import parse_meeting_time
+
+    user_id  = payload.get("user_id", "user_1")
+    message  = payload.get("message", "").strip()
+    remind_at = payload.get("remind_at", "").strip()
+
+    if not message or not remind_at:
+        raise HTTPException(status_code=422, detail="'message' and 'remind_at' are required")
+
+    # Parse remind_at → local ISO datetime string (Asia/Dubai)
+    try:
+        start_iso, _ = await asyncio.to_thread(parse_meeting_time, remind_at)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Could not parse time: {e}")
+
+    from datetime import datetime, timezone, timedelta
+    # Convert local naive ISO → UTC+4 aware → store as "once:{aware_ISO}"
+    local_dt = datetime.fromisoformat(start_iso).replace(
+        tzinfo=timezone(timedelta(hours=4))
+    )
+    cron_expr = f"once:{local_dt.isoformat()}"
+    label = f"Reminder at {start_iso}: {message[:60]}"
+
+    schedule = create_schedule(user_id, {
+        "cron_expression": cron_expr,
+        "action_type": "custom_reminder",
+        "action_payload": {"message": message},
+        "label": label,
+    })
+    # Register immediately with APScheduler
+    _register_apscheduler_job(schedule, user_id)
+
+    return {"status": "set", "remind_at": start_iso, "message": message, "id": schedule["id"]}
+
+# ==========================================
+# 4b. ANALYTICS · MEMORY HYGIENE · DOCUMENT DRAFTING  (Tier 2)
+# ==========================================
+
+@app.get("/guardrails")
+async def guardrails_policy():
+    from backend.guardrails import policy_snapshot
+    return policy_snapshot()
+
+@app.get("/brief/morning")
+async def brief_morning(user_id: str = "user_1"):
+    text = await asyncio.to_thread(build_morning_brief, user_id)
+    return {"user_id": user_id, "brief": text}
+
+@app.get("/analytics/metrics")
+async def analytics_metrics():
+    from backend.analytics import METRICS
+    return {"metrics": METRICS}
+
+@app.get("/analytics")
+async def analytics_endpoint(metric: str, user_id: str = "user_1", days: int = 7):
+    from backend.analytics import run_metric
+    return await asyncio.to_thread(run_metric, metric, user_id, days)
+
+@app.get("/memory/dump")
+async def memory_dump(user_id: str):
+    from backend.memory_admin import dump_memory
+    items = await asyncio.to_thread(dump_memory, user_id)
+    return {"user_id": user_id, "count": len(items), "memories": items}
+
+@app.post("/memory/forget")
+async def memory_forget(payload: dict):
+    from backend.memory_admin import forget_memory
+    user_id = payload.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+    result = await asyncio.to_thread(
+        forget_memory, user_id, payload.get("point_id"), payload.get("query")
+    )
+    return result
+
+@app.patch("/memory/edit")
+async def memory_edit(payload: dict):
+    from backend.memory_admin import edit_memory
+    user_id = payload.get("user_id")
+    point_id = payload.get("point_id")
+    new_fact = payload.get("fact")
+    if not (user_id and point_id and new_fact):
+        raise HTTPException(status_code=400, detail="user_id, point_id, fact required")
+    return await asyncio.to_thread(edit_memory, user_id, point_id, new_fact)
+
+@app.post("/meeting/transcribe")
+async def meeting_transcribe(
+    file: UploadFile = File(...),
+    user_id: str = Form("user_1"),
+    title:   str = Form(""),
+):
+    """
+    Meeting recorder: upload an audio file → Whisper transcript →
+    LLM extracts summary, decisions, action items → tasks created → draft follow-up email queued.
+    Returns the full structured brief.
+    """
+    import tempfile, os as _os
+    from integrations.whisper_transcriber import transcribe_audio
+
+    # Save upload to a temp file
+    suffix = Path(file.filename or "audio.wav").suffix or ".wav"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(await file.read())
+        tmp_path = tmp.name
+
+    try:
+        # Transcribe
+        transcript = await asyncio.to_thread(transcribe_audio, tmp_path)
+    finally:
+        try:
+            _os.unlink(tmp_path)
+        except Exception:
+            pass
+
+    if not transcript or transcript.startswith("["):
+        return {"status": "error", "message": transcript or "Transcription returned empty"}
+
+    # LLM: extract summary, decisions, action items
+    extract_prompt = (
+        "You are a meeting assistant. Analyse this meeting transcript and respond in JSON:\n"
+        '{"summary": "3-5 sentence summary", '
+        '"decisions": ["list of decisions made"], '
+        '"action_items": [{"task": "what", "owner": "who (or Unknown)", "due": "YYYY-MM-DD or null"}], '
+        '"follow_up_needed": true/false, "follow_up_note": "optional follow-up email note"}\n\n'
+        f"TRANSCRIPT:\n{transcript[:6000]}"
+    )
+    llm_result: dict = {}
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                f"{LLM_SMART_URL}/v1/chat/completions",
+                json={
+                    "model": "local-model",
+                    "messages": [{"role": "user", "content": extract_prompt}],
+                    "max_tokens": 600,
+                    "temperature": 0.1,
+                },
+                timeout=60.0,
+            )
+            text = r.json()["choices"][0]["message"]["content"].strip()
+            # Extract JSON from response
+            m = re.search(r"\{.*\}", text, re.DOTALL)
+            if m:
+                llm_result = json.loads(m.group())
+    except Exception as e:
+        llm_result = {"summary": transcript[:300], "action_items": []}
+
+    summary   = llm_result.get("summary", "")
+    decisions = llm_result.get("decisions", [])
+    items     = llm_result.get("action_items", [])
+
+    # Create tasks for action items assigned to this user (or Unknown)
+    meet_title = title or "Meeting"
+    created_tasks = []
+    from tasks.store import create_task as _create_task
+    for item in items:
+        owner = (item.get("owner") or "").lower()
+        if owner in ("unknown", "", "all", "everyone") or get_user_name(user_id).lower() in owner:
+            t = _create_task(
+                user_id,
+                title=item.get("task", "Follow-up task"),
+                priority="medium",
+                due_date=item.get("due"),
+            )
+            created_tasks.append(t)
+
+    # Queue follow-up draft if needed
+    draft_queued = False
+    if llm_result.get("follow_up_needed") and llm_result.get("follow_up_note"):
+        follow_body = (
+            f"Hi,\n\nFollowing up on our meeting — {meet_title}.\n\n"
+            f"{llm_result['follow_up_note']}\n\n"
+            f"Meeting summary:\n{summary}\n\nBest regards,\n{get_user_name(user_id)}"
+        )
+        draft_record = {
+            "raw_email": transcript[:300],
+            "sender": "meeting-followup@placeholder",
+            "subject": f"Follow-up: {meet_title}",
+            "triage_notes": summary,
+            "draft_reply": follow_body,
+            "status": "drafted",
+            "user_id": user_id,
+        }
+        try:
+            with open(DRAFTS_FILE, "a") as f:
+                json.dump(draft_record, f)
+                f.write("\n")
+            draft_queued = True
+        except Exception:
+            pass
+
+    # Build Telegram message
+    brief_lines = [f"🎙️ *Meeting Brief: {meet_title}*", ""]
+    if summary:
+        brief_lines += [f"📝 *Summary*\n{summary}", ""]
+    if decisions:
+        brief_lines.append("✅ *Decisions*")
+        brief_lines += [f"• {d}" for d in decisions]
+        brief_lines.append("")
+    if created_tasks:
+        brief_lines.append(f"📋 *{len(created_tasks)} task(s) created*")
+        brief_lines += [f"• {t.get('title','')}" for t in created_tasks]
+        brief_lines.append("")
+    if draft_queued:
+        brief_lines.append("📧 Follow-up draft queued for your approval.")
+
+    brief_text = "\n".join(brief_lines)
+    try:
+        from integrations.telegram_bot import send_message_to_user
+        await send_message_to_user(user_id, brief_text)
+    except Exception:
+        pass
+
+    return {
+        "status":        "ok",
+        "transcript":    transcript[:500],
+        "summary":       summary,
+        "decisions":     decisions,
+        "action_items":  items,
+        "tasks_created": len(created_tasks),
+        "draft_queued":  draft_queued,
+    }
+
+
+@app.post("/meeting/transcribe_path")
+async def meeting_transcribe_path(payload: dict):
+    """Transcribe a file already on disk (for Telegram long audio uploads)."""
+    user_id  = payload.get("user_id", "user_1")
+    path_str = payload.get("path", "")
+    title    = payload.get("title", "Meeting")
+    if not path_str or not Path(path_str).exists():
+        raise HTTPException(status_code=400, detail="file not found")
+    from integrations.whisper_transcriber import transcribe_audio
+
+    transcript = await asyncio.to_thread(transcribe_audio, path_str)
+    if not transcript or transcript.startswith("["):
+        return {"status": "error", "message": transcript or "Transcription returned empty"}
+
+    # Shared extraction logic
+    extract_prompt = (
+        "You are a meeting assistant. Analyse this meeting transcript and respond in JSON:\n"
+        '{"summary": "3-5 sentence summary", '
+        '"decisions": ["list of decisions made"], '
+        '"action_items": [{"task": "what", "owner": "who (or Unknown)", "due": "YYYY-MM-DD or null"}], '
+        '"follow_up_needed": true/false, "follow_up_note": "optional follow-up email note"}\n\n'
+        f"TRANSCRIPT:\n{transcript[:6000]}"
+    )
+    llm_result: dict = {}
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                f"{LLM_SMART_URL}/v1/chat/completions",
+                json={
+                    "model": "local-model",
+                    "messages": [{"role": "user", "content": extract_prompt}],
+                    "max_tokens": 600,
+                    "temperature": 0.1,
+                },
+                timeout=60.0,
+            )
+            text = r.json()["choices"][0]["message"]["content"].strip()
+            m = re.search(r"\{.*\}", text, re.DOTALL)
+            if m:
+                llm_result = json.loads(m.group())
+    except Exception:
+        llm_result = {"summary": transcript[:300], "action_items": []}
+
+    summary  = llm_result.get("summary", "")
+    decisions = llm_result.get("decisions", [])
+    items    = llm_result.get("action_items", [])
+
+    from tasks.store import create_task as _create_task
+    created_tasks = []
+    for item in items:
+        owner = (item.get("owner") or "").lower()
+        if owner in ("unknown", "", "all", "everyone") or get_user_name(user_id).lower() in owner:
+            t = _create_task(user_id, title=item.get("task", "Follow-up task"),
+                             priority="medium", due_date=item.get("due"))
+            created_tasks.append(t)
+
+    draft_queued = False
+    if llm_result.get("follow_up_needed") and llm_result.get("follow_up_note"):
+        follow_body = (
+            f"Hi,\n\nFollowing up on our meeting — {title}.\n\n"
+            f"{llm_result['follow_up_note']}\n\n"
+            f"Meeting summary:\n{summary}\n\nBest regards,\n{get_user_name(user_id)}"
+        )
+        try:
+            with open(DRAFTS_FILE, "a") as f:
+                json.dump({"raw_email": transcript[:300], "sender": "meeting-followup@placeholder",
+                           "subject": f"Follow-up: {title}", "triage_notes": summary,
+                           "draft_reply": follow_body, "status": "drafted", "user_id": user_id}, f)
+                f.write("\n")
+            draft_queued = True
+        except Exception:
+            pass
+
+    brief_lines = [f"🎙️ *Meeting Brief: {title}*", ""]
+    if summary:
+        brief_lines += [f"📝 *Summary*\n{summary}", ""]
+    if decisions:
+        brief_lines.append("✅ *Decisions*")
+        brief_lines += [f"• {d}" for d in decisions]
+        brief_lines.append("")
+    if created_tasks:
+        brief_lines.append(f"📋 *{len(created_tasks)} task(s) created*")
+        brief_lines += [f"• {t.get('title', '')}" for t in created_tasks]
+        brief_lines.append("")
+    if draft_queued:
+        brief_lines.append("📧 Follow-up draft queued.")
+
+    try:
+        from integrations.telegram_bot import send_message_to_user
+        await send_message_to_user(user_id, "\n".join(brief_lines))
+    except Exception:
+        pass
+
+    return {"status": "ok", "transcript": transcript[:500], "summary": summary,
+            "decisions": decisions, "action_items": items,
+            "tasks_created": len(created_tasks), "draft_queued": draft_queued}
+
+
+@app.post("/document/draft")
+async def document_draft(payload: dict):
+    from backend.documents import draft_document
+    user_id = payload.get("user_id", "user_1")
+    topic = payload.get("topic") or payload.get("title") or ""
+    if not topic:
+        raise HTTPException(status_code=400, detail="topic required")
+    try:
+        path = await asyncio.to_thread(
+            draft_document, user_id, payload.get("doc_type", "memo"),
+            topic, payload.get("includes", []), payload.get("title"),
+        )
+        return {"status": "ok", "path": str(path)}
+    except Exception as e:
+        print(f"[document_draft] error: {e}")
+        raise HTTPException(status_code=500, detail=f"draft failed: {e}")
 
 # ==========================================
 # 5. BACKGROUND INBOX WATCHER (MICROSOFT GRAPH, OFF-THREAD)
