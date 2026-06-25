@@ -50,7 +50,10 @@ export const supabase: SupabaseClient = supabaseConfigured
       auth: {
         persistSession:     true,
         autoRefreshToken:   true,
-        detectSessionInUrl: true,   // parses the OAuth redirect on load
+        // We parse the OAuth return ourselves in AuthContext (robust on plain
+        // HTTP). Leaving this on lets supabase-js consume/strip the hash at
+        // import time and race our handler.
+        detectSessionInUrl: false,
         storageKey:         'aria-auth',
         // IMPORTANT: implicit (not pkce). The VM is served over plain HTTP, where
         // crypto.subtle is unavailable, so PKCE's code-exchange silently fails and
