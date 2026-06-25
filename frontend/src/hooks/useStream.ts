@@ -1,5 +1,19 @@
-import { useState, useCallback, useRef } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import type { UserID } from '../api/client'
+
+export type ThinkingEvent = { message: string }
+export type ActionEvent = {
+  action: string
+  payload: Record<string, unknown>
+}
+
+interface UseStreamCallbacks {
+  onToken: (t: string) => void
+  onThinking?: (msg: string) => void
+  onAction?: (action: string, payload: Record<string, unknown>) => void
+  onError?: (msg: string) => void
+  onDone: () => void
+}
 
 export const useStream = () => {
   const [streaming, setStreaming] = useState(false)
@@ -9,8 +23,7 @@ export const useStream = () => {
     message: string,
     sessionId: string,
     userId: UserID,
-    onToken: (t: string) => void,
-    onDone: () => void
+    callbacks: UseStreamCallbacks
   ) => {
     abortRef.current = new AbortController()
     setStreaming(true)
@@ -19,43 +32,74 @@ export const useStream = () => {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message, session_id: sessionId, stream: true, user_id: userId }),
-        signal: abortRef.current.signal
+        body: JSON.stringify({
+          message,
+          session_id: sessionId,
+          stream: true,
+          user_id: userId,
+        }),
+        signal: abortRef.current.signal,
       })
+
+      if (!res.ok) {
+        callbacks.onError?.(`Server error: ${res.status}`)
+        callbacks.onDone()
+        return
+      }
 
       const reader = res.body!.getReader()
       const decoder = new TextDecoder()
-      let buf = ''
+      let buffer = ''
 
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
 
-        buf += decoder.decode(value, { stream: true })
-        const lines = buf.split('\n')
-        buf = lines.pop() ?? ''
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
 
         for (const line of lines) {
-          const trimmed = line.trim()
-          if (!trimmed.startsWith('data:')) continue
-          const data = trimmed.slice(5).trim()
-          if (data === '[DONE]') { onDone(); return }
+          if (!line.startsWith('data:')) continue
+          const raw = line.slice(line.indexOf(':') + 1).trim()
+          if (raw === '[DONE]') { callbacks.onDone(); return }
+
           try {
-            const parsed = JSON.parse(data)
-            const t = parsed?.choices?.[0]?.delta?.content ?? ''
-            if (t) onToken(t)
-          } catch { /* skip malformed frames */ }
+            const parsed = JSON.parse(raw)
+
+            // New typed event format
+            if (parsed.type === 'token') {
+              callbacks.onToken(parsed.content ?? '')
+            } else if (parsed.type === 'thinking') {
+              callbacks.onThinking?.(parsed.message ?? '')
+            } else if (parsed.type === 'action') {
+              callbacks.onAction?.(parsed.action ?? '', parsed.payload ?? {})
+            } else if (parsed.type === 'error') {
+              callbacks.onError?.(parsed.message ?? 'An error occurred')
+            }
+            // Legacy fallback — old OpenAI delta format
+            else if (parsed.choices?.[0]?.delta?.content) {
+              callbacks.onToken(parsed.choices[0].delta.content)
+            }
+          } catch {
+            // malformed chunk, skip
+          }
         }
       }
-      onDone()
+      callbacks.onDone()
     } catch (e: unknown) {
-      if (e instanceof Error && e.name !== 'AbortError') console.error('Stream error:', e)
+      if (e instanceof Error && e.name !== 'AbortError') {
+        callbacks.onError?.('Connection lost')
+      }
+      callbacks.onDone()
     } finally {
       setStreaming(false)
     }
   }, [])
 
-  const abort = () => abortRef.current?.abort()
+  const abort = useCallback(() => {
+    abortRef.current?.abort()
+  }, [])
 
   return { stream, streaming, abort }
 }

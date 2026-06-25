@@ -1,6 +1,10 @@
 import { createContext, useContext, useState, useCallback, type ReactNode } from 'react'
 import type { ParticleMode } from '../components/ParticleCanvas'
 
+/** Full set of ambient modes the assistant can express (orb + particles).
+ *  'error' is orb-only; the particle field maps it to 'idle'. */
+export type AmbientMode = 'idle' | 'thinking' | 'listening' | 'speaking' | 'error'
+
 interface AmbientCtx {
   mode: ParticleMode
   amplitude: number

@@ -2,7 +2,8 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import { generateId } from '../utils/uuid'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Send, Paperclip, Volume2, VolumeX, StopCircle, Zap } from 'lucide-react'
-import { OrbAnimation } from '../components/OrbAnimation'
+import { useQuery } from '@tanstack/react-query'
+import { OrbAnimation, type OrbMode } from '../components/OrbAnimation'
 import { MessageBubble } from '../components/MessageBubble'
 import { VoiceButton } from '../components/VoiceButton'
 import { useStream } from '../hooks/useStream'
@@ -13,17 +14,48 @@ import { useAmbient } from '../contexts/AmbientContext'
 import axios from 'axios'
 import type { ChatMessage } from '../components/MessageBubble'
 
-const QUICK_CHIPS = [
-  { label: "What's on my agenda?",  prompt: 'What meetings do I have today?' },
-  { label: 'Any urgent emails?',     prompt: 'Are there any urgent or high-priority emails in my inbox?' },
-  { label: 'Summarize my tasks',     prompt: 'Give me a summary of my pending tasks.' },
+const FALLBACK_SUGGESTIONS = [
+  "What's on my agenda today?",
+  'Any urgent emails?',
+  'Summarize my pending tasks',
 ]
+
+interface ActionCard {
+  id: string
+  action: string
+  payload: Record<string, unknown>
+  messageId: string
+}
 
 function getGreeting() {
   const h = new Date().getHours()
   if (h < 12) return 'Good morning'
   if (h < 17) return 'Good afternoon'
   return 'Good evening'
+}
+
+// ── Action card helpers ─────────────────────────────────────────
+function ActionIcon({ action }: { action: string }) {
+  const icons: Record<string, string> = {
+    task_created: '✓', task_updated: '↻', email_drafted: '✉',
+    email_sent: '↗', event_created: '📅', reminder_set: '⏰', memory_saved: '🧠',
+  }
+  return <span className="text-[#00D4FF] font-bold">{icons[action] ?? '⚡'}</span>
+}
+
+function ActionLabel({ action, payload }: { action: string; payload: Record<string, unknown> }) {
+  const p = payload as Record<string, string>
+  const labels: Record<string, () => string> = {
+    task_created:  () => `Task created: "${p.title}"`,
+    task_updated:  () => `Task updated: "${p.title ?? p.id}"`,
+    email_drafted: () => `Email drafted to ${p.to}`,
+    email_sent:    () => `Email sent: "${p.subject}"`,
+    event_created: () => `Event scheduled: "${p.title}"`,
+    reminder_set:  () => `Reminder set`,
+    memory_saved:  () => `Memory saved`,
+  }
+  const fn = labels[action]
+  return <span>{fn ? fn() : action.replace(/_/g, ' ')}</span>
 }
 
 export default function AssistantPage() {
@@ -33,19 +65,11 @@ export default function AssistantPage() {
   const { stream, streaming, abort } = useStream()
   const voice = useVoice()
 
-  // Drive the global particle field from the assistant's live state
-  useEffect(() => {
-    if (voice.isListening)      setAmbient('listening', 0.6)
-    else if (voice.isSpeaking)  setAmbient('speaking', 0.7)
-    else if (streaming)         setAmbient('thinking', 0.8)
-    else                        setAmbient('idle', 0)
-  }, [streaming, voice.isListening, voice.isSpeaking, setAmbient])
-
-  // Reset the field to idle when leaving the page
-  useEffect(() => () => setAmbient('idle', 0), [setAmbient])
-
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
+  const [thinkingMsg, setThinkingMsg] = useState<string | null>(null)
+  const [actionCards, setActionCards] = useState<ActionCard[]>([])
+  const [errorFlash, setErrorFlash] = useState(false)
   const [sessionId] = useState(() => {
     const k = `aria_session_${userId}`
     const stored = sessionStorage.getItem(k)
@@ -61,13 +85,68 @@ export default function AssistantPage() {
   const fullReplyRef = useRef('')
 
   const isIdle = messages.length === 0 && !streaming
+  const lastAssistant = messages[messages.length - 1]
   const lastAssistantId = [...messages].reverse().find(m => m.role === 'assistant')?.id
+  const awaitingFirstToken =
+    streaming && lastAssistant?.role === 'assistant' && !lastAssistant.content
+
+  // Single derived orb/ambient phase — drives the whole "alive" loop.
+  const orbMode: OrbMode =
+    errorFlash                                        ? 'error'
+    : voice.isListening                               ? 'listening'
+    : voice.isSpeaking                                ? 'speaking'
+    : (streaming && (thinkingMsg || awaitingFirstToken)) ? 'thinking'
+    : streaming                                       ? 'speaking'
+    : 'idle'
+
+  // Drive the global particle field. Keyed on the discrete phase only (NOT the
+  // per-frame voice amplitude) so we don't re-render the app shell at 60fps.
+  useEffect(() => {
+    const amp = orbMode === 'thinking' ? 0.8 : orbMode === 'speaking' ? 0.7
+      : orbMode === 'listening' ? 0.6 : 0
+    setAmbient(orbMode === 'error' ? 'idle' : orbMode, amp)
+  }, [orbMode, setAmbient])
+
+  // Reset the field to idle when leaving the page
+  useEffect(() => () => setAmbient('idle', 0), [setAmbient])
+
+  // Load prior conversation for this session on mount / session change
+  useEffect(() => {
+    let cancelled = false
+    const loadHistory = async () => {
+      try {
+        const res = await fetch(`/api/chat/history?session_id=${encodeURIComponent(sessionId)}&limit=20`)
+        const data = await res.json()
+        if (!cancelled && Array.isArray(data.messages) && data.messages.length > 0) {
+          setMessages(data.messages.map((m: { role: string; content: string }) => ({
+            id: generateId(),
+            role: m.role === 'assistant' ? 'assistant' : 'user',
+            content: m.content,
+            streaming: false,
+          })))
+        }
+      } catch { /* ignore — fresh session */ }
+    }
+    loadHistory()
+    return () => { cancelled = true }
+  }, [sessionId])
+
+  // Contextual quick-action suggestions (real data from the backend)
+  const { data: suggestionsData } = useQuery({
+    queryKey: ['suggestions', userId],
+    queryFn: () =>
+      fetch(`/api/chat/suggestions?user_id=${encodeURIComponent(userId)}`).then(r => r.json()),
+    staleTime: 60_000,
+    retry: false,
+  })
+  const suggestions: string[] = suggestionsData?.suggestions ?? FALLBACK_SUGGESTIONS
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [])
 
   useEffect(() => { scrollToBottom() }, [messages.length, scrollToBottom])
+  useEffect(() => { scrollToBottom() }, [actionCards.length, scrollToBottom])
 
   // Mobile keyboard: track visual viewport height
   useEffect(() => {
@@ -91,17 +170,25 @@ export default function AssistantPage() {
     setMessages(prev => [...prev, userMsg, assistantMsg])
     setInput('')
 
-    await stream(
-      text,
-      sessionId,
-      userId,
-      (token) => {
-        fullReplyRef.current += token
+    await stream(text, sessionId, userId, {
+      onToken: (t) => {
+        setThinkingMsg(null)        // clear thinking banner on first token
+        fullReplyRef.current += t
         setMessages(prev => prev.map(m =>
-          m.id === assistantId ? { ...m, content: m.content + token } : m
+          m.id === assistantId ? { ...m, content: m.content + t } : m
         ))
       },
-      async () => {
+      onThinking: (msg) => setThinkingMsg(msg),
+      onAction: (action, payload) => {
+        setActionCards(prev => [...prev, { id: generateId(), action, payload, messageId: assistantId }])
+      },
+      onError: (msg) => {
+        addToast(msg, 'error')
+        setErrorFlash(true)
+        setTimeout(() => setErrorFlash(false), 800)
+      },
+      onDone: async () => {
+        setThinkingMsg(null)
         setMessages(prev => prev.map(m =>
           m.id === assistantId ? { ...m, streaming: false } : m
         ))
@@ -109,9 +196,9 @@ export default function AssistantPage() {
           const plain = fullReplyRef.current.replace(/[*_`#>[\]()]/g, '').substring(0, 600)
           await voice.speak(plain)
         }
-      }
-    )
-  }, [streaming, stream, sessionId, userId, ttsEnabled, voice])
+      },
+    })
+  }, [streaming, stream, sessionId, userId, ttsEnabled, voice, addToast])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -152,7 +239,7 @@ export default function AssistantPage() {
               >
                 <OrbAnimation
                   size={36}
-                  mode={voice.isSpeaking ? 'speaking' : streaming ? 'thinking' : 'idle'}
+                  mode={orbMode}
                   amplitude={voice.amplitude}
                   amplitudeArray={voice.amplitudeArray}
                 />
@@ -212,7 +299,7 @@ export default function AssistantPage() {
             >
               <OrbAnimation
                 size={180}
-                mode={voice.isListening ? 'listening' : voice.isSpeaking ? 'speaking' : 'idle'}
+                mode={orbMode}
                 amplitude={voice.amplitude}
                 amplitudeArray={voice.amplitudeArray}
               />
@@ -240,16 +327,19 @@ export default function AssistantPage() {
                 transition={{ delay: 0.5 }}
                 className="flex flex-wrap justify-center gap-2 mt-8 max-w-sm"
               >
-                {QUICK_CHIPS.map(chip => (
+                {suggestions.map((s, i) => (
                   <motion.button
-                    key={chip.label}
+                    key={`${s}-${i}`}
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.5 + i * 0.08 }}
                     whileHover={{ y: -2 }}
                     whileTap={{ scale: 0.97 }}
-                    onClick={() => handleSend(chip.prompt)}
+                    onClick={() => handleSend(s)}
                     className="px-4 py-2 glass-sm rounded-full text-sm text-[#94A3B8]
                                hover:text-[#E2E8F0] transition-all"
                   >
-                    {chip.label}
+                    {s}
                   </motion.button>
                 ))}
               </motion.div>
@@ -274,6 +364,21 @@ export default function AssistantPage() {
                       streaming={msg.streaming && streaming}
                       speaking={voice.isSpeaking && msg.role === 'assistant' && msg.id === lastAssistantId}
                     />
+                    {/* Action cards belonging to this message */}
+                    {actionCards.filter(c => c.messageId === msg.id).map(card => (
+                      <motion.div
+                        key={card.id}
+                        initial={{ opacity: 0, y: 8, scale: 0.97 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        transition={{ type: 'spring', stiffness: 300, damping: 24 }}
+                        className="ml-14 mt-1 mb-1 flex items-center gap-2 px-3 py-2 rounded-lg
+                                   bg-[rgba(0,212,255,0.06)] border border-[rgba(0,212,255,0.15)]
+                                   text-xs text-[#94A3B8] max-w-xs w-fit"
+                      >
+                        <ActionIcon action={card.action} />
+                        <ActionLabel action={card.action} payload={card.payload} />
+                      </motion.div>
+                    ))}
                   </motion.div>
                 ))}
               </AnimatePresence>
@@ -282,6 +387,32 @@ export default function AssistantPage() {
           )}
         </AnimatePresence>
       </div>
+
+      {/* Thinking banner (tool activity) */}
+      <AnimatePresence>
+        {thinkingMsg && (
+          <motion.div
+            key="thinking-banner"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            className="shrink-0 flex items-center gap-2 px-4 py-2 mx-4 mb-2 rounded-xl
+                       bg-[rgba(123,47,255,0.08)] border border-[rgba(123,47,255,0.2)] max-w-3xl md:mx-auto"
+          >
+            <div className="flex gap-1">
+              {[0, 1, 2].map(i => (
+                <motion.div
+                  key={i}
+                  className="w-1.5 h-1.5 rounded-full bg-[#7B2FFF]"
+                  animate={{ scale: [1, 1.4, 1], opacity: [0.4, 1, 0.4] }}
+                  transition={{ duration: 0.8, repeat: Infinity, delay: i * 0.15 }}
+                />
+              ))}
+            </div>
+            <span className="text-[#7B2FFF] text-xs font-medium">{thinkingMsg}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Live transcript while listening */}
       <AnimatePresence>
