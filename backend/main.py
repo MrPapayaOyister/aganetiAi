@@ -1831,6 +1831,12 @@ async def chat_endpoint(request: ChatRequest, http_request: Request):
                                 evt = _action_event(name, raw_args)
                                 if evt:
                                     yield _sse(evt)
+                            # RAG citations: surface the sources search_knowledge used.
+                            if name == "search_knowledge" and result:
+                                srcs = list(dict.fromkeys(re.findall(r"\[([^\]]+)\]", result)))[:5]
+                                if srcs:
+                                    yield _sse({"type": "sources",
+                                                "payload": {"sources": [{"source": s} for s in srcs]}})
                             convo.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": result})
                         try:
                             assistant_msg = await call_llm_tools(convo)
@@ -2280,6 +2286,55 @@ async def draft_email_endpoint(payload: dict):
         json.dump(record, f)
         f.write("\n")
     return {"status": "queued"}
+
+
+@app.get("/drafts/{user_id}")
+async def list_drafts(user_id: str):
+    """List pending email drafts from the approval queue (JSONL), each tagged with
+    its line index so the UI can delete a specific one. Never errors."""
+    import json
+    from config.settings import DRAFTS_FILE
+    out = []
+    try:
+        with open(DRAFTS_FILE) as f:
+            for i, line in enumerate(f):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                # Show anything awaiting approval; hide already-sent/rejected.
+                if rec.get("status") in ("sent", "rejected", "discarded"):
+                    continue
+                if rec.get("user_id") and rec.get("user_id") != user_id:
+                    continue
+                rec["_index"] = i
+                out.append(rec)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        log.warning("list_drafts failed: %s", e)
+    return {"user_id": user_id, "drafts": out}
+
+
+@app.delete("/drafts/{user_id}/{draft_index}")
+async def delete_draft(user_id: str, draft_index: int):
+    """Remove the draft at the given line index and rewrite the file."""
+    from config.settings import DRAFTS_FILE
+    try:
+        with open(DRAFTS_FILE) as f:
+            lines = f.readlines()
+        if 0 <= draft_index < len(lines):
+            del lines[draft_index]
+            with open(DRAFTS_FILE, "w") as f:
+                f.writelines(lines)
+            return {"status": "deleted", "index": draft_index}
+        return JSONResponse(status_code=404, content={"error": "draft not found"})
+    except FileNotFoundError:
+        return JSONResponse(status_code=404, content={"error": "no drafts"})
+
 
 @app.post("/schedule_meeting")
 async def schedule_meeting_endpoint(payload: dict):
