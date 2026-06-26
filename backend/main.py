@@ -2865,6 +2865,32 @@ async def analytics_active_hours(period: str = "30d", user_id: str | None = None
     from backend import events
     return await asyncio.to_thread(events.active_hours, user_id, _period_days(period, 30))
 
+# ── Scheduler health (P6) ─────────────────────────────────────────────────────
+@app.get("/scheduler/status")
+async def scheduler_status(user_id: str | None = None):
+    """Registered APScheduler jobs (next run) + recent job-run history + each
+    user's current adaptive email cadence."""
+    from backend import activity
+    jobs = []
+    try:
+        for j in scheduler.get_jobs():
+            jobs.append({
+                "id": j.id,
+                "name": getattr(j, "name", j.id),
+                "next_run": j.next_run_time.isoformat() if j.next_run_time else None,
+            })
+    except Exception as e:  # noqa: BLE001
+        log.warning("scheduler.get_jobs failed: %s", e)
+    history = await asyncio.to_thread(activity.job_status)
+    cadence = None
+    if user_id:
+        cadence = {
+            "email_interval_minutes": activity.email_interval_minutes(user_id),
+            "minutes_since_active": activity.minutes_since_active(user_id),
+            "working_hours": activity.is_working_hours(),
+        }
+    return {"jobs": jobs, "history": history, "cadence": cadence}
+
 # ── Proactive initiatives (P3) ────────────────────────────────────────────────
 @app.get("/initiatives/{user_id}")
 async def get_initiatives(user_id: str, limit: int = 10):
@@ -3291,9 +3317,23 @@ def poll_mail_for_user(user_id: str):
 
 async def poll_inbox():
     """
-    Background polling job (APScheduler, every 30s, single job, max_instances=1).
+    Background polling job (APScheduler ticks every 30s, single job, max_instances=1).
     Polls each user sequentially, off-thread, so the LLM-heavy triage never blocks the
     event loop (FastAPI + Telegram) and two users' triage never run concurrently.
+
+    P6 — ADAPTIVE: the 30s tick is now a gate, not the cadence. Each user's mail
+    is only actually fetched when their adaptive interval has elapsed (every 2 min
+    when active, up to 60 min when deeply idle / off-hours). This cuts needless
+    Graph/Gmail calls + LLM triage by ~10-30x outside active sessions.
     """
+    from backend import activity
     for uid in MAIL_POLL_USERS:
-        await asyncio.to_thread(poll_mail_for_user, uid)
+        interval = activity.email_interval_minutes(uid)
+        if not activity.should_run("email_check", uid, interval):
+            continue
+        try:
+            await asyncio.to_thread(poll_mail_for_user, uid)
+            activity.record_job_run("email_check", user_id=uid,
+                                    result=f"checked (interval={interval:.0f}m)")
+        except Exception as e:  # noqa: BLE001
+            activity.record_job_run("email_check", user_id=uid, error=str(e))
