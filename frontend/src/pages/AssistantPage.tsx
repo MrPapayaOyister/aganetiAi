@@ -687,24 +687,37 @@ export default function AssistantPage() {
                 agentMode={orbMode}
                 onPlay={(t) => voice.speak(t.replace(/[*_`#>[\]()]/g, '').slice(0, 600))}
                 onRegenerate={(id) => regenerate(id)}
-                renderActionCards={(messageId) => (
-                  <>
-                    {actionCards.filter(c => c.messageId === messageId).map(card => (
-                      <motion.div
-                        key={card.id}
-                        initial={{ opacity: 0, y: 8, scale: 0.97 }}
-                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                        transition={{ type: 'spring', stiffness: 300, damping: 24 }}
-                        className="flex items-center gap-2 px-3 py-2 rounded-xl
-                                   bg-[rgba(0,212,255,0.06)] border border-[rgba(0,212,255,0.15)]
-                                   text-xs text-[#94A3B8] w-fit max-w-sm"
-                      >
-                        <ActionIcon action={card.action} />
-                        <ActionLabel action={card.action} payload={card.payload} />
-                      </motion.div>
-                    ))}
-                  </>
-                )}
+                renderActionCards={(messageId) => {
+                  // Item 3 — staggered skew-unroll: each card unrolls from the
+                  // assistant's reasoning (skewY + lift + scale), 80ms apart.
+                  const cards = actionCards.filter(c => c.messageId === messageId)
+                  return (
+                    <>
+                      {cards.map((card, i) => (
+                        <motion.div
+                          key={card.id}
+                          initial={{ opacity: 0, y: 12, scale: 0.97, skewY: -1.5 }}
+                          animate={{ opacity: 1, y: 0, scale: 1, skewY: 0 }}
+                          transition={{ duration: 0.46, ease: [0.16, 1, 0.3, 1], delay: i * 0.08 }}
+                          className="press group/ac flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl w-fit max-w-sm
+                                     neu cursor-default
+                                     hover:-translate-y-px"
+                          style={{ borderLeft: '2px solid rgba(0,212,255,0.5)' }}
+                        >
+                          <span className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0
+                                           bg-[#00D4FF]/12 border border-[#00D4FF]/25
+                                           transition-colors group-hover/ac:bg-[#00D4FF]/20">
+                            <ActionIcon action={card.action} />
+                          </span>
+                          <span className="text-xs text-[#C8D3E5] font-medium">
+                            <ActionLabel action={card.action} payload={card.payload} />
+                          </span>
+                          <CheckCircle2 size={13} className="text-[#00FF88] shrink-0 ml-1" />
+                        </motion.div>
+                      ))}
+                    </>
+                  )
+                }}
               />
               <div ref={messagesEndRef} className="h-2" />
             </motion.div>
