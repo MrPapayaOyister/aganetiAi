@@ -18,6 +18,7 @@ import { useLiveChat } from '../hooks/useLiveChat'
 import { useInitiatives } from '../hooks/useInitiatives'
 import { DelegationDock } from '../components/DelegationDock'
 import { AgentNetworkRail } from '../components/AgentNetworkRail'
+import { PressChip } from '../components/ui/PressChip'
 import { useSound } from '../hooks/useSound'
 import { useToast } from '../hooks/useToast'
 import { useAppContext } from '../App'
@@ -654,21 +655,14 @@ export default function AssistantPage() {
                 className="flex flex-wrap justify-center gap-2 mt-8 max-w-sm"
               >
                 {suggestions.map((s, i) => (
-                  <motion.button
+                  <motion.div
                     key={`${s}-${i}`}
-                    data-mute-click
                     initial={{ opacity: 0, y: 8 }}
                     animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.5 + i * 0.08 }}
-                    whileHover={{ y: -2 }}
-                    whileTap={{ scale: 0.97 }}
-                    onClick={() => handleSend(s)}
-                    className="px-4 py-2 glass-sm rounded-full text-sm text-[#94A3B8]
-                               border border-white/[0.06]
-                               hover:text-[#E2E8F0] hover:border-[#00D4FF]/35 hover:bg-[#00D4FF]/[0.04] transition-all"
+                    transition={{ delay: 0.5 + i * 0.08, duration: 0.46, ease: [0.16, 1, 0.3, 1] }}
                   >
-                    {s}
-                  </motion.button>
+                    <PressChip data-mute-click onClick={() => handleSend(s)}>{s}</PressChip>
+                  </motion.div>
                 ))}
               </motion.div>
             </motion.div>
