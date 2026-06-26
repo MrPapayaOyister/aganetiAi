@@ -66,6 +66,11 @@ TTS_ENABLED = os.getenv("TTS_ENABLED", "false").lower() == "true"
 TTS_URL       = os.getenv("TTS_URL",        "http://100.107.179.44:5002")
 STT_URL       = os.getenv("STT_URL",        "http://100.107.179.44:5003")
 
+# whisper.cpp CUDA server (GPU STT). When reachable, /stt forwards audio here
+# for sub-200ms transcription on the GB10; otherwise it falls back to the local
+# CPU faster-whisper module. Empty string disables the GPU path.
+WHISPER_CPP_URL = os.getenv("WHISPER_CPP_URL", "http://127.0.0.1:8090")
+
 # ──────────────────────────────────────────────────────────────────────────
 # Tier-1 additions (DGX Spark): GPU Whisper, RAG ingestion, native tool-calling
 # ──────────────────────────────────────────────────────────────────────────

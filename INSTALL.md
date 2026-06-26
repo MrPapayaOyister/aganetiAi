@@ -51,6 +51,39 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000
 streamlit run frontend/app.py --server.port 8501 --server.address 0.0.0.0
 ```
 
+## GPU STT (whisper.cpp, CUDA) — optional but ~10x faster
+
+The `ctranslate2` PyPI wheel for aarch64 is CPU-only and the upstream
+whisper.cpp CUDA Docker image is amd64-only, so on the GB10 we build
+whisper.cpp from source (same ggml CUDA backend that already powers
+`local_llm_core`). Backend `/stt` auto-uses it when reachable and falls
+back to CPU faster-whisper otherwise — nothing breaks if it's not running.
+
+Build once:
+
+```bash
+cd ~ && git clone --depth 1 https://github.com/ggml-org/whisper.cpp.git
+cd whisper.cpp
+cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121 \
+      -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j"$(nproc)" --target whisper-server whisper-cli
+bash ./models/download-ggml-model.sh base.en      # or small.en for more accuracy
+```
+
+Run (foreground): `bash ~/aganetiAi/scripts/run_whisper_server.sh`
+Or as a service:
+
+```bash
+sudo cp deploy/aria-whisper.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now aria-whisper
+curl -F file=@~/whisper.cpp/samples/jfk.wav http://127.0.0.1:8090/inference
+```
+
+Measured on the GB10: ~150 ms for an 11 s clip with the model resident
+(vs ~1–3 s on CPU `small`). Override the endpoint with `WHISPER_CPP_URL`
+in `.env` (empty string disables the GPU path).
+
 ## Run as a service (optional)
 
 ```bash

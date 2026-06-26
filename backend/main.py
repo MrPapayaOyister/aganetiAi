@@ -828,14 +828,49 @@ async def tts_stream_endpoint(payload: dict):
         },
     )
 
-# ── STT (local faster-whisper) ───────────────────────────────
+# ── STT (GPU whisper.cpp, CPU faster-whisper fallback) ───────
+async def _stt_whispercpp(raw: bytes, filename: str) -> str | None:
+    """Try the GPU whisper.cpp server (/inference). Returns transcript, or None
+    if the server is unreachable / errors (caller falls back to CPU)."""
+    from config.settings import WHISPER_CPP_URL
+    if not WHISPER_CPP_URL:
+        return None
+    try:
+        files = {"file": (filename or "audio.webm", raw,
+                          "application/octet-stream")}
+        data = {"response_format": "json", "temperature": "0"}
+        resp = await get_llm_http().post(
+            f"{WHISPER_CPP_URL}/inference", files=files, data=data, timeout=30.0)
+        if resp.status_code != 200:
+            return None
+        return (resp.json().get("text") or "").strip()
+    except Exception as e:  # noqa: BLE001
+        log.info("whisper.cpp STT unavailable, falling back to CPU: %s", e)
+        return None
+
+
 @app.post("/stt")
 async def stt_endpoint(audio: UploadFile = File(...)):
-    """Transcribe uploaded audio locally (faster-whisper). No remote dependency."""
-    import tempfile, os as _os
-    from integrations.whisper_transcriber import transcribe_audio
-
+    """Transcribe uploaded audio. Prefers the GPU whisper.cpp server
+    (sub-200ms on the GB10); falls back to the local CPU faster-whisper module
+    when the server isn't running. Never depends on a remote host."""
+    import tempfile, os as _os, time as _t
     raw = await audio.read()
+    t0 = _t.monotonic()
+
+    # Fast path: GPU whisper.cpp.
+    text = await _stt_whispercpp(raw, audio.filename or "")
+    if text is not None:
+        dur = int((_t.monotonic() - t0) * 1000)
+        try:
+            from backend import events
+            events.log_event("voice_session", name="stt_gpu", duration_ms=dur, success=True)
+        except Exception:
+            pass
+        return {"text": text}
+
+    # Fallback: CPU faster-whisper.
+    from integrations.whisper_transcriber import transcribe_audio
     suffix = _os.path.splitext(audio.filename or "")[1] or ".webm"
     tmp = _os.path.join(tempfile.gettempdir(), f"_stt_{_uuid.uuid4().hex}{suffix}")
     try:
@@ -843,6 +878,12 @@ async def stt_endpoint(audio: UploadFile = File(...)):
         text = await asyncio.to_thread(transcribe_audio, tmp)
         if text in ("[No speech detected]", "[Transcription failed]"):
             text = ""
+        try:
+            from backend import events
+            events.log_event("voice_session", name="stt_cpu",
+                             duration_ms=int((_t.monotonic() - t0) * 1000), success=True)
+        except Exception:
+            pass
         return {"text": text}
     finally:
         try: _os.remove(tmp)
