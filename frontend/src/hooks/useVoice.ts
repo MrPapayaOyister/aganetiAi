@@ -135,32 +135,44 @@ export function useVoice() {
         if (out) onResult(out)
       }
 
-      // CRITICAL FIX: start recognition IMMEDIATELY in the user-gesture
-      // window — don't await getUserMedia first.  Recognition has its
-      // own internal mic capture and was failing to start when the
-      // gesture context was consumed by the awaited getUserMedia.
+      // STEP 1: request mic permission FIRST. Chrome routes Web Speech
+      // mic capture through the same permission grant that getUserMedia
+      // uses — if we don't getUserMedia first, recognition can start but
+      // capture nothing on cold-permission browsers. The await here
+      // preserves the gesture context (browser permission popups extend
+      // the gesture window).
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      } catch {
+        // Permission denied or no mic device. Continue WITHOUT mic stream —
+        // recognition.start() will trigger its own prompt as a fallback.
+        micStream = null
+      }
+
+      // STEP 2: start recognition IMMEDIATELY after permission resolves,
+      // still inside the gesture window. Do NOT add any awaits between
+      // here and recognition.start() — ctx.resume() in particular has been
+      // known to hang on Chrome Android and prevent recognition from
+      // starting.
       try {
         recognition.start()
       } catch {
+        if (micStream) micStream.getTracks().forEach(t => t.stop())
         setState('idle')
         return
       }
 
-      // Mic analyser is for the orb's amplitude — purely cosmetic.
-      // Set it up in the background; if it fails, recognition keeps
-      // working without it.
-      ;(async () => {
+      // STEP 3: cosmetic analyser setup — non-blocking, errors ignored.
+      if (micStream) {
         try {
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-          micStream = stream
           const ctx = ensureCtx()
           const analyser = ctx.createAnalyser()
           analyser.fftSize = 256
-          ctx.createMediaStreamSource(stream).connect(analyser)
+          ctx.createMediaStreamSource(micStream).connect(analyser)
           setAnalyserNode(analyser)
           startSampler(analyser)
-        } catch { /* mic viz optional — recognition continues without it */ }
-      })()
+        } catch { /* mic viz optional — recognition keeps working */ }
+      }
       return
     }
 
