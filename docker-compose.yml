@@ -29,7 +29,15 @@ services:
       --jinja
       --embeddings
       --pooling last
+      --cache-reuse 256
+      --cont-batching
+      --parallel 2
     restart: unless-stopped
+    # --cache-reuse 256: reuse KV cache for matching prompt prefixes. Aria's
+    #   system prompt is a large stable prefix sent on every turn — this skips
+    #   re-prefilling it, cutting first-token latency dramatically on turn 2+.
+    # --cont-batching + --parallel 2: overlap the tool-detection call and the
+    #   token stream / concurrent users instead of serializing them.
 
   # ── Corporate second-brain vector memory ──────────────────
   qdrant:

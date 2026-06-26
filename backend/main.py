@@ -812,6 +812,49 @@ print("Backend API Ready.")
 # ==========================================
 # 2. CORE HELPER FUNCTIONS
 # ==========================================
+
+# ── Shared keep-alive HTTP client for LLM calls ───────────────────────────────
+# Creating a fresh httpx.AsyncClient per request re-does the TCP/HTTP handshake
+# every time. A single pooled client with keep-alive shaves per-call setup off
+# the hot path (small but real on every token-stream + tool call).
+_llm_http: "httpx.AsyncClient | None" = None
+
+def get_llm_http() -> "httpx.AsyncClient":
+    global _llm_http
+    if _llm_http is None or _llm_http.is_closed:
+        _llm_http = httpx.AsyncClient(
+            timeout=120.0,
+            limits=httpx.Limits(max_keepalive_connections=8, keepalive_expiry=300.0),
+        )
+    return _llm_http
+
+
+# ── Tool-need heuristic (latency fast-path) ───────────────────────────────────
+# The native-tools chat path used to fire a FULL blocking 14B tool-detection call
+# before streaming ANY token — even for "hi". That call (up to 512 tokens) was the
+# single biggest first-token latency source. We skip it when the message clearly
+# needs no tool: those turns stream immediately. Every tool verb the model can
+# call is covered below, so a genuine tool request is never starved; the worst
+# case of a miss is the user rephrasing.
+_TOOL_HINTS = (
+    "email", "mail", "inbox", "unread", "draft", "send", "reply", "forward",
+    "task", "todo", "to-do", "remind", "reminder",
+    "schedule", "meeting", "calendar", "agenda", "event", "appointment", "free",
+    "contact", "phone", "number", "who is", "address",
+    "remember", "recall", "note that", "don't forget",
+    "search", "find", "look up", "lookup", "document", "policy", "handbook", "knowledge",
+    "analytics", "how many", "stats", "report", "summary", "summarize", "summarise",
+    "web", "news", "latest", "current", "today's", "google",
+    "delegate", "complete", "mark done", "finish", "due", "deadline", "priority",
+)
+
+def _might_need_tools(message: str) -> bool:
+    if not message:
+        return False
+    low = message.lower()
+    return any(h in low for h in _TOOL_HINTS)
+
+
 def query_local_llm(sys_prompt: str, user_prompt: str) -> str:
     response = client.chat.completions.create(
         model="local-model",
@@ -868,13 +911,14 @@ async def call_llm_tools(messages: list, allow_text_recovery: bool = True) -> di
         "tools": TOOL_SCHEMAS,
         "tool_choice": "auto",
         "temperature": 0.2,
-        "max_tokens": 512,
+        # Tool-call JSON is short; the model emits it early. 256 halves the
+        # worst-case tool-detection time vs the old 512 with no quality loss.
+        "max_tokens": 256,
         "stream": False,
     }
-    async with httpx.AsyncClient(timeout=90.0) as client_http:
-        resp = await client_http.post(url, json=payload)
-        resp.raise_for_status()
-        msg = resp.json()["choices"][0]["message"]
+    resp = await get_llm_http().post(url, json=payload)
+    resp.raise_for_status()
+    msg = resp.json()["choices"][0]["message"]
     # Fallback: this build sometimes emits tool calls as raw content instead of
     # structured tool_calls — recover them so actions aren't silently dropped.
     # DISABLED in follow-up rounds (allow_text_recovery=False) to prevent the
@@ -933,20 +977,19 @@ async def stream_plain_answer(messages: list):
     markup into the content (which this llama.cpp build does when streaming with tools)."""
     url = f"{LLM_SMART_URL}/v1/chat/completions"
     payload = {"messages": messages, "temperature": 0.4, "max_tokens": 700, "stream": True}
-    async with httpx.AsyncClient(timeout=120.0) as client_http:
-        async with client_http.stream("POST", url, json=payload) as resp:
-            async for line in resp.aiter_lines():
-                if not line or not line.startswith("data:"):
-                    continue
-                d = line[5:].strip()
-                if d == "[DONE]":
-                    break
-                try:
-                    tok = json.loads(d)["choices"][0].get("delta", {}).get("content", "")
-                except Exception:
-                    continue
-                if tok:
-                    yield tok
+    async with get_llm_http().stream("POST", url, json=payload) as resp:
+        async for line in resp.aiter_lines():
+            if not line or not line.startswith("data:"):
+                continue
+            d = line[5:].strip()
+            if d == "[DONE]":
+                break
+            try:
+                tok = json.loads(d)["choices"][0].get("delta", {}).get("content", "")
+            except Exception:
+                continue
+            if tok:
+                yield tok
 
 def retrieve_corporate_context(query: str) -> str:
     try:
@@ -1634,10 +1677,16 @@ async def chat_endpoint(request: ChatRequest, http_request: Request):
 
     from memory.long_term import search_memory
     from memory.query_rewriter import rewrite_query
-    recent_msgs = get_recent_history(request.session_id, n=3)
-    try:
+    # rewrite_query makes a SYNCHRONOUS httpx call to the LLM; running it inline
+    # blocked the whole async event loop (stalling every other in-flight request)
+    # for up to 10s. search_memory also does a blocking embed + Qdrant query.
+    # Run the whole block in a worker thread so the loop stays responsive.
+    def _memory_block() -> str:
+        recent_msgs = get_recent_history(request.session_id, n=3)
         search_query = rewrite_query(recent_msgs, request.message)
-        long_term_context = search_memory(request.session_id, search_query, top_k=3)
+        return search_memory(request.session_id, search_query, top_k=3)
+    try:
+        long_term_context = await asyncio.to_thread(_memory_block)
     except Exception as e:
         print(f"[chat] long-term memory unavailable for {request.session_id}: {e}")
         long_term_context = ""
@@ -1860,11 +1909,19 @@ async def chat_endpoint(request: ChatRequest, http_request: Request):
                 confirmations: list[str] = []
                 action_taken = False
                 base_reply = ""
-                try:
-                    first = await call_llm_tools(convo)
-                except Exception:
-                    log.exception(f"tool detect failed (user={user_id})")
-                    yield _sse({"type": "error", "message": "I had trouble reaching my reasoning engine."})
+                # ── LATENCY FAST-PATH ────────────────────────────────────────
+                # Only pay the blocking tool-detection round-trip when the message
+                # plausibly needs a tool. Conversational turns skip straight to
+                # streaming, so the first token appears in ~1 LLM call instead of 2.
+                if _might_need_tools(user_message):
+                    try:
+                        first = await call_llm_tools(convo)
+                    except Exception:
+                        log.exception(f"tool detect failed (user={user_id})")
+                        yield _sse({"type": "error", "message": "I had trouble reaching my reasoning engine."})
+                        first = {"content": "", "tool_calls": None}
+                else:
+                    # Force the pure-chat branch below — no tool round-trip.
                     first = {"content": "", "tool_calls": None}
 
                 if not (first.get("tool_calls") or []):
