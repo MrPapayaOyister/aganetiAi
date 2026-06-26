@@ -23,10 +23,15 @@ export function StatCard({ label, value, icon: Icon, color, trend, unit, onClick
     mv.set(value)
   }, [value, mv])
 
+  // Only write the DOM when the *rounded* value changes (was writing every
+  // animation frame, even for sub-integer deltas — needless layout churn).
   useEffect(() => {
+    let lastShown = NaN
     return spring.on('change', v => {
-      if (displayRef.current) {
-        displayRef.current.textContent = Math.round(v).toString()
+      const r = Math.round(v)
+      if (r !== lastShown && displayRef.current) {
+        lastShown = r
+        displayRef.current.textContent = r.toString()
       }
     })
   }, [spring])
