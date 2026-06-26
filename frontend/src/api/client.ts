@@ -121,6 +121,24 @@ export const getInitiatives = (user_id: UserID, limit = 10) =>
 export const ackInitiative = (id: string, dismissed = false) =>
   http.post(`/initiatives/${id}/ack`, { dismissed })
 
+// ── Delegations (P7) ───────────────────────────────────
+export interface Delegation {
+  id: string
+  user_id: string
+  from_agent: string
+  to_agent: string
+  task: string
+  status: 'pending' | 'in_progress' | 'completed' | 'failed'
+  result: string | null
+  error: string | null
+  created_at: string
+  updated_at: string
+}
+export const createDelegation = (user_id: UserID, to_agent: string, task: string) =>
+  http.post<Delegation>('/delegations', { user_id, to_agent, task })
+export const getDelegations = (user_id: UserID, limit = 20) =>
+  http.get<{ delegations: Delegation[] }>(`/delegations/${user_id}`, { params: { limit } })
+
 // ── Operational analytics (P5) ─────────────────────────
 export const getAnalyticsSummary = (period = '7d', user_id?: UserID) =>
   http.get('/analytics/summary', { params: { period, user_id } })

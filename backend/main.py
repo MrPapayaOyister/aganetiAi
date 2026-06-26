@@ -900,8 +900,10 @@ try:
     _events_boot.init()
     from backend import initiatives as _init_boot
     _init_boot.init()
+    from backend import delegation as _deleg_boot
+    _deleg_boot.init()
 except Exception as _e:
-    print(f"[events/initiatives] init skipped: {_e}")
+    print(f"[events/initiatives/delegation] init skipped: {_e}")
 print("Backend API Ready.")
 
 # ==========================================
@@ -2888,6 +2890,28 @@ async def enqueue_initiative(payload: dict):
         payload.get("dedup_key"), payload.get("meta"),
     )
     return {"id": iid, "enqueued": iid is not None}
+
+# ── Tracked delegation lifecycle (P7) ─────────────────────────────────────────
+@app.post("/delegations")
+async def create_delegation(payload: dict):
+    """Create + run a tracked delegation to a named sub-agent. Returns the final
+    record (status completed/failed + result). Sub-agents: calendar_agent,
+    email_agent, memory_agent, scheduler_agent, aria."""
+    from backend import delegation
+    user_id = payload.get("user_id") or ""
+    to_agent = payload.get("to_agent") or "aria"
+    task = (payload.get("task") or "").strip()
+    if not user_id or not task:
+        raise HTTPException(status_code=400, detail="user_id and task are required")
+    if to_agent not in delegation.KNOWN_AGENTS:
+        to_agent = "aria"
+    return await asyncio.to_thread(delegation.create_and_run, user_id, to_agent, task)
+
+@app.get("/delegations/{user_id}")
+async def list_delegations(user_id: str, limit: int = 20):
+    from backend import delegation
+    items = await asyncio.to_thread(delegation.list_for_user, user_id, limit)
+    return {"user_id": user_id, "delegations": items}
 
 @app.get("/memory/dump")
 async def memory_dump(user_id: str):

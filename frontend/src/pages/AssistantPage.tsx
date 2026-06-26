@@ -16,6 +16,7 @@ import { useStream } from '../hooks/useStream'
 import { useVoice } from '../hooks/useVoice'
 import { useLiveChat } from '../hooks/useLiveChat'
 import { useInitiatives } from '../hooks/useInitiatives'
+import { DelegationDock } from '../components/DelegationDock'
 import { useSound } from '../hooks/useSound'
 import { useToast } from '../hooks/useToast'
 import { useAppContext } from '../App'
@@ -746,6 +747,9 @@ export default function AssistantPage() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Live delegation status pills (P7) */}
+      <DelegationDock userId={userId} />
 
       {/* Input bar — premium glass dock at the bottom */}
       <div className="shrink-0 px-3 pt-1.5 pb-3">
