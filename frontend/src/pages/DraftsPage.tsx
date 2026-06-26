@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Send, Trash2, Mail, Loader2 } from 'lucide-react'
+import { Send, Trash2, Mail } from 'lucide-react'
 import { getDrafts, deleteDraft, sendEmail, type EmailDraft } from '../api/client'
+import { PressButton } from '../components/ui/PressButton'
 import { useAppContext } from '../App'
 import { useToast } from '../hooks/useToast'
 import { SkeletonCard } from '../components/SkeletonCard'
@@ -87,20 +88,14 @@ export default function DraftsPage() {
                            outline-none focus:ring-1 focus:ring-[#38DBFF]/40"
               />
               <div className="flex items-center justify-end gap-2">
-                <button
-                  onClick={() => removeMut.mutate(d._index)}
-                  className="neu-pill h-9 px-4 flex items-center gap-2 t-label text-[#FF4466]"
-                >
+                <PressButton variant="danger" size="sm" onClick={() => removeMut.mutate(d._index)}>
                   <Trash2 size={14} /> Discard
-                </button>
-                <button
-                  onClick={() => send(d)}
-                  disabled={busy === d._index}
-                  className="neu-pill h-9 px-4 flex items-center gap-2 t-label text-[#00FF88] disabled:opacity-50"
-                >
-                  {busy === d._index ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-                  Send
-                </button>
+                </PressButton>
+                <PressButton variant="primary" size="sm"
+                  loading={busy === d._index}
+                  onClick={() => send(d)}>
+                  <Send size={14} /> Send
+                </PressButton>
               </div>
             </motion.div>
           ))}

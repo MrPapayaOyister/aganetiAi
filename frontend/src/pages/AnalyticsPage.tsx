@@ -10,6 +10,7 @@ import {
   getAnalyticsSummary, getAnalyticsTools, getAnalyticsTasks, getAnalyticsActiveHours,
 } from '../api/client'
 import { DonutChart, BarChart } from '../components/charts/Charts'
+import { Skeleton } from '../components/ui/Skeleton'
 import { useAppContext } from '../App'
 import axios from 'axios'
 
@@ -76,12 +77,12 @@ export default function AnalyticsPage() {
     queryFn: () => getAnalyticsSummary('7d', userId).then(r => r.data),
     refetchInterval: 60_000, retry: false,
   })
-  const { data: opTools } = useQuery({
+  const { data: opTools, isLoading: opToolsLoading } = useQuery({
     queryKey: ['ops-tools', userId],
     queryFn: () => getAnalyticsTools('30d', userId).then(r => r.data),
     refetchInterval: 120_000, retry: false,
   })
-  const { data: opTasks } = useQuery({
+  const { data: opTasks, isLoading: opTasksLoading } = useQuery({
     queryKey: ['ops-tasks', userId],
     queryFn: () => getAnalyticsTasks('30d', userId).then(r => r.data),
     refetchInterval: 120_000, retry: false,
@@ -172,21 +173,25 @@ export default function AnalyticsPage() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="neu rounded-2xl p-5">
-              <h2 className="t-heading mb-4">Tool usage (30d)</h2>
-              <BarChart data={toolBars} />
-            </div>
-            <div className="neu rounded-2xl p-5">
-              <h2 className="t-heading mb-4">Task funnel (30d)</h2>
-              <DonutChart
-                segments={[
-                  { label: 'Completed', value: opCompleted, color: '#00FF88' },
-                  { label: 'Created',   value: Math.max(0, opCreated - opCompleted), color: '#38DBFF' },
-                ]}
-                centerValue={`${opCreated ? Math.round((opCompleted / opCreated) * 100) : 0}%`}
-                centerLabel="completion"
-              />
-            </div>
+            {opToolsLoading ? <Skeleton variant="chart" /> : (
+              <div className="neu rounded-2xl p-5">
+                <h2 className="t-heading mb-4">Tool usage (30d)</h2>
+                <BarChart data={toolBars} />
+              </div>
+            )}
+            {opTasksLoading ? <Skeleton variant="chart" /> : (
+              <div className="neu rounded-2xl p-5">
+                <h2 className="t-heading mb-4">Task funnel (30d)</h2>
+                <DonutChart
+                  segments={[
+                    { label: 'Completed', value: opCompleted, color: '#00FF88' },
+                    { label: 'Created',   value: Math.max(0, opCreated - opCompleted), color: '#38DBFF' },
+                  ]}
+                  centerValue={`${opCreated ? Math.round((opCompleted / opCreated) * 100) : 0}%`}
+                  centerLabel="completion"
+                />
+              </div>
+            )}
             <div className="neu rounded-2xl p-5 md:col-span-2">
               <h2 className="t-heading mb-4">Most active hours (30d)</h2>
               {byHour.length === 24 ? (

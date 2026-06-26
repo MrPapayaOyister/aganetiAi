@@ -5,7 +5,9 @@ import { Inbox, Send, Check, X, Plus, ChevronDown, ChevronUp } from 'lucide-reac
 import { resolveMessage, rejectMessage } from '../api/client'
 import { useAppContext } from '../App'
 import { useToast } from '../hooks/useToast'
-import { SkeletonCard } from '../components/SkeletonCard'
+import { Skeleton } from '../components/ui/Skeleton'
+import { EmptyState } from '../components/ui/EmptyState'
+import { PressButton } from '../components/ui/PressButton'
 import axios from 'axios'
 
 const getAgentOutbox = (userId: string) => axios.get('/api/agent/outbox', { params: { user_id: userId } })
@@ -227,12 +229,17 @@ export default function InboxPage() {
         <AnimatePresence mode="wait">
           {tab === 'incoming' ? (
             <motion.div key="incoming" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-3">
-              {inboxLoading && [1,2,3].map(i => <SkeletonCard key={i} lines={3} />)}
+              {inboxLoading && [0,1,2,3].map(i => (
+                <motion.div key={i} initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+                  transition={{ delay: Math.min(i * 0.04, 0.2) }} className="glass rounded-2xl p-4">
+                  <Skeleton variant="row" />
+                </motion.div>
+              ))}
 
               {!inboxLoading && messages.length === 0 && (
-                <div className="glass rounded-2xl p-8 text-center">
-                  <Inbox size={28} className="mx-auto text-[#1E3A5F] mb-2" />
-                  <p className="text-[#4A6080] text-sm">No incoming messages</p>
+                <div className="glass rounded-2xl overflow-hidden">
+                  <EmptyState icon={Inbox} title="No incoming messages"
+                    description="Agent messages and delegations will appear here as Aria works." />
                 </div>
               )}
 
@@ -299,28 +306,17 @@ export default function InboxPage() {
                       {/* Actions */}
                       {isPending && (
                         <div className="flex gap-2 mt-3">
-                          <motion.button
-                            whileTap={{ scale: 0.92 }}
+                          <PressButton variant="primary" size="sm"
                             onClick={() => resolveMut.mutate(msg.id)}
                             disabled={resolveMut.isPending}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium
-                                       bg-[#00FF88]/12 border border-[#00FF88]/25 text-[#00FF88]
-                                       hover:bg-[#00FF88]/20 transition-colors disabled:opacity-40"
-                          >
-                            <Check size={12} />
-                            Accept
-                          </motion.button>
-                          <motion.button
-                            whileTap={{ scale: 0.92 }}
+                            className="!bg-[#00FF88]/12 !border-[#00FF88]/25 !text-[#00FF88] hover:!bg-[#00FF88]/20">
+                            <Check size={12} /> Accept
+                          </PressButton>
+                          <PressButton variant="danger" size="sm"
                             onClick={() => rejectMut.mutate(msg.id)}
-                            disabled={rejectMut.isPending}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium
-                                       bg-[#FF4466]/12 border border-[#FF4466]/25 text-[#FF4466]
-                                       hover:bg-[#FF4466]/20 transition-colors disabled:opacity-40"
-                          >
-                            <X size={12} />
-                            Reject
-                          </motion.button>
+                            disabled={rejectMut.isPending}>
+                            <X size={12} /> Reject
+                          </PressButton>
                         </div>
                       )}
 
@@ -341,12 +337,17 @@ export default function InboxPage() {
             </motion.div>
           ) : (
             <motion.div key="sent" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-3">
-              {outboxLoading && [1,2].map(i => <SkeletonCard key={i} lines={2} />)}
+              {outboxLoading && [0,1].map(i => (
+                <motion.div key={i} initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+                  transition={{ delay: i * 0.04 }} className="glass-sm rounded-2xl p-4">
+                  <Skeleton variant="row" />
+                </motion.div>
+              ))}
 
               {!outboxLoading && sent.length === 0 && (
-                <div className="glass rounded-2xl p-8 text-center">
-                  <Send size={28} className="mx-auto text-[#1E3A5F] mb-2" />
-                  <p className="text-[#4A6080] text-sm">No sent messages</p>
+                <div className="glass rounded-2xl overflow-hidden">
+                  <EmptyState icon={Send} title="No sent messages"
+                    description="Replies and dispatched agent messages will show up here." accent="#00FFB3" />
                 </div>
               )}
 

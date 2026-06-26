@@ -1,6 +1,9 @@
 import { useState } from 'react'
 import { usePrefs } from '../contexts/PrefsContext'
 import { isMuted, setMuted } from '../lib/sound'
+import { PressButton } from '../components/ui/PressButton'
+import { Toggle } from '../components/ui/Toggle'
+import { ConfirmModal } from '../components/ui/ConfirmModal'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -191,6 +194,7 @@ function AccountSection() {
   const [agentNameInput, setAgentNameInput] = useState(prefs.agentName)
   const [displayNameInput, setDisplayNameInput] = useState(prefs.displayName)
   const [soundOn, setSoundOn] = useState(!isMuted())
+  const [confirmSignOut, setConfirmSignOut] = useState(false)
 
   const email = user?.email ?? '—'
   const initials = email !== '—' ? email.slice(0, 2).toUpperCase() : 'AI'
@@ -276,24 +280,14 @@ function AccountSection() {
         </div>
         <p className="text-xs text-[#4A6080]">Saved automatically on blur.</p>
 
-        {/* Sound effects toggle (Item 8) */}
-        <div className="flex items-center justify-between pt-1">
-          <div>
-            <label className="text-xs font-medium text-[#9AA7BD] block">Interface sounds</label>
-            <p className="text-[11px] text-[#4A6080] mt-0.5">Soft click & status cues</p>
-          </div>
-          <button
-            onClick={() => setSoundOn(v => { const next = !v; setMuted(!next); return next })}
-            role="switch" aria-checked={soundOn}
-            className="press relative w-11 h-6 rounded-full transition-colors"
-            style={{ background: soundOn ? 'rgba(0,212,255,0.35)' : 'rgba(255,255,255,0.08)' }}
-          >
-            <motion.span
-              className="absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow"
-              animate={{ x: soundOn ? 20 : 0 }}
-              transition={{ type: 'spring', stiffness: 500, damping: 34 }}
-            />
-          </button>
+        {/* Sound effects toggle (Item 8) — shared Toggle component */}
+        <div className="pt-1">
+          <Toggle
+            checked={soundOn}
+            onChange={(next) => { setSoundOn(next); setMuted(!next) }}
+            label="Interface sounds"
+            description="Soft click & status cues"
+          />
         </div>
       </div>
 
@@ -311,16 +305,21 @@ function AccountSection() {
         </div>
 
         <div className="border-t border-[#1E3A5F]/30 pt-4 flex justify-end">
-          <button
-            onClick={signOut}
-            className="px-4 py-2 rounded-xl text-sm font-medium text-[#FF4466]
-                       bg-[#FF4466]/10 border border-[#FF4466]/20
-                       hover:bg-[#FF4466]/20 transition-colors"
-          >
+          <PressButton variant="danger" size="sm" onClick={() => setConfirmSignOut(true)}>
             Sign out
-          </button>
+          </PressButton>
         </div>
       </div>
+
+      <ConfirmModal
+        open={confirmSignOut}
+        title="Sign out of Aria?"
+        description="You'll need to sign in again to access your assistant, tasks and connected apps."
+        confirmLabel="Sign out"
+        danger
+        onConfirm={() => { setConfirmSignOut(false); signOut() }}
+        onCancel={() => setConfirmSignOut(false)}
+      />
 
       {/* Connected Apps */}
       <div className="glass rounded-2xl p-5 space-y-3">

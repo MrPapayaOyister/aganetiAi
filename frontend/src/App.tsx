@@ -38,17 +38,28 @@ export function useAppContext() { return useContext(AppCtx) }
 // and defocuses on exit (sharpens away, drifts back). AnimatePresence mode="wait"
 // gives the layered "shell first, content after" gap. Expo-out easing reads as
 // premium and deliberate — slower than a daily-driver app, still clear.
-const PAGE_EASE = [0.22, 1, 0.36, 1] as const
+const PAGE_EASE = [0.16, 1, 0.3, 1] as const
+// Layered page transition: the shell (outer) fades + sharpens first, then the
+// content (inner) settles up a beat later — premium "shell first, content
+// after" cascade rather than one flat all-at-once move.
 function Page({ children }: { children: React.ReactNode }) {
   return (
     <motion.div
-      initial={{ opacity: 0, y: 18, filter: 'blur(8px)' }}
-      animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-      exit={{ opacity: 0, y: -12, filter: 'blur(6px)' }}
-      transition={{ duration: 0.52, ease: PAGE_EASE }}
+      initial={{ opacity: 0, filter: 'blur(8px)' }}
+      animate={{ opacity: 1, filter: 'blur(0px)' }}
+      exit={{ opacity: 0, filter: 'blur(6px)' }}
+      transition={{ duration: 0.42, ease: PAGE_EASE }}
       className="h-full"
     >
-      {children}
+      <motion.div
+        className="h-full"
+        initial={{ y: 22, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        exit={{ y: -12, opacity: 0 }}
+        transition={{ duration: 0.52, ease: PAGE_EASE, delay: 0.1 }}
+      >
+        {children}
+      </motion.div>
     </motion.div>
   )
 }
