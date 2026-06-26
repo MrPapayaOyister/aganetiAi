@@ -10,6 +10,11 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   streaming?: boolean
+  /** True when Aria initiated this message (proactive), not a reply to the user. */
+  proactive?: boolean
+  /** Initiative metadata when proactive. */
+  initiativeId?: string
+  category?: string
 }
 
 export interface Source { source: string }

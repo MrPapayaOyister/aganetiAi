@@ -15,6 +15,7 @@ import { useConversations } from '../hooks/useConversations'
 import { useStream } from '../hooks/useStream'
 import { useVoice } from '../hooks/useVoice'
 import { useLiveChat } from '../hooks/useLiveChat'
+import { useInitiatives } from '../hooks/useInitiatives'
 import { useSound } from '../hooks/useSound'
 import { useToast } from '../hooks/useToast'
 import { useAppContext } from '../App'
@@ -89,6 +90,32 @@ export default function AssistantPage() {
   const [errorFlash, setErrorFlash] = useState(false)
   const convos = useConversations(userId)
   const sessionId = convos.activeId
+
+  // P3 — proactive: poll the initiative queue and inject Aria-initiated
+  // messages into the conversation (amber-styled), plus a toast + field pulse.
+  useInitiatives(userId, (items) => {
+    setMessages(prev => {
+      const existing = new Set(prev.map(m => m.initiativeId).filter(Boolean))
+      const fresh = items
+        .filter(i => !existing.has(i.id))
+        .map(i => ({
+          id: generateId(),
+          role: 'assistant' as const,
+          content: i.body,
+          proactive: true,
+          initiativeId: i.id,
+          category: i.category,
+        }))
+      if (!fresh.length) return prev
+      return [...prev, ...fresh]
+    })
+    if (items[0]) {
+      addToast(items[0].title, 'info')
+      agentField.setMode('acting', 0.8)
+      agentField.pulse(0.5, 0.5, 1.4)
+      setTimeout(() => agentField.setMode('idle', 0), 1500)
+    }
+  })
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)

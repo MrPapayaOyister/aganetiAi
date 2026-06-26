@@ -222,6 +222,14 @@ body {
 .assistant-slab[data-mode="error"]    { border-left-color: rgba(255, 138, 74, 0.50); }
 .assistant-slab[data-mode="speaking"] { border-left-color: rgba(0, 212, 255, 0.55); }
 
+/* Proactive (Aria-initiated) — amber/gold rail + warm tint, overrides mode */
+.assistant-slab--proactive,
+.assistant-slab--proactive[data-mode] {
+  border-left-color: rgba(245, 158, 11, 0.65) !important;
+  background: rgba(28, 22, 10, 0.72);
+  box-shadow: 0 6px 26px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(245, 158, 11, 0.08);
+}
+
 /* Composer dock — heavier premium glass, less transparent */
 .composer-dock {
   background: rgba(10, 13, 20, 0.75);

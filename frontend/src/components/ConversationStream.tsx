@@ -118,15 +118,23 @@ function ConvTurn({
         <div className="h-px mb-3 bg-gradient-to-r from-transparent via-white/[0.06] to-transparent" />
       )}
 
-      {/* Assistant label — solid cyan (was a distracting cyan→violet gradient) */}
+      {/* Assistant label — solid cyan; amber + badge when Aria initiated it */}
       <div className="flex items-center gap-2 mb-1">
-        <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#00D4FF] opacity-70">
+        <span className={`text-[10px] font-semibold uppercase tracking-[0.18em] opacity-80
+                         ${msg.proactive ? 'text-[#F59E0B]' : 'text-[#00D4FF] opacity-70'}`}>
           Assistant{speaking ? '  ·  speaking' : ''}
         </span>
+        {msg.proactive && (
+          <span className="text-[9px] font-semibold uppercase tracking-[0.14em] px-1.5 py-0.5 rounded-full
+                           bg-[#F59E0B]/15 border border-[#F59E0B]/30 text-[#F59E0B]">
+            Aria initiated
+          </span>
+        )}
       </div>
 
-      {/* Frosted slab */}
-      <div className="assistant-slab" data-mode={speaking ? 'speaking' : agentMode}>
+      {/* Frosted slab — amber rail for proactive, mode-tinted otherwise */}
+      <div className={`assistant-slab ${msg.proactive ? 'assistant-slab--proactive' : ''}`}
+           data-mode={speaking ? 'speaking' : agentMode}>
         <div className="prose-chat text-[15px] leading-[1.7] text-[#E6EBF5]">
           {msg.content ? (
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>

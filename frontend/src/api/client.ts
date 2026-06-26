@@ -106,6 +106,31 @@ export const deleteSchedule = (user_id: UserID, schedule_id: string) =>
 export const getContacts = (user_id: UserID) =>
   http.get('/contacts', { params: { user_id } })
 
+// ── Proactive initiatives (P3) ─────────────────────────
+export interface Initiative {
+  id: string
+  user_id: string
+  category: string
+  title: string
+  body: string
+  status: string
+  created_at: string
+}
+export const getInitiatives = (user_id: UserID, limit = 10) =>
+  http.get<{ initiatives: Initiative[] }>(`/initiatives/${user_id}`, { params: { limit } })
+export const ackInitiative = (id: string, dismissed = false) =>
+  http.post(`/initiatives/${id}/ack`, { dismissed })
+
+// ── Operational analytics (P5) ─────────────────────────
+export const getAnalyticsSummary = (period = '7d', user_id?: UserID) =>
+  http.get('/analytics/summary', { params: { period, user_id } })
+export const getAnalyticsTools = (period = '30d', user_id?: UserID) =>
+  http.get('/analytics/tools', { params: { period, user_id } })
+export const getAnalyticsTasks = (period = '30d', user_id?: UserID) =>
+  http.get('/analytics/tasks', { params: { period, user_id } })
+export const getAnalyticsActiveHours = (period = '30d', user_id?: UserID) =>
+  http.get('/analytics/active_hours', { params: { period, user_id } })
+
 // ── Voice (proxied to DGX) ────────────────────────────
 export const tts = async (text: string): Promise<ArrayBuffer> => {
   const r = await fetch('/api/tts', {
