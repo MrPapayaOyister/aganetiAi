@@ -28,6 +28,9 @@ ACTION_CATEGORY = {
     "resolve_contact": "read",
     "search_knowledge": "read",
     "recall_memory": "read",
+    "get_emails": "read",         # read-only Gmail inbox listing
+    "get_agenda": "read",         # read-only Google Calendar agenda
+    "get_contacts": "read",       # read-only Google Contacts lookup
     "remember_fact": "task",      # benign memory write
     "set_reminder": "task",       # one-shot Telegram alert, no external side-effect
     "draft_email": "comms",       # produces a draft in the approval queue, never sends

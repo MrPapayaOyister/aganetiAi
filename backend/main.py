@@ -549,6 +549,14 @@ async def lifespan(app: FastAPI):
     Coalesces missed runs and restricts concurrent runs to 1 to prevent CPU overload.
     Also starts the Telegram bot polling loop concurrently in a background task.
     """
+    # Register the primary event loop so the sync tool dispatcher (which runs in
+    # asyncio.to_thread worker threads) can marshal Google coroutines back onto
+    # the loop that owns the shared httpx client. Without this, agent tools like
+    # get_emails fail cross-loop even though the REST routes work.
+    import asyncio as _aio
+    from backend import tools as _tools
+    _tools.set_main_loop(_aio.get_running_loop())
+
     from config.settings import RUN_BACKGROUND, RAG_WATCH_INTERVAL, PREWARM_MODELS, TTS_ENABLED
     if not RUN_BACKGROUND:
         # HTTP-only mode (testing / web-dashboard host): no inbox polling, no bot.

@@ -254,10 +254,41 @@ READ_TOOLS = {"get_analytics", "resolve_contact", "search_knowledge", "recall_me
 
 
 # ── Sync→async bridge for the Google services (dispatch runs in a worker thread) ──
+import asyncio as _asyncio
+
+# The primary (uvicorn) event loop, registered at app startup. The shared httpx
+# AsyncClient in services/http_client.py is bound to whichever loop first uses
+# it — i.e. this one. Tool dispatch runs inside asyncio.to_thread worker
+# threads, so we must marshal Google coroutines back ONTO this loop rather than
+# spinning up a throwaway loop (a fresh loop can't reuse the bound httpx client,
+# which is exactly why the agent's get_emails failed while the REST route worked).
+_MAIN_LOOP: "_asyncio.AbstractEventLoop | None" = None
+
+
+def set_main_loop(loop) -> None:
+    """Register the primary event loop (call once from the FastAPI lifespan)."""
+    global _MAIN_LOOP
+    _MAIN_LOOP = loop
+
+
 def _run_async(coro):
-    """Run an async coroutine from the sync tool dispatcher (which executes inside
-    asyncio.to_thread, so a fresh event loop here is safe)."""
+    """Run an async coroutine from the sync tool dispatcher.
+
+    Preferred path: schedule the coroutine on the registered main loop (which
+    owns the shared httpx client) and block this worker thread for the result.
+    Falls back to a private loop only if no main loop is available.
+    """
     import asyncio
+    loop = _MAIN_LOOP
+    if loop is not None and loop.is_running():
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is not loop:
+            fut = asyncio.run_coroutine_threadsafe(coro, loop)
+            return fut.result(timeout=90)
+    # No usable main loop (e.g. a standalone script / test) — own loop is fine.
     return asyncio.run(coro)
 
 
