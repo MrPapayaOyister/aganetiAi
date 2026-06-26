@@ -1,11 +1,14 @@
 import { motion } from 'framer-motion'
 import { useQuery } from '@tanstack/react-query'
-import { Mail, CheckSquare, Calendar, MessageSquare } from 'lucide-react'
+import { Mail, CheckSquare, Calendar, MessageSquare, Clock, Wrench, Sparkles } from 'lucide-react'
 import { StatCard } from '../components/StatCard'
 import { TaskBoard } from '../components/TaskBoard'
 import { AgendaTimeline } from '../components/AgendaTimeline'
 import { EmailDigestPanel } from '../components/EmailDigestPanel'
-import { getInboxCount, getAgenda } from '../api/client'
+import {
+  getInboxCount, getAgenda,
+  getAnalyticsSummary, getAnalyticsTools, getAnalyticsTasks, getAnalyticsActiveHours,
+} from '../api/client'
 import { DonutChart, BarChart } from '../components/charts/Charts'
 import { useAppContext } from '../App'
 import axios from 'axios'
@@ -67,6 +70,42 @@ export default function AnalyticsPage() {
   const unreadEmails = inboxData?.unread ?? 0
   const agentMessages = agentInboxData?.total ?? agentInboxData?.pending ?? 0
 
+  // ── Operational analytics (P5) ────────────────────────────────────
+  const { data: opSummary } = useQuery({
+    queryKey: ['ops-summary', userId],
+    queryFn: () => getAnalyticsSummary('7d', userId).then(r => r.data),
+    refetchInterval: 60_000, retry: false,
+  })
+  const { data: opTools } = useQuery({
+    queryKey: ['ops-tools', userId],
+    queryFn: () => getAnalyticsTools('30d', userId).then(r => r.data),
+    refetchInterval: 120_000, retry: false,
+  })
+  const { data: opTasks } = useQuery({
+    queryKey: ['ops-tasks', userId],
+    queryFn: () => getAnalyticsTasks('30d', userId).then(r => r.data),
+    refetchInterval: 120_000, retry: false,
+  })
+  const { data: opHours } = useQuery({
+    queryKey: ['ops-hours', userId],
+    queryFn: () => getAnalyticsActiveHours('30d', userId).then(r => r.data),
+    refetchInterval: 300_000, retry: false,
+  })
+
+  const totalMessages = (opSummary?.messages_user ?? 0) + (opSummary?.messages_agent ?? 0)
+  const toolCalls = opSummary?.tool_calls ?? 0
+  const avgRespMs = opSummary?.avg_response_ms ?? null
+  const avgRespS = avgRespMs != null ? Math.round(avgRespMs / 100) / 10 : 0
+  const initiatives = opSummary?.initiatives ?? 0
+
+  const toolBars = (opTools?.tools ?? []).slice(0, 6).map((t: { name: string; calls: number }) => ({
+    label: t.name.replace(/_/g, ' ').slice(0, 14), value: t.calls, color: '#00D4FF',
+  }))
+  const opCreated = opTasks?.created ?? 0
+  const opCompleted = opTasks?.completed ?? 0
+  const byHour: number[] = opHours?.by_hour ?? []
+  const maxHour = Math.max(1, ...byHour)
+
   return (
     <div className="h-full overflow-y-auto">
       <div className="max-w-6xl mx-auto px-4 py-6 space-y-6 pb-24 md:pb-6">
@@ -114,6 +153,61 @@ export default function AnalyticsPage() {
           <div className="neu rounded-2xl p-5 md:col-span-2">
             <h2 className="t-heading mb-4">Most-contacted senders</h2>
             <BarChart data={contactBars} />
+          </div>
+        </motion.div>
+
+        {/* ── Operations (P5 — agent activity from the events log) ── */}
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.18 }}
+          className="space-y-3"
+        >
+          <h2 className="text-sm font-semibold text-[#94A3B8] px-1">Agent operations · last 7 days</h2>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <StatCard label="Messages"      value={totalMessages} icon={MessageSquare} color="#00D4FF" />
+            <StatCard label="Tool Calls"    value={toolCalls}     icon={Wrench}        color="#7B2FFF" />
+            <StatCard label="Avg Response"  value={avgRespS}      icon={Clock}         color="#00FF88" unit="s" />
+            <StatCard label="Initiatives"   value={initiatives}   icon={Sparkles}      color="#F59E0B" />
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="neu rounded-2xl p-5">
+              <h2 className="t-heading mb-4">Tool usage (30d)</h2>
+              <BarChart data={toolBars} />
+            </div>
+            <div className="neu rounded-2xl p-5">
+              <h2 className="t-heading mb-4">Task funnel (30d)</h2>
+              <DonutChart
+                segments={[
+                  { label: 'Completed', value: opCompleted, color: '#00FF88' },
+                  { label: 'Created',   value: Math.max(0, opCreated - opCompleted), color: '#38DBFF' },
+                ]}
+                centerValue={`${opCreated ? Math.round((opCompleted / opCreated) * 100) : 0}%`}
+                centerLabel="completion"
+              />
+            </div>
+            <div className="neu rounded-2xl p-5 md:col-span-2">
+              <h2 className="t-heading mb-4">Most active hours (30d)</h2>
+              {byHour.length === 24 ? (
+                <div className="flex items-end gap-[3px] h-24">
+                  {byHour.map((v, h) => (
+                    <div key={h} className="flex-1 flex flex-col items-center justify-end gap-1" title={`${h}:00 — ${v}`}>
+                      <motion.div
+                        className="w-full rounded-sm"
+                        style={{ background: v ? '#00D4FF' : 'rgba(255,255,255,0.04)' }}
+                        initial={{ height: 0 }}
+                        animate={{ height: `${(v / maxHour) * 100}%` }}
+                        transition={{ delay: h * 0.01, type: 'spring', stiffness: 120, damping: 20 }}
+                      />
+                      {h % 6 === 0 && <span className="text-[8px] text-[#4A6080] tabular-nums">{h}</span>}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="t-caption">No activity yet</div>
+              )}
+            </div>
           </div>
         </motion.div>
 
