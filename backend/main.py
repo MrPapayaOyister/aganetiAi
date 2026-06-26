@@ -1482,14 +1482,18 @@ def build_system_prompt(user_id: str) -> str:
 Current date and time: {day_time}
 User: {user_id}
 
-Your capabilities:
-- Email: read inbox, triage, draft, send via Microsoft 365
-- Calendar: view agenda, check availability, create events
-- Tasks: create, update, complete, prioritize
-- Documents: search and retrieve from knowledge base
-- Memory: recall past conversations and user preferences
-- Reports: generate structured summaries
-- Delegation: coordinate tasks with other agents
+Your capabilities (call the named tool when the user asks):
+- Email: READ the inbox (get_emails), draft (draft_email), send. Works with Gmail (or Microsoft 365 if connected).
+- Calendar: VIEW the agenda (get_agenda), create events (schedule_meeting). Works with Google Calendar (or M365 if connected).
+- Contacts: READ/SEARCH the address book (get_contacts), resolve a name to an email (resolve_contact). Works with Google Contacts.
+- Tasks: create_task, complete_task, update, prioritize.
+- Documents: search_knowledge to retrieve from the company knowledge base.
+- Memory: recall_memory (read), remember_fact (write).
+- Reminders: set_reminder (sends Telegram at a specific time).
+- Reports: get_analytics for quantitative questions.
+- Web: web_search for live info.
+
+If the user asks about their inbox / email / agenda / calendar / contacts, CALL the corresponding tool — do not say "I don't have access". The user has connected their Google account through the app.
 
 Guidelines:
 - Be concise and direct. Professionals are busy.
@@ -1599,11 +1603,24 @@ async def chat_endpoint(request: ChatRequest, http_request: Request):
     # Mode A - Normal chat flow. Each context source is best-effort: a missing M365
     # token, an empty Qdrant collection, or a cold user must NOT 500 the whole chat.
     context = retrieve_corporate_context(request.message)
+    # Calendar context: prefer M365 (legacy), fall back to Google. Either
+    # provider gives the LLM the user's schedule at the top of the prompt;
+    # if neither is connected, the get_agenda tool path still works.
+    calendar_context = ""
     try:
-        calendar_context = format_agenda_for_prompt(user_id)  # integrations.m365_calendar
-    except Exception as e:
-        print(f"[chat] calendar context unavailable for {user_id}: {e}")
-        calendar_context = ""
+        calendar_context = format_agenda_for_prompt(user_id)
+    except Exception:
+        pass
+    if not calendar_context or not calendar_context.strip():
+        try:
+            from backend.services import gcalendar
+            events = await gcalendar.get_google_agenda(user_id, days_ahead=1)
+            if events:
+                lines = [f"- {e['title']} at {e['start']}" for e in events[:5]]
+                calendar_context = "\n".join(lines)
+        except Exception as e:
+            print(f"[chat] calendar context unavailable for {user_id}: {e}")
+            calendar_context = ""
     try:
         tasks_context = get_pending_summary(user_id)
     except Exception as e:
@@ -1700,9 +1717,13 @@ async def chat_endpoint(request: ChatRequest, http_request: Request):
         prompt_parts.append(
             f"[TOOLS]\n"
             f"Tools: create_task, complete_task, draft_email, schedule_meeting, get_analytics, "
-            f"resolve_contact, search_knowledge, recall_memory, remember_fact, set_reminder, web_search.\n"
+            f"resolve_contact, search_knowledge, recall_memory, remember_fact, set_reminder, web_search, "
+            f"get_emails, get_agenda, get_contacts.\n"
+            f"- get_emails: read the user's recent Gmail inbox. CALL THIS whenever the user asks about their email, unread messages, or what's in their inbox. Never say 'I don't have access' — call this tool.\n"
+            f"- get_agenda: read upcoming Google Calendar events. CALL THIS for 'what's on my calendar', 'my agenda', 'next meeting', 'free this afternoon'.\n"
+            f"- get_contacts: list or search the user's real Google contacts. CALL THIS when the user asks for contacts, or when they want to email someone you don't have an address for.\n"
             f"- get_analytics: quantitative questions about the user's tasks/email ('how many tasks did I finish last week').\n"
-            f"- resolve_contact: when the user names a person instead of an email (\"email Akshay\"), call resolve_contact FIRST to get the address, then draft_email.\n"
+            f"- resolve_contact: when the user names a person instead of an email (\"email Akshay\"), call resolve_contact (or get_contacts with a query) FIRST to get the address, then draft_email.\n"
             f"- search_knowledge: questions about company policy/handbook/processes.\n"
             f"- recall_memory: when you need a fact from past conversations; remember_fact: when the user says 'remember that ...'.\n"
             f"- set_reminder: when the user says 'remind me to X at Y' — use this, NOT create_task. It sends a Telegram message at that exact time.\n"

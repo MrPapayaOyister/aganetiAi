@@ -97,6 +97,49 @@ export function useVoice() {
 
   useEffect(() => () => stopSampler(), [stopSampler])
 
+  // MediaRecorder + local /stt path. Used as primary fallback on iOS / Firefox,
+  // and as automatic fallback when Web Speech errors with network/service-not-
+  // allowed (typical on Tailscale or restricted mobile networks).
+  const fallbackToMediaRecorder = useCallback(async (onResult: (text: string) => void) => {
+    setState('listening')
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const ctx = ensureCtx()
+      if (ctx.state === 'suspended') await ctx.resume()
+      const analyser = ctx.createAnalyser()
+      analyser.fftSize = 256
+      ctx.createMediaStreamSource(stream).connect(analyser)
+      setAnalyserNode(analyser)
+      startSampler(analyser)
+
+      chunksRef.current = []
+      const recorder = new MediaRecorder(stream)
+      mediaRecorderRef.current = recorder
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data) }
+      recorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop())
+        setAnalyserNode(null); stopSampler(); setState('processing')
+        try {
+          const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
+          console.info('[voice] sending', blob.size, 'bytes to /stt')
+          const text = await stt(blob)
+          console.info('[voice] /stt returned:', JSON.stringify(text))
+          setTranscript(text)
+          if (text && text.trim()) onResult(text.trim())
+          else setLastError('no-speech')
+        } catch (e) {
+          console.warn('[voice] /stt failed', e)
+          setLastError('stt-failed')
+        } finally { setState('idle') }
+      }
+      recorder.start()
+    } catch (e) {
+      console.warn('[voice] mediaRecorder fallback failed', e)
+      setLastError('audio-capture')
+      setState('idle')
+    }
+  }, [])
+
   const startListening = useCallback(async (onResult: (text: string) => void) => {
     if (state !== 'idle') {
       console.warn('[voice] startListening bailed — state is', state)
@@ -149,11 +192,22 @@ export function useVoice() {
       recognition.onerror = (ev: any) => {
         const err = ev?.error ?? 'unknown'
         console.warn('[voice] recognition.onerror:', err, ev?.message ?? '')
-        setLastError(err)
         if (micStream) micStream.getTracks().forEach(t => t.stop())
+        // Mobile Web Speech often fails with these on Tailscale / restricted
+        // networks because Chrome's Cloud STT can't be reached.  Fall back
+        // silently to the MediaRecorder + /stt path (which uses local
+        // Whisper on our server, always reachable).
+        const fallbackErrors = new Set(['network', 'service-not-allowed', 'audio-capture'])
+        if (fallbackErrors.has(err) && !resultDelivered) {
+          console.info('[voice] falling back to MediaRecorder + /stt due to', err)
+          stopSampler()
+          // Re-enter startListening via the ref, but skip the Web Speech path
+          // by temporarily flipping the state and using a flag.
+          fallbackToMediaRecorder(onResult)
+          return
+        }
+        setLastError(err)
         setState('idle'); stopSampler()
-        // Even on error, try to deliver any captured interim — "no-speech"
-        // and "aborted" sometimes fire AFTER words were already streamed.
         deliver()
       }
       recognition.onend = () => {
@@ -204,36 +258,9 @@ export function useVoice() {
       return
     }
 
-    // ── MediaRecorder → /stt fallback (iOS/Firefox) ──
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const ctx = ensureCtx()
-      if (ctx.state === 'suspended') await ctx.resume()
-      const analyser = ctx.createAnalyser()
-      analyser.fftSize = 256
-      ctx.createMediaStreamSource(stream).connect(analyser)
-      setAnalyserNode(analyser)
-      startSampler(analyser)
-
-      chunksRef.current = []
-      const recorder = new MediaRecorder(stream)
-      mediaRecorderRef.current = recorder
-      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data) }
-      recorder.onstop = async () => {
-        stream.getTracks().forEach(t => t.stop())
-        setAnalyserNode(null); stopSampler(); setState('processing')
-        try {
-          const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
-          const text = await stt(blob)
-          setTranscript(text)
-          if (text) onResult(text)
-        } catch { /* ignore */ } finally { setState('idle') }
-      }
-      recorder.start()
-    } catch {
-      setState('idle'); stopSampler()
-    }
-  }, [state, hasWebSpeech, startSampler, stopSampler])
+    // ── MediaRecorder → /stt path (iOS/Firefox primary, fallback for others) ──
+    await fallbackToMediaRecorder(onResult)
+  }, [state, hasWebSpeech, startSampler, stopSampler, fallbackToMediaRecorder])
 
   const stopListening = useCallback(() => {
     recognitionRef.current?.stop()

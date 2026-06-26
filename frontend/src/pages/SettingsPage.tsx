@@ -121,12 +121,13 @@ function SchedulesSection({ userId }: { userId: string }) {
 }
 
 // ── Contacts section ──────────────────────────────────
-function ContactsSection() {
+function ContactsSection({ userId }: { userId: string }) {
   const [search, setSearch] = useState('')
 
   const { data, isLoading } = useQuery({
-    queryKey: ['contacts'],
-    queryFn: () => getContacts().then(r => r.data),
+    queryKey: ['contacts', userId],
+    queryFn: () => getContacts(userId).then(r => r.data),
+    enabled: !!userId,
   })
 
   const contacts: any[] = (data?.contacts ?? []).filter((c: any) =>
@@ -444,7 +445,7 @@ export default function SettingsPage() {
             transition={{ duration: 0.2 }}
           >
             {activeSection === 'schedules' && <SchedulesSection userId={userId} />}
-            {activeSection === 'contacts'  && <ContactsSection />}
+            {activeSection === 'contacts'  && <ContactsSection userId={userId} />}
             {activeSection === 'status'    && <SystemStatus />}
             {activeSection === 'account'   && <AccountSection />}
           </motion.div>

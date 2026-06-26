@@ -101,8 +101,10 @@ export const deleteSchedule = (user_id: UserID, schedule_id: string) =>
   http.delete(`/schedule/${user_id}/${schedule_id}`)
 
 // ── Contacts ──────────────────────────────────────────
-export const getContacts = () =>
-  http.get('/contacts')
+// MUST pass user_id — without it the backend defaults to "user_1" and
+// fails to look up OAuth tokens stored under the real Supabase UUID.
+export const getContacts = (user_id: UserID) =>
+  http.get('/contacts', { params: { user_id } })
 
 // ── Voice (proxied to DGX) ────────────────────────────
 export const tts = async (text: string): Promise<ArrayBuffer> => {
