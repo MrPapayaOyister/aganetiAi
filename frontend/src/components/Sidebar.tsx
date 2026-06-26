@@ -80,9 +80,10 @@ export default function Sidebar() {
             data-pulse-target={to}
             className={({ isActive }) =>
               `relative flex flex-col items-center gap-1 w-14 py-2.5 rounded-xl
-               border border-transparent transition-all duration-200
+               border border-transparent transition-all duration-[240ms] ease-[cubic-bezier(0.22,1,0.36,1)]
+               hover:-translate-y-0.5 active:translate-y-px active:scale-[0.96]
                ${isActive
-                 ? 'bg-[#00D4FF]/10 text-[#00D4FF] border-[#00D4FF]/25'
+                 ? 'bg-[#00D4FF]/10 text-[#00D4FF] border-[#00D4FF]/25 shadow-[inset_0_2px_10px_rgba(0,212,255,0.12)]'
                  : 'text-[#4A6080] hover:text-[#E2E8F0] hover:bg-white/[0.04] hover:border-white/10'}`
             }
           >

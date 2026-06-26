@@ -15,13 +15,42 @@
   --bg-sunken:     #0A0C13;   /* inset wells (inputs) */
   --bg-overlay:    rgba(6,8,14,0.78);
 
-  /* Neumorphic shadow pair */
-  --neu-light:     rgba(255,255,255,0.05);
-  --neu-dark:      rgba(0,0,0,0.55);
+  /* Neumorphic shadow pair — strengthened for premium tactile contrast on the
+     near-black canvas (audit: mushy at 0.55/0.05; 0.72/0.11 reads as crafted). */
+  --neu-light:     rgba(255,255,255,0.11);
+  --neu-dark:      rgba(0,0,0,0.72);
+
+  /* Reusable elevation tiers (raised cards / strong elevation). */
+  --shadow-raised:  6px 6px 16px var(--neu-dark), -6px -6px 16px var(--neu-light);
+  --shadow-strong:  10px 10px 28px var(--neu-dark), -8px -8px 24px var(--neu-light);
+  --shadow-float:   0 14px 46px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.08);
 
   /* Borders (used sparingly; neumorphism leans on shadow not stroke) */
-  --border-subtle: rgba(255,255,255,0.05);
-  --border-active: rgba(0,212,255,0.45);
+  --border-subtle: rgba(255,255,255,0.08);
+  --border-active: rgba(0,212,255,0.65);
+  --border-focus:  rgba(0,212,255,0.85);
+
+  /* ── MOTION SYSTEM — one timing hierarchy for the whole showcase ──
+     Slower & more cinematic than a daily-driver app, but still clear. */
+  --dur-micro:    150ms;   /* button press, toggle */
+  --dur-hover:    240ms;   /* hover lift, color */
+  --dur-interact: 340ms;   /* chip/tooltip reveal */
+  --dur-card:     460ms;   /* card settle */
+  --dur-modal:    560ms;   /* modal / palette open */
+  --dur-page:     680ms;   /* route transition */
+  --ease-quick:  cubic-bezier(0.4, 0, 0.2, 1);        /* standard */
+  --ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);      /* premium settle (expo-out) */
+  --ease-soft:   cubic-bezier(0.34, 1.4, 0.64, 1);    /* gentle overshoot */
+  --ease-drift:  cubic-bezier(0.25, 0.46, 0.45, 0.94);/* organic / ambient */
+
+  /* Blur tiers (audit: arbitrary 14-34px → 3 optical tiers). */
+  --blur-light:   16px;
+  --blur-medium:  24px;
+  --blur-heavy:   32px;
+
+  /* Z-index stack (prevents backdrop-filter stacking-context bleed). */
+  --z-base: 1; --z-surface: 10; --z-raised: 20;
+  --z-overlay: 30; --z-modal: 40; --z-nav: 50; --z-toast: 200;
 
   /* Accents — used sparingly (CTAs, focus, the particle sphere) */
   --cyan:    #00D4FF;
@@ -78,12 +107,13 @@ body {
 
 #root { height: 100%; isolation: isolate; }
 
-/* ── Focus ring ──────────────────────────────────── */
+/* ── Focus ring — cinematic glowing ring over near-black ── */
 :focus { outline: none; }
 :focus-visible {
-  outline: 2px solid var(--cyan);
-  outline-offset: 2px;
-  border-radius: 6px;
+  outline: none;
+  border-radius: 8px;
+  box-shadow: 0 0 0 2px var(--bg-base), 0 0 0 3px var(--border-focus),
+              0 0 16px rgba(0,212,255,0.35);
 }
 
 /* ── Scrollbar ───────────────────────────────────── */
@@ -104,10 +134,10 @@ body {
    Rim borders are slightly brighter for depth on a near-black base. */
 .glass {
   background: rgba(20, 23, 30, 0.38);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
-  backdrop-filter: blur(20px) saturate(160%);
-  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  backdrop-filter: blur(var(--blur-medium)) saturate(160%);
+  -webkit-backdrop-filter: blur(var(--blur-medium)) saturate(160%);
   box-shadow:
     0 10px 36px rgba(0, 0, 0, 0.45),
     inset 0 1px 0 rgba(255, 255, 255, 0.06);
@@ -116,26 +146,53 @@ body {
   background: rgba(20, 23, 30, 0.28);
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: var(--radius-md);
-  backdrop-filter: blur(14px) saturate(150%);
-  -webkit-backdrop-filter: blur(14px) saturate(150%);
+  backdrop-filter: blur(var(--blur-light)) saturate(150%);
+  -webkit-backdrop-filter: blur(var(--blur-light)) saturate(150%);
   box-shadow: 0 6px 22px rgba(0, 0, 0, 0.35);
 }
 .glass-strong {
   background: rgba(20, 23, 30, 0.55);
   border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: var(--radius-md);
-  backdrop-filter: blur(28px) saturate(170%);
-  -webkit-backdrop-filter: blur(28px) saturate(170%);
-  box-shadow:
-    0 14px 46px rgba(0, 0, 0, 0.55),
-    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(var(--blur-heavy)) saturate(170%);
+  -webkit-backdrop-filter: blur(var(--blur-heavy)) saturate(170%);
+  box-shadow: var(--shadow-float);
 }
 /* Glass rail — sidebar / dock variant (vertical, less inset highlight) */
 .glass-rail {
   background: rgba(8, 11, 18, 0.55);
   border-right: 1px solid rgba(255, 255, 255, 0.06);
-  backdrop-filter: blur(22px) saturate(160%);
-  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  backdrop-filter: blur(var(--blur-medium)) saturate(160%);
+  -webkit-backdrop-filter: blur(var(--blur-medium)) saturate(160%);
+}
+
+/* ── Tactile press helper — soft physical press for any clickable surface.
+   Apply `.press` to buttons/cards; pairs with a subtle scale on :active. ── */
+.press { transition: transform var(--dur-micro) var(--ease-soft),
+                     box-shadow var(--dur-hover) var(--ease-smooth),
+                     background-color var(--dur-hover) var(--ease-quick),
+                     border-color var(--dur-hover) var(--ease-quick); }
+.press:active { transform: translateY(1px) scale(0.975); }
+
+/* ── Card entrance — settle in gracefully (premium, not instant). ── */
+@keyframes cardEnter {
+  from { opacity: 0; transform: translateY(10px) scale(0.985); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.animate-card-enter { animation: cardEnter var(--dur-card) var(--ease-smooth) both; }
+
+/* ── Ambient breathing — gentle life-sign for resting hero surfaces. ── */
+@keyframes breathe {
+  0%, 100% { box-shadow: var(--shadow-raised); }
+  50%      { box-shadow: var(--shadow-raised), 0 0 22px rgba(0,212,255,0.06); }
+}
+.breathe { animation: breathe 6s var(--ease-drift) infinite; }
+
+/* ── Shine sweep — one-shot luxury highlight (proactive arrivals). ── */
+@keyframes shineSweep {
+  0%   { background-position: -180% 0; opacity: 0; }
+  20%  { opacity: 0.18; }
+  100% { background-position: 180% 0; opacity: 0; }
 }
 
 /* ── Intelligence-core composition helpers ───────────────────
@@ -228,30 +285,49 @@ body {
   border-left-color: rgba(245, 158, 11, 0.65) !important;
   background: rgba(28, 22, 10, 0.72);
   box-shadow: 0 6px 26px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(245, 158, 11, 0.08);
+  position: relative;
+  overflow: hidden;
+}
+/* One-shot luxury shine across a proactive (Aria-initiated) arrival. */
+.assistant-slab--proactive::after {
+  content: '';
+  position: absolute; inset: 0;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent 35%, rgba(245,158,11,0.22) 50%, transparent 65%);
+  background-size: 220% 100%;
+  animation: shineSweep 1.4s var(--ease-smooth) 0.15s 1;
 }
 
-/* Composer dock — heavier premium glass, less transparent */
+/* Composer dock — heavier premium glass; rim glows when the input is focused */
 .composer-dock {
   background: rgba(10, 13, 20, 0.75);
   border: 1px solid rgba(255, 255, 255, 0.09);
-  backdrop-filter: blur(34px) saturate(180%);
-  -webkit-backdrop-filter: blur(34px) saturate(180%);
+  backdrop-filter: blur(var(--blur-heavy)) saturate(180%);
+  -webkit-backdrop-filter: blur(var(--blur-heavy)) saturate(180%);
   box-shadow:
     0 18px 56px rgba(0, 0, 0, 0.70),
     inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  transition: border-color var(--dur-hover) var(--ease-quick),
+              box-shadow var(--dur-hover) var(--ease-smooth);
+}
+.composer-dock:focus-within {
+  border-color: var(--border-active);
+  box-shadow:
+    0 18px 56px rgba(0, 0, 0, 0.70),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 0 0 1px rgba(0,212,255,0.25),
+    0 0 28px rgba(0,212,255,0.12);
 }
 
 .neu, .neu-strong {
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
-  box-shadow:
-    6px 6px 14px var(--neu-dark),
-    -6px -6px 14px var(--neu-light);
+  box-shadow: var(--shadow-raised);
 }
 .neu-strong {
   background: var(--bg-elevated);
-  box-shadow: 8px 8px 20px var(--neu-dark), -8px -8px 20px var(--neu-light);
+  box-shadow: var(--shadow-strong);
 }
 
 /* Pressed / well surfaces — inputs, active toggles, tracks */
@@ -271,22 +347,27 @@ body {
   border-radius: var(--radius-md);
 }
 
-/* Pill button — raised, depresses on active */
+/* Pill button — raised, depresses on active (timing from the motion system) */
 .neu-pill {
   background: var(--bg-surface);
   border-radius: var(--radius-full);
   box-shadow: 4px 4px 9px var(--neu-dark), -4px -4px 9px var(--neu-light);
-  transition: box-shadow 0.15s ease, transform 0.1s ease, color 0.15s ease;
+  transition: box-shadow var(--dur-hover) var(--ease-smooth),
+              transform var(--dur-micro) var(--ease-soft),
+              color var(--dur-hover) var(--ease-quick);
 }
-.neu-pill:hover { box-shadow: 5px 5px 11px var(--neu-dark), -5px -5px 11px var(--neu-light); }
+.neu-pill:hover {
+  box-shadow: 6px 6px 13px var(--neu-dark), -5px -5px 12px var(--neu-light);
+  transform: translateY(-1px);
+}
 .neu-pill:active {
   box-shadow: inset 3px 3px 7px var(--neu-dark), inset -3px -3px 7px var(--neu-light);
-  transform: translateY(1px);
+  transform: translateY(1px) scale(0.985);
 }
 
-/* Accent glow helpers (sparingly) */
-.glow-cyan   { box-shadow: 6px 6px 14px var(--neu-dark), -6px -6px 14px var(--neu-light), 0 0 16px rgba(0,212,255,0.18); }
-.glow-purple { box-shadow: 6px 6px 14px var(--neu-dark), -6px -6px 14px var(--neu-light), 0 0 16px rgba(123,47,255,0.18); }
+/* Accent glow helpers — layered glow reads on the dark premium canvas */
+.glow-cyan   { box-shadow: var(--shadow-raised), 0 0 24px rgba(0,212,255,0.28), 0 0 48px rgba(0,212,255,0.10); }
+.glow-purple { box-shadow: var(--shadow-raised), 0 0 24px rgba(123,47,255,0.28), 0 0 48px rgba(123,47,255,0.10); }
 
 /* ════════════════════════════════════════════════════════════
    TYPE SCALE (consistent size + weight everywhere)

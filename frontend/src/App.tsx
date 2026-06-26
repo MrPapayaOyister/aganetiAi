@@ -33,13 +33,18 @@ const AppCtx = createContext<AppCtxType>({
 export function useAppContext() { return useContext(AppCtx) }
 
 // ── Page transition wrapper ─────────────────────────────────────
+// Cinematic page transition: the page settles into focus (blur→sharp, lifts up)
+// and defocuses on exit (sharpens away, drifts back). AnimatePresence mode="wait"
+// gives the layered "shell first, content after" gap. Expo-out easing reads as
+// premium and deliberate — slower than a daily-driver app, still clear.
+const PAGE_EASE = [0.22, 1, 0.36, 1] as const
 function Page({ children }: { children: React.ReactNode }) {
   return (
     <motion.div
-      initial={{ opacity: 0, x: 20 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -20 }}
-      transition={{ duration: 0.25, ease: 'easeOut' }}
+      initial={{ opacity: 0, y: 18, filter: 'blur(8px)' }}
+      animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+      exit={{ opacity: 0, y: -12, filter: 'blur(6px)' }}
+      transition={{ duration: 0.52, ease: PAGE_EASE }}
       className="h-full"
     >
       {children}

@@ -124,14 +124,17 @@ type ModeTarget = {
   expand: number; shake: number;
 }
 
-const MODE_TARGETS: Record<OrbMode, ModeTarget> = {
-  idle:      { spin: 0.10, tilt: 0.06, displace: 0.6, alpha: 0.95, cFront: [0.20, 0.92, 1.00], cBack: [0.48, 0.18, 1.00], expand: 0.0, shake: 0 },
-  listening: { spin: 0.16, tilt: 0.10, displace: 0.7, alpha: 1.00, cFront: [0.00, 0.85, 1.00], cBack: [0.40, 0.30, 0.95], expand: 0.0, shake: 0 },
-  thinking:  { spin: 0.30, tilt: 0.18, displace: 1.2, alpha: 1.00, cFront: [0.55, 0.30, 1.00], cBack: [0.18, 0.12, 0.85], expand: 0.0, shake: 0 },
-  speaking:  { spin: 0.14, tilt: 0.08, displace: 0.8, alpha: 1.00, cFront: [0.00, 0.85, 1.00], cBack: [0.55, 0.22, 1.00], expand: 0.0, shake: 0 },
-  acting:    { spin: 0.22, tilt: 0.12, displace: 1.0, alpha: 1.00, cFront: [0.65, 0.35, 1.00], cBack: [0.30, 0.12, 0.85], expand: 1.0, shake: 0 },
-  success:   { spin: 0.12, tilt: 0.06, displace: 0.7, alpha: 1.00, cFront: [0.00, 1.00, 0.70], cBack: [0.00, 0.55, 0.45], expand: 0.6, shake: 0 },
-  error:     { spin: 0.08, tilt: 0.06, displace: 0.6, alpha: 0.70, cFront: [1.00, 0.55, 0.30], cBack: [0.45, 0.18, 0.10], expand: 0.0, shake: 1 },
+// `breath` = seconds per breathing cycle (slow=meditative idle → fast=responsive
+// speaking). Drives a gentle whole-orb scale pulse so the agent feels alive, not
+// mechanical. Idle spin/tilt raised so resting motion actually registers.
+const MODE_TARGETS: Record<OrbMode, ModeTarget & { breath: number }> = {
+  idle:      { spin: 0.24, tilt: 0.14, displace: 0.6, alpha: 0.95, cFront: [0.30, 0.88, 1.00], cBack: [0.48, 0.18, 1.00], expand: 0.0, shake: 0, breath: 6.0 },
+  listening: { spin: 0.30, tilt: 0.16, displace: 0.7, alpha: 1.00, cFront: [0.00, 0.95, 1.00], cBack: [0.40, 0.30, 0.95], expand: 0.0, shake: 0, breath: 3.2 },
+  thinking:  { spin: 0.42, tilt: 0.22, displace: 1.2, alpha: 1.00, cFront: [0.62, 0.36, 1.00], cBack: [0.18, 0.12, 0.85], expand: 0.0, shake: 0, breath: 2.0 },
+  speaking:  { spin: 0.18, tilt: 0.10, displace: 0.8, alpha: 1.00, cFront: [0.00, 0.90, 1.00], cBack: [0.55, 0.22, 1.00], expand: 0.0, shake: 0, breath: 1.4 },
+  acting:    { spin: 0.30, tilt: 0.16, displace: 1.0, alpha: 1.00, cFront: [0.78, 0.26, 1.00], cBack: [0.30, 0.12, 0.85], expand: 1.0, shake: 0, breath: 1.6 },
+  success:   { spin: 0.16, tilt: 0.08, displace: 0.7, alpha: 1.00, cFront: [0.00, 1.00, 0.70], cBack: [0.00, 0.55, 0.45], expand: 0.6, shake: 0, breath: 2.4 },
+  error:     { spin: 0.10, tilt: 0.06, displace: 0.6, alpha: 0.70, cFront: [1.00, 0.55, 0.30], cBack: [0.45, 0.18, 0.10], expand: 0.0, shake: 1, breath: 2.0 },
 }
 
 const lerp = (a: number, b: number, k: number) => a + (b - a) * k
@@ -223,16 +226,17 @@ function IntelligenceOrbBase({
     scene.add(points)
 
     // Smoothed runtime state
-    const cur: ModeTarget & { amp: number } = {
+    const cur: ModeTarget & { amp: number; breath: number } = {
       spin: initial.spin, tilt: initial.tilt, displace: initial.displace, alpha: initial.alpha,
       expand: initial.expand, shake: initial.shake,
       cFront: [...initial.cFront], cBack: [...initial.cBack],
-      amp: 0,
+      amp: 0, breath: MODE_TARGETS.idle.breath,
     }
 
     let raf = 0
     let last = performance.now()
     let angY = 0
+    let breathPhase = 0
     const fftScratch = new Uint8Array(64)
 
     const tick = (now: number) => {
@@ -252,12 +256,20 @@ function IntelligenceOrbBase({
       cur.cFront   = vlerp(cur.cFront,  target.cFront,   k)
       cur.cBack    = vlerp(cur.cBack,   target.cBack,    k)
       cur.amp      = lerp(cur.amp, ampRef.current, k * 1.5)
+      cur.breath   = lerp(cur.breath, target.breath, k)
 
       angY += cur.spin * dt
       points.rotation.y = angY
       points.rotation.x = Math.sin(now * 0.00030) * cur.tilt
                         + Math.cos(now * 0.00017) * cur.tilt * 0.45
       points.rotation.z = Math.sin(now * 0.00021) * 0.045
+
+      // Whole-orb breathing scale — advance phase by mode-dependent cycle rate
+      // so the agent inhales/exhales (slow at rest, quicker when speaking).
+      breathPhase += (dt / Math.max(0.4, cur.breath)) * Math.PI * 2
+      const breathAmt = reduce ? 0 : 0.035 + cur.amp * 0.05
+      const breathScale = 1 + Math.sin(breathPhase) * breathAmt
+      points.scale.setScalar(breathScale)
 
       // FFT sampling (real audio reactivity)
       const ana = analyserRef.current

@@ -105,12 +105,17 @@ function ConvTurn({
   }
 
   // ── ASSISTANT: full-width frosted slab with cyan rail ──────────
+  // Proactive (Aria-initiated) turns get a distinct entrance — they slide in
+  // from the left edge ("came from elsewhere") with a longer, later settle —
+  // signalling unsolicited but valuable input. Reactive replies rise softly.
   return (
     <motion.section
-      initial={{ opacity: 0, y: 6 }}
-      animate={{ opacity: 1, y: 0 }}
+      initial={msg.proactive ? { opacity: 0, x: -14, y: 8 } : { opacity: 0, y: 8 }}
+      animate={{ opacity: 1, x: 0, y: 0 }}
       exit={{ opacity: 0 }}
-      transition={{ duration: 0.20, ease: 'easeOut' }}
+      transition={msg.proactive
+        ? { duration: 0.46, ease: [0.22, 1, 0.36, 1], delay: 0.06 }
+        : { duration: 0.30, ease: [0.22, 1, 0.36, 1] }}
       className="group"
     >
       {/* Hairline separator above (except the very first message) */}
