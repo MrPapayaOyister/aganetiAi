@@ -32,6 +32,29 @@ def clean_for_tts(text: str) -> str:
     text = re.sub(r'\s+', ' ', text).strip()       # normalize whitespace
     return text[:500]                               # hard truncation
 
+def synthesize_speech_stream(text: str):
+    """
+    Generator that yields 16-bit PCM audio chunks (24kHz mono, little-endian)
+    as Kokoro produces each segment — instead of buffering the whole WAV.
+    The first chunk is available as soon as the first phrase is synthesized,
+    shaving ~150ms+ off time-to-first-audio for multi-segment sentences.
+
+    Yields raw PCM16 bytes. Caller is responsible for framing/transport.
+    """
+    pipeline = get_pipeline()
+    cleaned = clean_for_tts(text)
+    if not cleaned:
+        return
+    for _, _, chunk in pipeline(cleaned, voice='af_bella', speed=1.0):
+        audio = chunk.numpy() if hasattr(chunk, 'numpy') else chunk
+        if audio is None or len(audio) == 0:
+            continue
+        # float32 [-1,1] → int16 PCM
+        pcm = np.clip(audio, -1.0, 1.0)
+        pcm = (pcm * 32767.0).astype('<i2')
+        yield pcm.tobytes()
+
+
 def synthesize_speech(text: str, output_path: str) -> bool:
     """
     Synthesizes the given text to a 24kHz WAV file using Kokoro TTS 'af_bella' voice.

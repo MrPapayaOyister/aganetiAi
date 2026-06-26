@@ -559,6 +559,43 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(poll_inbox, "interval", seconds=30, max_instances=1, coalesce=True)
     scheduler.add_job(check_upcoming_meetings, "interval", minutes=5)
 
+    # P3 — pre-meeting prep: every 5 min, scan each user's next ~20 min of
+    # Google Calendar and enqueue a one-shot prep initiative (deduped per event).
+    async def _premeeting_sweep():
+        from backend import initiatives
+        from backend.services import gcalendar
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        now = _dt.now(_tz.utc)
+        for uid in get_all_user_ids():
+            try:
+                events = await gcalendar.get_google_agenda(uid, days_ahead=1)
+            except Exception:
+                continue
+            for ev in (events or []):
+                start_raw = ev.get("start")
+                if not start_raw:
+                    continue
+                try:
+                    start = _dt.fromisoformat(str(start_raw).replace("Z", "+00:00"))
+                    if start.tzinfo is None:
+                        start = start.replace(tzinfo=_tz.utc)
+                except Exception:
+                    continue
+                mins = (start - now).total_seconds() / 60.0
+                if 0 < mins <= 20:
+                    title = ev.get("title", "your meeting")
+                    loc = f" ({ev['location']})" if ev.get("location") else ""
+                    initiatives.enqueue(
+                        uid, "meeting_prep",
+                        f"Starting soon: {title}",
+                        f"\"{title}\"{loc} starts in ~{int(mins)} min. "
+                        f"Want me to pull notes, draft an agenda, or set a follow-up?",
+                        dedup_key=f"meeting:{uid}:{title}:{start.date()}:{start.hour}:{start.minute}",
+                        meta={"start": start.isoformat()},
+                    )
+    scheduler.add_job(lambda: asyncio.create_task(_premeeting_sweep()),
+                      "interval", minutes=5, id="premeeting_sweep", replace_existing=True)
+
     # RAG ingestion: keep corporate_memory in sync with the data_vault drop folder.
     def _ingest_cycle():
         from backend.ingest import ingest_all
@@ -741,6 +778,56 @@ async def tts_endpoint(payload: dict):
         try: _os.remove(tmp)
         except Exception: pass
 
+# ── TTS streaming (raw PCM16 chunks as Kokoro produces them) ──
+@app.post("/tts/stream")
+async def tts_stream_endpoint(payload: dict):
+    """Stream 24kHz mono PCM16 audio chunks as they're synthesized, so the
+    client can begin playback on the first phrase instead of waiting for the
+    whole sentence. Response is raw little-endian int16 PCM (no WAV header).
+    Headers advertise the format so the client can build AudioBuffers.
+
+    The blob /tts endpoint remains for clients that want a complete WAV.
+    """
+    from fastapi import HTTPException
+    from integrations.tts import synthesize_speech_stream
+
+    text = (payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "No text provided")
+
+    async def _gen():
+        # Kokoro is synchronous; pump it through a thread-friendly iterator so
+        # the event loop isn't blocked while each segment renders.
+        import queue, threading
+        q: "queue.Queue" = queue.Queue(maxsize=8)
+        SENTINEL = object()
+
+        def _produce():
+            try:
+                for pcm in synthesize_speech_stream(text):
+                    q.put(pcm)
+            except Exception as e:  # noqa: BLE001
+                log.warning("tts stream failed: %s", e)
+            finally:
+                q.put(SENTINEL)
+
+        threading.Thread(target=_produce, daemon=True).start()
+        while True:
+            chunk = await asyncio.to_thread(q.get)
+            if chunk is SENTINEL:
+                break
+            yield chunk
+
+    return StreamingResponse(
+        _gen(),
+        media_type="application/octet-stream",
+        headers={
+            "X-Audio-Format": "pcm_s16le",
+            "X-Audio-Sample-Rate": "24000",
+            "X-Audio-Channels": "1",
+        },
+    )
+
 # ── STT (local faster-whisper) ───────────────────────────────
 @app.post("/stt")
 async def stt_endpoint(audio: UploadFile = File(...)):
@@ -807,6 +894,14 @@ qdrant = QdrantClient(url=QDRANT_URL)
 
 print("Loading embedding model...")
 embed_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+# Analytics events table (P5) + initiative queue (P3) — create if missing.
+try:
+    from backend import events as _events_boot
+    _events_boot.init()
+    from backend import initiatives as _init_boot
+    _init_boot.init()
+except Exception as _e:
+    print(f"[events/initiatives] init skipped: {_e}")
 print("Backend API Ready.")
 
 # ==========================================
@@ -1064,6 +1159,12 @@ async def create_task_endpoint(request: CreateTaskRequest):
         due_date=request.due_date,
         notes=request.notes
     )
+    try:
+        from backend import events as _ev
+        _ev.log_event("task_created", user_id=request.user_id, name=request.priority,
+                      meta={"source": request.source})
+    except Exception:
+        pass
     return task
 
 @app.get("/tasks")
@@ -1216,6 +1317,11 @@ async def complete_task_by_title_endpoint(request: CompleteTaskByTitleRequest):
     if not task:
         return JSONResponse(status_code=404, content={"error": "Task not found"})
     updated = update_task(request.user_id, task["id"], status="done")
+    try:
+        from backend import events as _ev
+        _ev.log_event("task_completed", user_id=request.user_id)
+    except Exception:
+        pass
     return updated
 
 @app.patch("/tasks/{task_id}")
@@ -1235,6 +1341,12 @@ async def update_task_endpoint(task_id: str, request: UpdateTaskRequest, user_id
     updated = update_task(user_id, task_id, **update_data)
     if updated is None:
         return JSONResponse(status_code=404, content={"error": "Task not found"})
+    if update_data.get("status") == "done":
+        try:
+            from backend import events as _ev
+            _ev.log_event("task_completed", user_id=user_id)
+        except Exception:
+            pass
     return updated
 
 @app.delete("/tasks/{task_id}")
@@ -1555,6 +1667,14 @@ CRITICAL — NEVER FABRICATE DATA:
 @app.post("/chat")
 async def chat_endpoint(request: ChatRequest, http_request: Request):
     save_message(request.session_id, "user", request.message)
+    # Analytics (P5): log inbound message + start the response timer.
+    _turn_t0 = time.monotonic()
+    try:
+        from backend import events as _events
+        _events.log_event("message_user", user_id=(request.user_id or request.session_id),
+                          meta={"len": len(request.message or "")})
+    except Exception:
+        pass
 
     # Load session state
     session_state = load_session_state(request.session_id)
@@ -2026,6 +2146,14 @@ async def chat_endpoint(request: ChatRequest, http_request: Request):
                     yield _sse({"type": "token", "content": full_reply[len(base_reply):]})
                 save_message(request.session_id, "assistant", full_reply)
                 _session_record(session_id, user_message, full_reply)
+                try:
+                    from backend import events as _ev
+                    _ev.log_event("message_agent", user_id=user_id,
+                                  duration_ms=int((time.monotonic() - _turn_t0) * 1000),
+                                  success=True,
+                                  meta={"action": action_taken, "len": len(full_reply)})
+                except Exception:
+                    pass
                 yield SSE_DONE
             return StreamingResponse(native_stream(), media_type="text/event-stream")
 
@@ -2078,6 +2206,13 @@ async def chat_endpoint(request: ChatRequest, http_request: Request):
         final_reply = _apply_post_turn(base_reply, action_taken)
         save_message(request.session_id, "assistant", final_reply)
         _session_record(session_id, user_message, final_reply)
+        try:
+            from backend import events as _ev
+            _ev.log_event("message_agent", user_id=user_id,
+                          duration_ms=int((time.monotonic() - _turn_t0) * 1000),
+                          success=True, meta={"action": action_taken, "stream": False})
+        except Exception:
+            pass
         return {"reply": final_reply}
 
     if request.stream:
@@ -2690,6 +2825,69 @@ async def analytics_metrics():
 async def analytics_endpoint(metric: str, user_id: str = "user_1", days: int = 7):
     from backend.analytics import run_metric
     return await asyncio.to_thread(run_metric, metric, user_id, days)
+
+# ── Operational analytics (P5) — aggregates the events log ────────────────────
+def _period_days(period: str, default: int) -> int:
+    try:
+        p = period.strip().lower()
+        if p.endswith("d"):
+            return max(1, int(p[:-1]))
+        if p.endswith("w"):
+            return max(1, int(p[:-1]) * 7)
+        return int(p)
+    except Exception:
+        return default
+
+@app.get("/analytics/summary")
+async def analytics_summary(period: str = "7d", user_id: str | None = None):
+    from backend import events
+    return await asyncio.to_thread(events.summary, user_id, _period_days(period, 7))
+
+@app.get("/analytics/tools")
+async def analytics_tools(period: str = "30d", user_id: str | None = None):
+    from backend import events
+    return await asyncio.to_thread(events.tools, user_id, _period_days(period, 30))
+
+@app.get("/analytics/tasks")
+async def analytics_tasks(period: str = "30d", user_id: str | None = None):
+    from backend import events
+    return await asyncio.to_thread(events.tasks_funnel, user_id, _period_days(period, 30))
+
+@app.get("/analytics/response_quality")
+async def analytics_response_quality(period: str = "7d", user_id: str | None = None):
+    from backend import events
+    return await asyncio.to_thread(events.response_quality, user_id, _period_days(period, 7))
+
+@app.get("/analytics/active_hours")
+async def analytics_active_hours(period: str = "30d", user_id: str | None = None):
+    from backend import events
+    return await asyncio.to_thread(events.active_hours, user_id, _period_days(period, 30))
+
+# ── Proactive initiatives (P3) ────────────────────────────────────────────────
+@app.get("/initiatives/{user_id}")
+async def get_initiatives(user_id: str, limit: int = 10):
+    from backend import initiatives
+    items = await asyncio.to_thread(initiatives.pending, user_id, limit)
+    return {"user_id": user_id, "initiatives": items}
+
+@app.post("/initiatives/{initiative_id}/ack")
+async def ack_initiative(initiative_id: str, payload: dict | None = None):
+    from backend import initiatives
+    dismissed = bool((payload or {}).get("dismissed"))
+    ok = await asyncio.to_thread(initiatives.acknowledge, initiative_id, dismissed)
+    return {"ok": ok}
+
+@app.post("/initiatives/enqueue")
+async def enqueue_initiative(payload: dict):
+    """Manual/testing hook — background jobs call backend.initiatives.enqueue directly."""
+    from backend import initiatives
+    iid = await asyncio.to_thread(
+        initiatives.enqueue,
+        payload.get("user_id", ""), payload.get("category", "system"),
+        payload.get("title", ""), payload.get("body", ""),
+        payload.get("dedup_key"), payload.get("meta"),
+    )
+    return {"id": iid, "enqueued": iid is not None}
 
 @app.get("/memory/dump")
 async def memory_dump(user_id: str):

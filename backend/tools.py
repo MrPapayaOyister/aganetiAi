@@ -557,9 +557,27 @@ def dispatch_tool_call(name: str, raw_args, user_id: str) -> str:
 
 def execute_single_tool(name: str, raw_args, user_id: str):
     """Run one tool; return (result_string, is_action). Read tools' results are fed
-    back to the model; action tools' results are surfaced to the user."""
-    result = dispatch_tool_call(name, raw_args, user_id)
-    return result, (name in ACTION_TOOLS)
+    back to the model; action tools' results are surfaced to the user.
+
+    Every call is timed + logged to the events table for analytics (P5)."""
+    import time as _t
+    _t0 = _t.monotonic()
+    ok = True
+    try:
+        result = dispatch_tool_call(name, raw_args, user_id)
+        # Heuristic success: dispatch returns a ⚠️-prefixed string on failure.
+        ok = not (isinstance(result, str) and result.lstrip().startswith("⚠️"))
+        return result, (name in ACTION_TOOLS)
+    except Exception:
+        ok = False
+        raise
+    finally:
+        try:
+            from backend import events
+            events.log_event("tool_called", user_id=user_id, name=name, success=ok,
+                             duration_ms=int((_t.monotonic() - _t0) * 1000))
+        except Exception:
+            pass
 
 
 def run_tool_calls(tool_calls: list, user_id: str) -> str:
