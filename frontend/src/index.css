@@ -24,6 +24,9 @@
   --shadow-raised:  6px 6px 16px var(--neu-dark), -6px -6px 16px var(--neu-light);
   --shadow-strong:  10px 10px 28px var(--neu-dark), -8px -8px 24px var(--neu-light);
   --shadow-float:   0 14px 46px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.08);
+  /* Interaction shadow colors (press inset / hover lift). */
+  --shadow-press:   rgba(0,0,0,0.55);
+  --shadow-lift:    rgba(0,0,0,0.45);
 
   /* Borders (used sparingly; neumorphism leans on shadow not stroke) */
   --border-subtle: rgba(255,255,255,0.08);
@@ -39,9 +42,9 @@
   --dur-modal:    560ms;   /* modal / palette open */
   --dur-page:     680ms;   /* route transition */
   --ease-quick:  cubic-bezier(0.4, 0, 0.2, 1);        /* standard */
-  --ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);      /* premium settle (expo-out) */
-  --ease-soft:   cubic-bezier(0.34, 1.4, 0.64, 1);    /* gentle overshoot */
-  --ease-drift:  cubic-bezier(0.25, 0.46, 0.45, 0.94);/* organic / ambient */
+  --ease-smooth: cubic-bezier(0.16, 1, 0.3, 1);       /* premium settle (expo-out) */
+  --ease-soft:   cubic-bezier(0.34, 1.56, 0.64, 1);   /* gentle overshoot */
+  --ease-drift:  cubic-bezier(0.4, 0, 0.2, 1);        /* ambient / drift */
 
   /* Blur tiers (audit: arbitrary 14-34px → 3 optical tiers). */
   --blur-light:   16px;
@@ -193,6 +196,41 @@ body {
   0%   { background-position: -180% 0; opacity: 0; }
   20%  { opacity: 0.18; }
   100% { background-position: 180% 0; opacity: 0; }
+}
+
+/* ── Skeleton loading — dual-layer base pulse + shimmer sweep ── */
+@keyframes skeletonPulse { 0%,100% { opacity: 0.45; } 50% { opacity: 0.75; } }
+@keyframes shimmerSweep  { 0% { transform: translateX(-100%); } 100% { transform: translateX(200%); } }
+.skeleton-base {
+  background: rgba(255,255,255,0.05);
+  border-radius: 8px;
+  position: relative;
+  overflow: hidden;
+  animation: skeletonPulse 2.2s var(--ease-drift) infinite;
+}
+.skeleton-base::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.07) 40%,
+    rgba(255,255,255,0.13) 50%, rgba(255,255,255,0.07) 60%, transparent 100%);
+  animation: shimmerSweep 2.4s var(--ease-drift) infinite;
+}
+
+/* ── Breathing status dot — for live/in-progress indicators (not a spinner) ── */
+@keyframes statusBreathe {
+  0%,100% { opacity: 0.45; transform: scale(0.82); }
+  50%     { opacity: 1;    transform: scale(1.0); }
+}
+.status-breathe { animation: statusBreathe 1.8s var(--ease-drift) infinite; }
+
+/* ── Delegation/network edge flow — animated dash travel along SVG path ── */
+@keyframes edgeFlow { to { stroke-dashoffset: -32; } }
+.edge-flow      { animation: edgeFlow 1.1s linear infinite; }
+.edge-flow-fast { animation: edgeFlow 0.6s linear infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-base, .skeleton-base::after, .status-breathe,
+  .edge-flow, .edge-flow-fast, .breathe { animation: none !important; }
 }
 
 /* ── Intelligence-core composition helpers ───────────────────

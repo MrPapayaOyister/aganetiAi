@@ -3,7 +3,7 @@ import { generateId } from '../utils/uuid'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Send, Paperclip, Volume2, VolumeX, StopCircle, Zap, Music,
-  CheckCircle2, RefreshCw, Mail, SendHorizontal, Calendar, Clock, Brain, Radio, X,
+  CheckCircle2, RefreshCw, Mail, SendHorizontal, Calendar, Clock, Brain, Radio, X, Network,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { type OrbMode } from '../components/OrbAnimation'
@@ -17,6 +17,7 @@ import { useVoice } from '../hooks/useVoice'
 import { useLiveChat } from '../hooks/useLiveChat'
 import { useInitiatives } from '../hooks/useInitiatives'
 import { DelegationDock } from '../components/DelegationDock'
+import { AgentNetworkRail } from '../components/AgentNetworkRail'
 import { useSound } from '../hooks/useSound'
 import { useToast } from '../hooks/useToast'
 import { useAppContext } from '../App'
@@ -89,6 +90,7 @@ export default function AssistantPage() {
   const [actionCards, setActionCards] = useState<ActionCard[]>([])
   const [sourcesByMsg, setSourcesByMsg] = useState<Record<string, { source: string }[]>>({})
   const [errorFlash, setErrorFlash] = useState(false)
+  const [networkOpen, setNetworkOpen] = useState(false)
   const convos = useConversations(userId)
   const sessionId = convos.activeId
 
@@ -566,6 +568,15 @@ export default function AssistantPage() {
           />
           <motion.button
             whileTap={{ scale: 0.88 }}
+            onClick={() => setNetworkOpen(true)}
+            className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors
+                       text-[#4A6080] hover:text-[#00D4FF] hover:bg-white/5"
+            title="Agent network"
+          >
+            <Network size={15} />
+          </motion.button>
+          <motion.button
+            whileTap={{ scale: 0.88 }}
             data-mute-click
             onClick={() => sound.setEnabled(!sound.enabled)}
             className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors
@@ -748,8 +759,11 @@ export default function AssistantPage() {
         )}
       </AnimatePresence>
 
-      {/* Live delegation status pills (P7) */}
+      {/* Live delegation capsules (Item 1) */}
       <DelegationDock userId={userId} />
+
+      {/* Agent network rail (Item 2) — dismissible orchestration topology */}
+      <AgentNetworkRail userId={userId} open={networkOpen} onClose={() => setNetworkOpen(false)} />
 
       {/* Input bar — premium glass dock at the bottom */}
       <div className="shrink-0 px-3 pt-1.5 pb-3">
