@@ -42,32 +42,52 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+from backend.services import _token_file_store as _file
+
+
 async def _fetch_connection(user_id: str) -> dict | None:
-    """Load the user's google row (service client; runs off the event loop)."""
+    """Load the user's google row. Tries Supabase first; falls back to the
+    JSON file store if Supabase is unavailable (e.g. the migration hasn't
+    been run yet)."""
     def _q():
-        sb = get_supabase_admin()
-        r = (sb.table("provider_connections").select("*")
-             .eq("user_id", user_id).eq("provider", "google").limit(1).execute())
-        return (r.data or [None])[0]
+        try:
+            sb = get_supabase_admin()
+            r = (sb.table("provider_connections").select("*")
+                 .eq("user_id", user_id).eq("provider", "google").limit(1).execute())
+            row = (r.data or [None])[0]
+            if row:
+                return row
+        except Exception as e:
+            log.info("Supabase fetch failed, using file store: %s", e)
+        return _file.fetch(user_id, "google")
     return await asyncio.to_thread(_q)
 
 
 async def _update_tokens(row_id: str, access_token: str, expiry_iso: str,
                          refresh_token: str | None = None) -> None:
     def _u():
-        sb = get_supabase_admin()
-        patch = {"access_token": access_token, "token_expiry": expiry_iso,
-                 "updated_at": _now().isoformat()}
+        patch = {"access_token": access_token, "token_expiry": expiry_iso}
         if refresh_token:
             patch["refresh_token"] = refresh_token
-        sb.table("provider_connections").update(patch).eq("id", row_id).execute()
+        # Update both stores — Supabase first (best-effort), then always JSON.
+        try:
+            sb = get_supabase_admin()
+            sb.table("provider_connections").update({**patch,
+                "updated_at": _now().isoformat()}).eq("id", row_id).execute()
+        except Exception:
+            pass
+        _file.update(row_id, patch)
     await asyncio.to_thread(_u)
 
 
 async def _delete_connection(row_id: str) -> None:
     def _d():
-        sb = get_supabase_admin()
-        sb.table("provider_connections").delete().eq("id", row_id).execute()
+        try:
+            sb = get_supabase_admin()
+            sb.table("provider_connections").delete().eq("id", row_id).execute()
+        except Exception:
+            pass
+        _file.delete(row_id)
     await asyncio.to_thread(_d)
 
 

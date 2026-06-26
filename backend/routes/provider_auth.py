@@ -126,23 +126,37 @@ async def google_callback(code: str = Query(None), state: str = Query(""),
 
     expiry = (datetime.now(timezone.utc) + timedelta(seconds=expires_in)).isoformat()
 
-    # 3) Upsert connection (service role)
+    # 3) Upsert connection — Supabase first (best-effort), fall back to
+    # the JSON file store so OAuth works even when the Supabase migration
+    # hasn't been run yet.
+    payload = {
+        "user_id": user_id,
+        "provider": "google",
+        "provider_email": email,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_expiry": expiry,
+        "scopes": granted_scopes or GOOGLE_SCOPES,
+        "raw_profile": profile,
+    }
+    supabase_ok = False
     try:
         sb = get_supabase_admin()
         sb.table("provider_connections").upsert({
-            "user_id": user_id,
-            "provider": "google",
-            "provider_email": email,
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "token_expiry": expiry,
-            "scopes": granted_scopes or GOOGLE_SCOPES,
-            "raw_profile": profile,
+            **payload,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }, on_conflict="user_id,provider").execute()
+        supabase_ok = True
     except Exception as e:
-        log.warning("google connection upsert failed for %s: %s", user_id, e)
-        return RedirectResponse(fail)
+        log.info("google connection upsert (Supabase) failed for %s — using file fallback: %s", user_id, e)
+    # ALWAYS write to the file store too — guaranteed durability.
+    try:
+        from backend.services import _token_file_store as _file
+        _file.upsert(user_id, "google", payload)
+    except Exception as e:
+        if not supabase_ok:
+            log.warning("google connection upsert failed (both stores) for %s: %s", user_id, e)
+            return RedirectResponse(fail)
 
     log.info("Google connected for user %s (%s)", user_id, email)
     return RedirectResponse(f"{FRONTEND_URL}{redirect_uri}?connected=google")
@@ -150,32 +164,48 @@ async def google_callback(code: str = Query(None), state: str = Query(""),
 
 @router.get("/auth/provider/status")
 async def provider_status(user_id: str = Query(...)):
-    """Report which providers this user has connected."""
+    """Report which providers this user has connected. Reads from Supabase
+    first, falls back to the file store."""
     out = {"google": {"connected": False}, "microsoft": {"connected": False}}
+    rows: list[dict] = []
     try:
         sb = get_supabase_admin()
         rows = (sb.table("provider_connections")
                 .select("provider, provider_email, scopes, created_at")
                 .eq("user_id", user_id).execute()).data or []
-        for r in rows:
+    except Exception as e:
+        log.info("provider status (Supabase) failed for %s — using file fallback: %s", user_id, e)
+    if not rows:
+        try:
+            from backend.services import _token_file_store as _file
+            rows = _file.fetch_all(user_id)
+        except Exception:
+            pass
+    for r in rows:
+        if r.get("provider") in out:
             out[r["provider"]] = {
                 "connected": True,
                 "email": r.get("provider_email"),
                 "scopes": r.get("scopes") or [],
                 "connected_at": r.get("created_at"),
             }
-    except Exception as e:
-        log.warning("provider status failed for %s: %s", user_id, e)
     return out
 
 
 @router.delete("/auth/provider/{provider}")
 async def disconnect_provider(provider: str, user_id: str = Query(...)):
-    """Delete the stored connection for a provider."""
+    """Delete the stored connection for a provider. Deletes from BOTH stores."""
+    sb_ok = False
     try:
         sb = get_supabase_admin()
         sb.table("provider_connections").delete().eq("user_id", user_id).eq("provider", provider).execute()
+        sb_ok = True
     except Exception as e:
-        log.warning("disconnect %s failed for %s: %s", provider, user_id, e)
-        return JSONResponse(status_code=500, content={"disconnected": False, "error": str(e)})
+        log.info("disconnect %s (Supabase) failed for %s — using file fallback: %s", provider, user_id, e)
+    try:
+        from backend.services import _token_file_store as _file
+        _file.delete_by_user_provider(user_id, provider)
+    except Exception as e:
+        if not sb_ok:
+            return JSONResponse(status_code=500, content={"disconnected": False, "error": str(e)})
     return {"disconnected": True}
