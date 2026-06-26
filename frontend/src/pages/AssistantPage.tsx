@@ -19,6 +19,7 @@ import { useInitiatives } from '../hooks/useInitiatives'
 import { DelegationDock } from '../components/DelegationDock'
 import { AgentNetworkRail } from '../components/AgentNetworkRail'
 import { PressChip } from '../components/ui/PressChip'
+import { playSound, SoundEvent } from '../lib/sound'
 import { useSound } from '../hooks/useSound'
 import { useToast } from '../hooks/useToast'
 import { useAppContext } from '../App'
@@ -117,6 +118,7 @@ export default function AssistantPage() {
       addToast(items[0].title, 'info')
       agentField.setMode('acting', 0.8)
       agentField.pulse(0.5, 0.5, 1.4)
+      playSound(SoundEvent.ResponseReady)   // soft "tap on the shoulder"
       setTimeout(() => agentField.setMode('idle', 0), 1500)
     }
   })

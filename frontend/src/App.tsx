@@ -1,5 +1,6 @@
-import { createContext, useContext, useState } from 'react'
+import { createContext, useContext, useState, useEffect } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { initSound, initSoundDelegation } from './lib/sound'
 import { AnimatePresence, motion } from 'framer-motion'
 import Layout from './components/Layout'
 import { Toast } from './components/Toast'
@@ -125,6 +126,9 @@ function AuthenticatedShell() {
 // ── Root ────────────────────────────────────────────────────────
 export default function App() {
   const toastCtx = useToastState()
+  // Sound model (Item 8): unlock AudioContext on first gesture + wire
+  // data-sound click delegation once for the whole app.
+  useEffect(() => { initSound(); initSoundDelegation() }, [])
   return (
     <AuthProvider>
       <AmbientProvider>

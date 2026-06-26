@@ -248,7 +248,7 @@ export default function InboxPage() {
                     initial={{ opacity: 0, y: 8 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, scale: 0.96 }}
-                    className={`glass rounded-2xl overflow-hidden transition-all
+                    className={`glass lift-row rounded-2xl overflow-hidden
                                 ${isPending ? '' : 'opacity-60'}`}
                   >
                     <div className="p-4">

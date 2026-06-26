@@ -82,9 +82,11 @@ export function OnboardingModal() {
             <div className="flex items-center gap-3 mt-5">
               <button
                 onClick={submit}
-                className="flex-1 h-10 rounded-xl text-sm font-medium
+                disabled={!agentName.trim()}
+                className="press flex-1 h-10 rounded-xl text-sm font-medium
                            bg-[#00D4FF]/15 border border-[#00D4FF]/30 text-[#00D4FF]
-                           hover:bg-[#00D4FF]/25 transition-colors"
+                           hover:bg-[#00D4FF]/25
+                           disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Let's go
               </button>

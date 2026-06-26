@@ -177,6 +177,15 @@ body {
                      border-color var(--dur-hover) var(--ease-quick); }
 .press:active { transform: translateY(1px) scale(0.975); }
 
+/* ── Hover lift — for list rows / file cards (Item 7). Soft rise on hover,
+   settle on press. Transform/opacity only (no layout thrash). ── */
+.lift-row { transition: transform var(--dur-hover) var(--ease-smooth),
+                        box-shadow var(--dur-hover) var(--ease-smooth),
+                        border-color var(--dur-hover) var(--ease-quick); }
+.lift-row:hover  { transform: translateY(-2px); box-shadow: 0 6px 18px var(--shadow-lift); }
+.lift-row:active { transform: translateY(0); box-shadow: none; }
+@media (prefers-reduced-motion: reduce) { .lift-row:hover { transform: none; } }
+
 /* ── Card entrance — settle in gracefully (premium, not instant). ── */
 @keyframes cardEnter {
   from { opacity: 0; transform: translateY(10px) scale(0.985); }

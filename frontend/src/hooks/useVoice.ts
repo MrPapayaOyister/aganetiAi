@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { tts, stt } from '../api/client'
+import { playSound, SoundEvent } from '../lib/sound'
 
 export type VoiceState = 'idle' | 'listening' | 'processing' | 'speaking'
 
@@ -149,6 +150,7 @@ export function useVoice() {
       console.warn('[voice] startListening bailed — state is', state)
       return
     }
+    playSound(SoundEvent.RecordStart)
     setTranscript('')
     setLastError(null)
     setState('listening')
@@ -267,6 +269,7 @@ export function useVoice() {
   }, [state, hasWebSpeech, startSampler, stopSampler, fallbackToMediaRecorder])
 
   const stopListening = useCallback(() => {
+    playSound(SoundEvent.RecordStop)
     recognitionRef.current?.stop()
     if (mediaRecorderRef.current?.state === 'recording') mediaRecorderRef.current.stop()
   }, [])

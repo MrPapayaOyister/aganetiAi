@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { CheckCircle2, XCircle, ChevronDown } from 'lucide-react'
 import { getDelegations, type Delegation } from '../api/client'
 import { agentMeta, ARIA } from '../lib/agents'
+import { playSound, SoundEvent } from '../lib/sound'
 
 /**
  * Operational delegation capsules (Item 1). Each card tells the orchestration
@@ -179,6 +180,15 @@ export function DelegationDock({ userId }: { userId: string }) {
         const window = d.status === 'failed' ? FAIL_LINGER_MS : LINGER_MS
         return !isNaN(fin) && (now - fin) < window
       })
+      // Soft "dispatching" cue when a delegation first appears.
+      for (const d of all) {
+        if (!seenActive.current.has(d.id)) {
+          seenActive.current.add(d.id)
+          if (d.status === 'pending' || d.status === 'in_progress') {
+            playSound(SoundEvent.DelegationSent)
+          }
+        }
+      }
       setItems(visible)
     } catch { /* ignore */ }
   }, [userId])

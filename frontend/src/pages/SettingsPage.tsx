@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { usePrefs } from '../contexts/PrefsContext'
+import { isMuted, setMuted } from '../lib/sound'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -189,6 +190,7 @@ function AccountSection() {
   const { prefs, setPrefs } = usePrefs()
   const [agentNameInput, setAgentNameInput] = useState(prefs.agentName)
   const [displayNameInput, setDisplayNameInput] = useState(prefs.displayName)
+  const [soundOn, setSoundOn] = useState(!isMuted())
 
   const email = user?.email ?? '—'
   const initials = email !== '—' ? email.slice(0, 2).toUpperCase() : 'AI'
@@ -273,6 +275,26 @@ function AccountSection() {
           />
         </div>
         <p className="text-xs text-[#4A6080]">Saved automatically on blur.</p>
+
+        {/* Sound effects toggle (Item 8) */}
+        <div className="flex items-center justify-between pt-1">
+          <div>
+            <label className="text-xs font-medium text-[#9AA7BD] block">Interface sounds</label>
+            <p className="text-[11px] text-[#4A6080] mt-0.5">Soft click & status cues</p>
+          </div>
+          <button
+            onClick={() => setSoundOn(v => { const next = !v; setMuted(!next); return next })}
+            role="switch" aria-checked={soundOn}
+            className="press relative w-11 h-6 rounded-full transition-colors"
+            style={{ background: soundOn ? 'rgba(0,212,255,0.35)' : 'rgba(255,255,255,0.08)' }}
+          >
+            <motion.span
+              className="absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow"
+              animate={{ x: soundOn ? 20 : 0 }}
+              transition={{ type: 'spring', stiffness: 500, damping: 34 }}
+            />
+          </button>
+        </div>
       </div>
 
       {/* Identity card */}
