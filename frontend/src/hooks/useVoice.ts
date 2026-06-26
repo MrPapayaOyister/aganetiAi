@@ -13,6 +13,9 @@ export function useVoice() {
   const [analyserNode, setAnalyserNode] = useState<AnalyserNode | null>(null)
   const [amplitude, setAmplitude] = useState(0)           // 0–1 scalar (RMS)
   const [amplitudeArray, setAmplitudeArray] = useState<number[]>([])
+  /** Last recognition error type ('no-speech' | 'network' | 'not-allowed' | …).
+   *  AssistantPage subscribes via a useEffect and shows a toast. */
+  const [lastError, setLastError] = useState<string | null>(null)
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioCtxRef = useRef<AudioContext | null>(null)
@@ -95,8 +98,12 @@ export function useVoice() {
   useEffect(() => () => stopSampler(), [stopSampler])
 
   const startListening = useCallback(async (onResult: (text: string) => void) => {
-    if (state !== 'idle') return
+    if (state !== 'idle') {
+      console.warn('[voice] startListening bailed — state is', state)
+      return
+    }
     setTranscript('')
+    setLastError(null)
     setState('listening')
 
     // ── Web Speech API path (live interim) ──
@@ -111,28 +118,49 @@ export function useVoice() {
       let finalText = ''
       let lastInterim = ''            // ← fallback when no isFinal fires on mobile
       let micStream: MediaStream | null = null
+      let resultDelivered = false      // ← guard so onResult fires at most once
+
+      const deliver = () => {
+        if (resultDelivered) return
+        const out = (finalText.trim() || lastInterim.trim())
+        if (out) {
+          resultDelivered = true
+          console.info('[voice] delivering transcript:', JSON.stringify(out))
+          onResult(out)
+        } else {
+          console.warn('[voice] no transcript captured (empty finalText AND interim)')
+        }
+      }
 
       recognition.onresult = (e: any) => {
         let interim = ''
-        for (let i = e.resultIndex; i < e.results.length; i++) {
-          const r = e.results[i]
-          if (r.isFinal) finalText += r[0].transcript
-          else interim += r[0].transcript
+        try {
+          for (let i = e.resultIndex; i < e.results.length; i++) {
+            const r = e.results[i]
+            if (r.isFinal) finalText += r[0].transcript
+            else interim += r[0].transcript
+          }
+        } catch (err) {
+          console.warn('[voice] onresult parse error:', err)
         }
         if (interim) lastInterim = interim
         setTranscript((finalText + ' ' + interim).trim())
       }
-      recognition.onerror = () => {
+      recognition.onerror = (ev: any) => {
+        const err = ev?.error ?? 'unknown'
+        console.warn('[voice] recognition.onerror:', err, ev?.message ?? '')
+        setLastError(err)
         if (micStream) micStream.getTracks().forEach(t => t.stop())
         setState('idle'); stopSampler()
+        // Even on error, try to deliver any captured interim — "no-speech"
+        // and "aborted" sometimes fire AFTER words were already streamed.
+        deliver()
       }
       recognition.onend = () => {
+        console.info('[voice] recognition.onend, final=', JSON.stringify(finalText), 'interim=', JSON.stringify(lastInterim))
         if (micStream) micStream.getTracks().forEach(t => t.stop())
         setState('idle'); stopSampler()
-        // Fall back to last interim transcript if no final was captured —
-        // mobile Web Speech often ends without firing isFinal.
-        const out = (finalText.trim() || lastInterim.trim())
-        if (out) onResult(out)
+        deliver()
       }
 
       // STEP 1: request mic permission FIRST. Chrome routes Web Speech
@@ -319,5 +347,6 @@ export function useVoice() {
     speak,
     stopSpeaking,
     unlock,
+    lastError,
   }
 }

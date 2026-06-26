@@ -1091,7 +1091,7 @@ async def health_check_endpoint():
 async def health_services_endpoint():
     """Check individual service health for the dashboard SystemStatus panel."""
     import time, asyncio
-    from config.settings import TTS_URL, STT_URL, LLM_SMART_URL, QDRANT_URL
+    from config.settings import LLM_SMART_URL, QDRANT_URL
 
     services: dict = {}
 
@@ -1110,6 +1110,26 @@ async def health_services_endpoint():
 
     services["fastapi"] = {"status": "ok", "latency_ms": 0}
 
+    # TTS / STT — now local Python modules (Kokoro / faster-whisper) rather
+    # than HTTP services.  Probe by import + minimal sanity check; if the
+    # module loads, the service is available on demand.
+    def probe_local_tts():
+        try:
+            from integrations.tts import synthesize_speech    # noqa: F401
+            return {"status": "ok", "latency_ms": 0}
+        except Exception:
+            return {"status": "down", "latency_ms": None}
+
+    def probe_local_stt():
+        try:
+            from integrations.whisper_transcriber import transcribe_audio  # noqa: F401
+            return {"status": "ok", "latency_ms": 0}
+        except Exception:
+            return {"status": "down", "latency_ms": None}
+
+    services["tts"] = probe_local_tts()
+    services["stt"] = probe_local_stt()
+
     # Parse ports from configured LLM URL (e.g. http://localhost:8080)
     import urllib.parse
     llm_parsed = urllib.parse.urlparse(LLM_SMART_URL)
@@ -1121,8 +1141,6 @@ async def health_services_endpoint():
         ("llm_smart", f"http://{llm_host}:{llm_smart_port}/health"),
         ("llm_fast",  f"http://{llm_host}:{llm_fast_port}/health"),
         ("vector_db", f"{QDRANT_URL}/healthz"),
-        ("tts",       f"{TTS_URL}/health"),
-        ("stt",       f"{STT_URL}/health"),
     ]
 
     # All probes run in parallel; a crashed probe never propagates.

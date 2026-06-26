@@ -13,6 +13,8 @@ import asyncio
 import logging
 from email.utils import parseaddr, parsedate_to_datetime
 
+from fastapi import HTTPException
+
 from backend.services.provider_tokens import get_google_headers, GOOGLE_CONFIGURED
 from backend.services.http_client import google_request
 
@@ -146,7 +148,12 @@ async def send_gmail_message(user_id: str, to: str, subject: str, body: str,
                              reply_to_id: str | None = None) -> dict:
     """Send an email as the user. Replies in-thread when reply_to_id is given."""
     if not GOOGLE_CONFIGURED:
-        return {"id": "mock_sent", "thread_id": None}
+        # Don't silently pretend success — surface the real state so the
+        # frontend can prompt the user to connect Google.
+        raise HTTPException(status_code=503, detail={
+            "error": "google_not_configured",
+            "message": "Google OAuth is not configured on the server (GOOGLE_CLIENT_ID/SECRET).",
+        })
     headers = await get_google_headers(user_id)
     raw_mime = f"To: {to}\r\nSubject: {subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{body}"
     raw = base64.urlsafe_b64encode(raw_mime.encode("utf-8")).decode()

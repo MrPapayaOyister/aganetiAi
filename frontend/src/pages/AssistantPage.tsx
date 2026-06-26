@@ -418,6 +418,24 @@ export default function AssistantPage() {
     voice.startListening(handleSend)
   }, [addToast, voice, handleSend])
 
+  // Surface recognition errors as user-visible toasts (was silently dying).
+  useEffect(() => {
+    if (!voice.lastError) return
+    const messages: Record<string, string> = {
+      'no-speech':         "Didn't catch that — try again",
+      'aborted':           '',                                  // user cancelled, no toast
+      'audio-capture':     "Microphone not available",
+      'not-allowed':       'Please allow microphone access',
+      'service-not-allowed': 'Speech recognition is blocked on this network',
+      'network':           'Speech recognition needs an internet connection',
+      'no-match':          "Didn't catch that — try again",
+      'bad-grammar':       'Speech recognition error',
+      'language-not-supported': 'Language not supported',
+    }
+    const msg = messages[voice.lastError] ?? `Voice error: ${voice.lastError}`
+    if (msg) addToast(msg, 'info')
+  }, [voice.lastError, addToast])
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()

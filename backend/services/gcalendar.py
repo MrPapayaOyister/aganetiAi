@@ -74,7 +74,11 @@ async def create_google_event(user_id: str, title: str, start: str, end: str,
                               location: str | None = None) -> dict:
     """Create an event on the user's primary calendar. start/end are ISO datetimes."""
     if not GOOGLE_CONFIGURED:
-        return {"id": "mock_event", "htmlLink": None, "hangoutLink": None}
+        from fastapi import HTTPException
+        raise HTTPException(status_code=503, detail={
+            "error": "google_not_configured",
+            "message": "Google OAuth is not configured on the server.",
+        })
     headers = await get_google_headers(user_id)
     body: dict = {
         "summary": title,
