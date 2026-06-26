@@ -109,6 +109,9 @@ export function useVoice() {
       recognition.lang = 'en-US'
 
       let finalText = ''
+      let lastInterim = ''            // ← fallback when no isFinal fires on mobile
+      let micStream: MediaStream | null = null
+
       recognition.onresult = (e: any) => {
         let interim = ''
         for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -116,37 +119,48 @@ export function useVoice() {
           if (r.isFinal) finalText += r[0].transcript
           else interim += r[0].transcript
         }
+        if (interim) lastInterim = interim
         setTranscript((finalText + ' ' + interim).trim())
       }
-      recognition.onerror = () => { setState('idle'); stopSampler() }
-      recognition.onend = () => {
+      recognition.onerror = () => {
+        if (micStream) micStream.getTracks().forEach(t => t.stop())
         setState('idle'); stopSampler()
-        const out = finalText.trim()
+      }
+      recognition.onend = () => {
+        if (micStream) micStream.getTracks().forEach(t => t.stop())
+        setState('idle'); stopSampler()
+        // Fall back to last interim transcript if no final was captured —
+        // mobile Web Speech often ends without firing isFinal.
+        const out = (finalText.trim() || lastInterim.trim())
         if (out) onResult(out)
       }
 
-      // Mic analyser for the live waveform + amplitude.
-      // IMPORTANT: await ctx.resume() BEFORE createMediaStreamSource —
-      // connecting a stream source to a suspended context can fire a click
-      // on some browsers.
+      // CRITICAL FIX: start recognition IMMEDIATELY in the user-gesture
+      // window — don't await getUserMedia first.  Recognition has its
+      // own internal mic capture and was failing to start when the
+      // gesture context was consumed by the awaited getUserMedia.
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-        const ctx = ensureCtx()
-        if (ctx.state === 'suspended') await ctx.resume()
-        const analyser = ctx.createAnalyser()
-        analyser.fftSize = 256
-        ctx.createMediaStreamSource(stream).connect(analyser)
-        setAnalyserNode(analyser)
-        startSampler(analyser)
-        recognition.onend = () => {
-          stream.getTracks().forEach(t => t.stop())
-          setAnalyserNode(null); setState('idle'); stopSampler()
-          const out = finalText.trim()
-          if (out) onResult(out)
-        }
-      } catch { /* mic viz optional */ }
+        recognition.start()
+      } catch {
+        setState('idle')
+        return
+      }
 
-      recognition.start()
+      // Mic analyser is for the orb's amplitude — purely cosmetic.
+      // Set it up in the background; if it fails, recognition keeps
+      // working without it.
+      ;(async () => {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+          micStream = stream
+          const ctx = ensureCtx()
+          const analyser = ctx.createAnalyser()
+          analyser.fftSize = 256
+          ctx.createMediaStreamSource(stream).connect(analyser)
+          setAnalyserNode(analyser)
+          startSampler(analyser)
+        } catch { /* mic viz optional — recognition continues without it */ }
+      })()
       return
     }
 
