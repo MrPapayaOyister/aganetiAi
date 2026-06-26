@@ -20,6 +20,10 @@ export function useVoice() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioCtxRef = useRef<AudioContext | null>(null)
   const audioSourceRef = useRef<AudioBufferSourceNode | null>(null)
+  // Streaming TTS: all scheduled chunk sources for the current utterance, so
+  // stopSpeaking() can halt mid-stream. Bumped each speak() to cancel stale chunks.
+  const streamSourcesRef = useRef<AudioBufferSourceNode[]>([])
+  const speakGenRef = useRef(0)
   const recognitionRef = useRef<any>(null)
   const chunksRef = useRef<Blob[]>([])
 
@@ -288,50 +292,127 @@ export function useVoice() {
     return out
   }
 
+  // ── Blob TTS (fallback): full WAV via /tts, single buffer ──
+  const speakBlob = useCallback(async (text: string) => {
+    const ctx = ensureCtx()
+    const persistentGain = ttsGainRef.current!
+    const buffer = await tts(text)
+    const decoded = await ctx.decodeAudioData(buffer)
+    const audioBuffer = trimSilence(ctx, decoded)
+
+    const envGain = ctx.createGain()
+    const ATTACK = 0.010, RELEASE = 0.018
+    const t0 = ctx.currentTime + 0.020
+    const dur = audioBuffer.duration
+    envGain.gain.setValueAtTime(0, t0)
+    envGain.gain.linearRampToValueAtTime(1, t0 + ATTACK)
+    envGain.gain.setValueAtTime(1, t0 + Math.max(ATTACK, dur - RELEASE))
+    envGain.gain.linearRampToValueAtTime(0, t0 + dur)
+
+    const source = ctx.createBufferSource()
+    audioSourceRef.current = source
+    source.buffer = audioBuffer
+    source.connect(envGain)
+    envGain.connect(persistentGain)
+    source.start(t0)
+    await new Promise<void>(resolve => {
+      source.onended = () => { try { envGain.disconnect() } catch { /* noop */ }; resolve() }
+    })
+  }, [])
+
+  // ── Streaming TTS (preferred): /tts/stream → gapless PCM16 chunks ──
+  // The server streams raw 24kHz mono int16 PCM as Kokoro renders each
+  // segment. We decode + schedule each chunk back-to-back on the persistent
+  // chain so the first audio plays ~150ms+ sooner than waiting for the full WAV.
+  const speakStream = useCallback(async (text: string) => {
+    const ctx = ensureCtx()
+    const persistentGain = ttsGainRef.current!
+    if (ctx.state === 'suspended') await ctx.resume()
+
+    const gen = ++speakGenRef.current   // cancels stale streams on a new speak()
+    const SR = 24000
+    const res = await fetch('/api/tts/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    })
+    if (!res.ok || !res.body) throw new Error(`tts/stream ${res.status}`)
+
+    const reader = res.body.getReader()
+    let leftover = new Uint8Array(0)
+    let nextTime = ctx.currentTime + 0.08   // small lead so the first chunk doesn't underrun
+    let firstChunk = true
+    const sources: AudioBufferSourceNode[] = []
+    streamSourcesRef.current = sources
+
+    const scheduleChunk = (bytes: Uint8Array, isFirst: boolean) => {
+      const n = bytes.byteLength >> 1   // int16 samples
+      if (n === 0) return
+      const view = new DataView(bytes.buffer, bytes.byteOffset, n * 2)
+      const buf = ctx.createBuffer(1, n, SR)
+      const ch = buf.getChannelData(0)
+      for (let i = 0; i < n; i++) ch[i] = view.getInt16(i * 2, true) / 32768
+      const src = ctx.createBufferSource()
+      src.buffer = buf
+      if (isFirst) {
+        // 8ms fade-in on the very first chunk to avoid an onset click.
+        const g = ctx.createGain()
+        g.gain.setValueAtTime(0, nextTime)
+        g.gain.linearRampToValueAtTime(1, nextTime + 0.008)
+        src.connect(g); g.connect(persistentGain)
+      } else {
+        src.connect(persistentGain)
+      }
+      const startAt = Math.max(nextTime, ctx.currentTime + 0.005)
+      src.start(startAt)
+      nextTime = startAt + buf.duration
+      sources.push(src)
+      audioSourceRef.current = src
+    }
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done || gen !== speakGenRef.current) break
+        if (!value || value.byteLength === 0) continue
+        // Concatenate leftover odd byte + new bytes; process whole int16 pairs.
+        let buf = value
+        if (leftover.byteLength) {
+          const merged = new Uint8Array(leftover.byteLength + value.byteLength)
+          merged.set(leftover, 0); merged.set(value, leftover.byteLength)
+          buf = merged
+        }
+        const usable = buf.byteLength - (buf.byteLength % 2)
+        if (usable > 0) {
+          scheduleChunk(buf.subarray(0, usable), firstChunk)
+          firstChunk = false
+        }
+        leftover = usable < buf.byteLength ? buf.subarray(usable) : new Uint8Array(0)
+      }
+    } finally {
+      try { reader.cancel() } catch { /* noop */ }
+    }
+    if (gen !== speakGenRef.current) return   // superseded by a newer speak()
+
+    // Resolve when the last scheduled chunk finishes playing.
+    const waitMs = Math.max(0, (nextTime - ctx.currentTime) * 1000)
+    await new Promise<void>(r => setTimeout(r, waitMs + 60))
+  }, [])
+
   const speak = useCallback(async (text: string) => {
     if (!text || text.length > 2000) return
     setState('speaking')
     try {
-      const ctx = ensureCtx()                                          // builds persistent chain
-      const persistentGain = ttsGainRef.current!
-      const buffer = await tts(text)
-      const decoded = await ctx.decodeAudioData(buffer)
-      const audioBuffer = trimSilence(ctx, decoded)
-
-      // Per-utterance gain envelope.  10ms attack + 18ms release prevents
-      // any DC step from clicking when the buffer connects/disconnects.
-      // This temporary gain feeds into the PERSISTENT analyser/destination
-      // chain — we never disconnect from the destination, so no system-
-      // level click fires at end-of-speech.
-      const envGain = ctx.createGain()
-      const ATTACK = 0.010
-      const RELEASE = 0.018
-      const t0 = ctx.currentTime + 0.020                               // 20ms scheduling lead
-      const dur = audioBuffer.duration
-      envGain.gain.setValueAtTime(0, t0)
-      envGain.gain.linearRampToValueAtTime(1, t0 + ATTACK)
-      envGain.gain.setValueAtTime(1, t0 + Math.max(ATTACK, dur - RELEASE))
-      envGain.gain.linearRampToValueAtTime(0, t0 + dur)
-
-      const source = ctx.createBufferSource()
-      audioSourceRef.current = source
-      source.buffer = audioBuffer
-      source.connect(envGain)
-      envGain.connect(persistentGain)                                  // join persistent chain
-
-      source.start(t0)
-      await new Promise<void>(resolve => {
-        source.onended = () => {
-          // Disconnect the per-utterance node AFTER the buffer is fully done.
-          // Persistent gain/analyser/destination remain attached — no click.
-          try { envGain.disconnect() } catch { /* ignore */ }
-          resolve()
-        }
-      })
+      try {
+        await speakStream(text)
+      } catch (e) {
+        console.warn('[voice] tts/stream failed, falling back to blob', e)
+        await speakBlob(text)
+      }
     } catch { /* TTS optional */ } finally {
       setState('idle')
     }
-  }, [])
+  }, [speakStream, speakBlob])
 
   // Public: pre-warm the AudioContext on first user gesture.
   // Mobile Safari silences the very first AudioContext output (the "unlock"
@@ -351,10 +432,14 @@ export function useVoice() {
   }, [])
 
   const stopSpeaking = useCallback(() => {
-    // Stop the source — onended fires and disconnects the per-utterance gain.
-    // Do NOT touch the persistent analyser/destination chain or stop the
-    // sampler; the orb keeps reading amplitude (which decays to 0 naturally
-    // since there's no signal) and no click fires.
+    // Invalidate the current stream so its read loop exits and no further
+    // chunks schedule, then stop every already-scheduled chunk source.
+    // The persistent analyser/destination chain is left intact (no click).
+    speakGenRef.current++
+    for (const s of streamSourcesRef.current) {
+      try { s.stop() } catch { /* already stopped */ }
+    }
+    streamSourcesRef.current = []
     try { audioSourceRef.current?.stop() } catch { /* already stopped */ }
     audioSourceRef.current = null
     setState('idle')
