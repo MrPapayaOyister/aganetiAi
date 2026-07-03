@@ -38,6 +38,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from memory.store import load_history, save_message, load_session_state, save_session_state, append_message
 from config.settings import LLM_BASE_URL, QDRANT_URL, EMAIL_ACCOUNT, USER_1_M365_EMAIL, USER_2_M365_EMAIL
 from config.settings import LLM_SMART_URL, NATIVE_TOOLS, PASSIVE_TASK_DETECT
+from backend.service_auth import internal_headers  # Phase 0: auth for internal self-calls
 from config.settings import TTS_URL, STT_URL
 from integrations.telegram_bot import start_bot, bot
 from aiogram.exceptions import TelegramBadRequest
@@ -473,7 +474,7 @@ def _register_apscheduler_job(schedule: dict, user_id: str):
             msg = await asyncio.to_thread(get_digest_for_user, user_id)
         elif action == "task_summary":
             async with httpx.AsyncClient() as client:
-                r = await client.get(f"http://127.0.0.1:8000/tasks?user_id={user_id}&status=pending")
+                r = await client.get(f"http://127.0.0.1:8000/tasks?user_id={user_id}&status=pending", headers=internal_headers(user_id))
                 res = r.json()
                 tasks = res.get("tasks", []) if isinstance(res, dict) else res
             if tasks:
@@ -706,6 +707,14 @@ app = FastAPI(title="Collaborative AI Enterprise OS", lifespan=lifespan)
 # Per-user Google OAuth (connect/callback/status/disconnect)
 from backend.routes.provider_auth import router as provider_router
 app.include_router(provider_router, tags=["provider-auth"])
+
+# ── Global authentication enforcement (Phase 0 security) ───────────────────────
+# Every route now requires either a valid Supabase JWT (sub mapped to an enabled
+# internal user) or the internal service token. Added BEFORE the trace middleware
+# so that CORS (added last, further down) remains the OUTERMOST layer and 401/403
+# responses still carry CORS headers for the browser.
+from backend.auth.enforce import AuthEnforceMiddleware
+app.add_middleware(AuthEnforceMiddleware)
 
 # ── Structured logging + per-request trace IDs ─────────────
 import uuid as _uuid

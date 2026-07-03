@@ -65,3 +65,18 @@ export const supabase: SupabaseClient = supabaseConfigured
 
 export type SupabaseSession =
   Awaited<ReturnType<typeof supabase.auth.getSession>>['data']['session']
+
+/**
+ * Bearer-auth header for the backend. The backend now enforces a valid Supabase
+ * JWT on every route (Phase 0 security), so every API call must carry this.
+ * Returns {} when logged out (the request will correctly get a 401).
+ */
+export async function authHeader(): Promise<Record<string, string>> {
+  try {
+    const { data } = await supabase.auth.getSession()
+    const token = data.session?.access_token
+    return token ? { Authorization: `Bearer ${token}` } : {}
+  } catch {
+    return {}
+  }
+}

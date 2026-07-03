@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
 import type { UserID } from '../api/client'
+import { authHeader } from '../lib/supabase'
 
 export type ThinkingEvent = { message: string }
 export type ActionEvent = {
@@ -32,7 +33,7 @@ export const useStream = () => {
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(await authHeader()) },
         body: JSON.stringify({
           message,
           session_id: sessionId,

@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { tts, stt } from '../api/client'
 import { playSound, SoundEvent } from '../lib/sound'
+import { authHeader } from '../lib/supabase'
 
 export type VoiceState = 'idle' | 'listening' | 'processing' | 'speaking'
 
@@ -336,7 +337,7 @@ export function useVoice() {
     const SR = 24000
     const res = await fetch('/api/tts/stream', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(await authHeader()) },
       body: JSON.stringify({ text }),
     })
     if (!res.ok || !res.body) throw new Error(`tts/stream ${res.status}`)

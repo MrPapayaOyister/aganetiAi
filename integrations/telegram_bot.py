@@ -31,6 +31,7 @@ from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TTS_ENABLED
 from config.users import get_user_by_telegram_id, USERS, get_user_name
 from integrations.agent_inbox import send_message, get_pending_messages, resolve_message, reject_message
 from tasks.store import find_task_by_title, create_task, get_conn
+from backend.service_auth import internal_headers  # Phase 0: auth for internal API self-calls
 
 # Expose Bot at module level
 bot = Bot(token=TELEGRAM_BOT_TOKEN) if TELEGRAM_BOT_TOKEN else None
@@ -110,7 +111,7 @@ async def tasks_command_handler(message: Message) -> None:
     url_list = f"http://127.0.0.1:8000/tasks?status=pending&user_id={user_id}"
 
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(headers=internal_headers()) as client:
             res_summary = await client.get(url_summary)
             if res_summary.status_code != 200:
                 await message.answer(f"Error: Backend returned status code {res_summary.status_code}.")
@@ -193,7 +194,7 @@ async def addtask_command_handler(message: Message, command: CommandObject) -> N
     }
 
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(headers=internal_headers()) as client:
             response = await client.post(url, json=payload)
             if response.status_code == 201:
                 await message.answer(f"✅ Task added: **{title}**", parse_mode="Markdown")
@@ -227,7 +228,7 @@ async def done_command_handler(message: Message, command: CommandObject) -> None
     payload = {"status": "done"}
 
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(headers=internal_headers()) as client:
             response = await client.patch(url, json=payload)
             if response.status_code == 200:
                 await message.answer("✅ Task marked as done!")
@@ -283,7 +284,7 @@ async def telegram_voice_handler(message: Message) -> None:
         token_count  = 0
 
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(headers=internal_headers()) as client:
                 async with client.stream("POST", url, json=payload, timeout=90.0) as resp:
                     if resp.status_code != 200:
                         collected = f"Error: Backend returned status code {resp.status_code}."
@@ -413,7 +414,7 @@ async def audio_meeting_handler(message: Message) -> None:
         file_info = await bot.get_file(audio.file_id)
         await bot.download_file(file_info.file_path, destination=temp_path)
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(headers=internal_headers()) as client:
             r = await client.post(
                 "http://127.0.0.1:8000/meeting/transcribe_path",
                 json={"user_id": user_id, "path": temp_path,
@@ -546,7 +547,7 @@ async def telegram_message_handler(message: Message) -> None:
 
     # List schedules
     if any(t in msg_lower for t in SCHEDULE_LIST_TRIGGERS):
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(headers=internal_headers()) as client:
             r = await client.get(f"http://127.0.0.1:8000/schedule/list/{user_id}")
         await message.answer(r.json()["formatted"], parse_mode="Markdown")
         return
@@ -556,7 +557,7 @@ async def telegram_message_handler(message: Message) -> None:
         id_match = re.search(r'\b([a-f0-9]{8})\b', message.text)
         if id_match:
             sched_id = id_match.group(1)
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(headers=internal_headers()) as client:
                 r = await client.delete(f"http://127.0.0.1:8000/schedule/{user_id}/{sched_id}")
             result = r.json()
             if result["status"] == "deleted":
@@ -570,7 +571,7 @@ async def telegram_message_handler(message: Message) -> None:
     # Create schedule
     if any(t in msg_lower for t in SCHEDULE_CREATE_TRIGGERS):
         status_msg = await message.answer("⏰ Setting up your schedule...")
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(headers=internal_headers()) as client:
             r = await client.post(
                 "http://127.0.0.1:8000/schedule/create",
                 json={"user_id": user_id, "text": message.text}
@@ -861,7 +862,7 @@ async def telegram_message_handler(message: Message) -> None:
     token_count  = 0
 
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(headers=internal_headers()) as client:
             async with client.stream("POST", url, json=payload, timeout=90.0) as resp:
                 if resp.status_code != 200:
                     collected = f"Error: Backend returned status code {resp.status_code}."

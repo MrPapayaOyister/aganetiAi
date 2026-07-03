@@ -17,6 +17,7 @@ import json
 import re
 
 from backend.action_parser import execute_action
+from backend.service_auth import internal_headers  # Phase 0: auth for internal self-calls
 
 # OpenAI tool schema — kept in lock-step with execute_action's action types.
 TOOL_SCHEMAS = [
@@ -525,6 +526,7 @@ def dispatch_tool_call(name: str, raw_args, user_id: str) -> str:
             r = _httpx.post(
                 "http://127.0.0.1:8000/set_reminder",
                 json={"user_id": user_id, "message": message, "remind_at": remind_at},
+                headers=internal_headers(user_id),
                 timeout=10,
             )
             r.raise_for_status()

@@ -1,6 +1,19 @@
 import axios from 'axios'
+import { authHeader } from '../lib/supabase'
 
 export const http = axios.create({ baseURL: '/api' })
+
+// Attach the Supabase bearer token to every backend call. The backend enforces
+// auth on every route (Phase 0), so unauthenticated calls now correctly 401.
+http.interceptors.request.use(async (config) => {
+  const h = await authHeader()
+  if (h.Authorization) {
+    const headers = config.headers as any
+    if (headers && typeof headers.set === 'function') headers.set('Authorization', h.Authorization)
+    else config.headers = { ...(headers ?? {}), Authorization: h.Authorization } as any
+  }
+  return config
+})
 
 // ── Types ──────────────────────────────────────────────
 // UserID is the real Supabase auth.users.id (UUID string).

@@ -22,29 +22,22 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .context import UserContext, ProviderContext
 from .supabase_client import get_supabase_admin
+from backend.auth.jwt_verify import verify_supabase_jwt
 
 logger = logging.getLogger("aganeti.auth")
 
-SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET", "")
 _bearer = HTTPBearer(auto_error=False)
 
 
 def _decode_jwt(token: str) -> dict:
-    """Validate and decode a Supabase JWT. Raises HTTPException on failure."""
-    if not SUPABASE_JWT_SECRET:
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            "Server auth not configured (missing SUPABASE_JWT_SECRET)")
+    """Validate a Supabase ES256 JWT via JWKS. Raises HTTPException on failure."""
     try:
-        payload = jwt.decode(
-            token,
-            SUPABASE_JWT_SECRET,
-            algorithms=["HS256"],
-            options={"require": ["sub", "exp"]},
-        )
-        return payload
+        return verify_supabase_jwt(token)
     except jwt.ExpiredSignatureError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token expired")
     except jwt.InvalidTokenError as e:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"Invalid token: {e}")
+    except Exception as e:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"Invalid token: {e}")
 
 
@@ -53,34 +46,44 @@ async def _build_user_context(user_id: str, email: str) -> UserContext:
     Load profile, feature flags, and provider connections from Supabase
     and assemble a UserContext. Single DB call pattern using select().
     """
-    supabase = get_supabase_admin()
-
-    # Fetch profile + feature flags + providers in parallel
-    profile_resp = supabase.table("profiles").select("*").eq("id", user_id).single().execute()
-    flags_resp = supabase.table("feature_flags").select("flag").eq("user_id", user_id).eq("enabled", True).execute()
-    providers_resp = (
-        supabase.table("provider_connections")
-        .select("provider, provider_email, scopes, token_expiry")
-        .eq("user_id", user_id)
-        .execute()
-    )
-
-    profile = profile_resp.data or {}
-    flags = [r["flag"] for r in (flags_resp.data or [])]
-    providers = [
-        ProviderContext(
-            provider=r["provider"],
-            email=r.get("provider_email", ""),
-            scopes=r.get("scopes") or [],
-            token_expiry=r.get("token_expiry"),
-        )
-        for r in (providers_resp.data or [])
-    ]
+    # Resilient: any missing table / DB hiccup degrades to a minimal context
+    # rather than 500-ing the request (the global auth middleware already gate-kept it).
+    profile: dict = {}
+    flags: list[str] = []
+    providers: list[ProviderContext] = []
+    try:
+        supabase = get_supabase_admin()
+        try:
+            profile = supabase.table("profiles").select("*").eq("id", user_id).single().execute().data or {}
+        except Exception:
+            profile = {}
+        try:
+            flags_resp = supabase.table("feature_flags").select("flag").eq("user_id", user_id).eq("enabled", True).execute()
+            flags = [r["flag"] for r in (flags_resp.data or [])]
+        except Exception:
+            flags = []
+        try:
+            providers_resp = (
+                supabase.table("provider_connections")
+                .select("provider, provider_email, scopes, token_expiry")
+                .eq("user_id", user_id).execute()
+            )
+            providers = [
+                ProviderContext(
+                    provider=r["provider"], email=r.get("provider_email", ""),
+                    scopes=r.get("scopes") or [], token_expiry=r.get("token_expiry"),
+                )
+                for r in (providers_resp.data or [])
+            ]
+        except Exception:
+            providers = []
+    except Exception as e:
+        logger.warning("build_user_context degraded for %s: %s", user_id, e)
 
     return UserContext(
         user_id=user_id,
         email=email,
-        display_name=profile.get("display_name") or email.split("@")[0],
+        display_name=profile.get("display_name") or (email.split("@")[0] if email else user_id),
         plan=profile.get("plan", "free"),
         features=flags,
         providers=providers,

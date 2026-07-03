@@ -22,6 +22,8 @@ USERS: dict[str, dict] = {
         "is_agent":          True,
         "agent_id":          "agent_1",
         "qdrant_collection": "memory_user_1",
+        "supabase_uid":      os.getenv("USER_1_SUPABASE_UID", ""),
+        "enabled":           True,
     },
     "user_2": {
         "telegram_chat_id":  int(os.getenv("USER_2_TELEGRAM_ID", "0")),
@@ -30,6 +32,10 @@ USERS: dict[str, dict] = {
         "is_agent":          True,
         "agent_id":          "agent_2",
         "qdrant_collection": "memory_user_2",
+        "supabase_uid":      os.getenv("USER_2_SUPABASE_UID", ""),
+        # Single-user mode (operator decision): user_2 kept for legacy data but
+        # DISABLED for login — its Supabase token is rejected by auth enforcement.
+        "enabled":           False,
     },
 }
 
@@ -60,3 +66,16 @@ def get_all_user_ids() -> list[str]:
 def get_user_name(user_id: str) -> str:
     """Returns display name for user_id, fallback to user_id string."""
     return USERS.get(user_id, {}).get("name", user_id)
+
+
+# ── Supabase auth uid (JWT `sub`) → internal user_id (Phase 0 auth) ────────────
+_SUB_TO_USER: dict[str, str] = {
+    u["supabase_uid"]: uid
+    for uid, u in USERS.items()
+    if u.get("enabled") and u.get("supabase_uid")
+}
+
+
+def internal_user_for_sub(sub: str) -> str | None:
+    """Map a Supabase auth uid to an ENABLED internal user_id, or None if not allowed."""
+    return _SUB_TO_USER.get(sub) if sub else None

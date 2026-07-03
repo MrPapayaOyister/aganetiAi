@@ -2,6 +2,7 @@ import re
 import json
 import httpx
 from datetime import datetime, timezone
+from backend.service_auth import internal_headers  # Phase 0: auth for internal self-calls
 
 BASE_URL = "http://127.0.0.1:8000"
 
@@ -42,7 +43,7 @@ def execute_action(action: dict, user_id: str) -> str:
                 "source": "chat",
                 "user_id": user_id
             }
-            response = httpx.post(url, json=payload, timeout=10.0)
+            response = httpx.post(url, json=payload, timeout=10.0, headers=internal_headers(user_id))
             if response.status_code in (200, 201):
                 return "\n\n✅ Task created."
             return "\n\n⚠️ Task creation failed — please try again."
@@ -51,7 +52,7 @@ def execute_action(action: dict, user_id: str) -> str:
         elif action_type == "complete_task":
             url = f"{BASE_URL}/tasks/complete_by_title"
             payload = {"title": action.get("title", ""), "user_id": user_id}
-            response = httpx.post(url, json=payload, timeout=10.0)
+            response = httpx.post(url, json=payload, timeout=10.0, headers=internal_headers(user_id))
             if response.status_code == 200:
                 return "\n\n✅ Task marked as done."
             elif response.status_code == 404:
@@ -67,7 +68,7 @@ def execute_action(action: dict, user_id: str) -> str:
                 "body": action.get("body", ""),
                 "user_id": user_id
             }
-            response = httpx.post(url, json=payload, timeout=10.0)
+            response = httpx.post(url, json=payload, timeout=10.0, headers=internal_headers(user_id))
             if response.status_code == 200:
                 return "\n\n📧 Draft queued for your approval in the approval queue."
             return "\n\n⚠️ Email draft failed — please try again."
@@ -81,7 +82,7 @@ def execute_action(action: dict, user_id: str) -> str:
                 "time": action.get("time", ""),
                 "user_id": user_id
             }
-            response = httpx.post(url, json=payload, timeout=10.0)
+            response = httpx.post(url, json=payload, timeout=10.0, headers=internal_headers(user_id))
             if response.status_code == 200:
                 return "\n\n📅 Meeting scheduled and calendar event created."
             return "\n\n⚠️ Could not schedule meeting — please check the details."
