@@ -1,19 +1,25 @@
 import axios from 'axios'
-import { authHeader } from '../lib/supabase'
+import { authHeader, apiFetch } from '../lib/supabase'
 
 export const http = axios.create({ baseURL: '/api' })
 
-// Attach the Supabase bearer token to every backend call. The backend enforces
-// auth on every route (Phase 0), so unauthenticated calls now correctly 401.
-http.interceptors.request.use(async (config) => {
+// Attach the Supabase bearer token to EVERY backend call. The backend enforces
+// auth on every route (Phase 0), so unauthenticated calls 401. This runs on BOTH
+// the shared `http` instance AND the default axios export, because several
+// components import bare `axios` and call `/api/*` directly (Sidebar, DropZone,
+// SystemStatus, AnalyticsPage, InboxPage, AssistantPage upload) — without this
+// those specific calls would 401 while others succeed.
+const attachAuth = async (config: any) => {
   const h = await authHeader()
   if (h.Authorization) {
     const headers = config.headers as any
     if (headers && typeof headers.set === 'function') headers.set('Authorization', h.Authorization)
-    else config.headers = { ...(headers ?? {}), Authorization: h.Authorization } as any
+    else config.headers = { ...(headers ?? {}), Authorization: h.Authorization }
   }
   return config
-})
+}
+http.interceptors.request.use(attachAuth)
+axios.interceptors.request.use(attachAuth)
 
 // ── Types ──────────────────────────────────────────────
 // UserID is the real Supabase auth.users.id (UUID string).
@@ -164,7 +170,7 @@ export const getAnalyticsActiveHours = (period = '30d', user_id?: UserID) =>
 
 // ── Voice (proxied to DGX) ────────────────────────────
 export const tts = async (text: string): Promise<ArrayBuffer> => {
-  const r = await fetch('/api/tts', {
+  const r = await apiFetch('/api/tts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text })

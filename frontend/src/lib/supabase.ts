@@ -80,3 +80,16 @@ export async function authHeader(): Promise<Record<string, string>> {
     return {}
   }
 }
+
+/**
+ * fetch() wrapper that always attaches the Supabase bearer token. Use this for
+ * any raw fetch to the backend (streaming/SSE/binary) instead of window.fetch,
+ * so every protected request is authenticated.
+ */
+export async function apiFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const auth = await authHeader()
+  return fetch(input, {
+    ...init,
+    headers: { ...(init.headers as Record<string, string> | undefined), ...auth },
+  })
+}

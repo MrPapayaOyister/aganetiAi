@@ -27,6 +27,7 @@ import { useAmbient } from '../contexts/AmbientContext'
 import { useAgentField, type AgentFieldMode } from '../contexts/AgentFieldContext'
 import { usePrefs } from '../contexts/PrefsContext'
 import axios from 'axios'
+import { apiFetch } from '../lib/supabase'
 
 const FALLBACK_SUGGESTIONS = [
   "What's on my agenda today?",
@@ -191,7 +192,7 @@ export default function AssistantPage() {
     try { local = JSON.parse(localStorage.getItem(`aria_msgs_${sessionId}`) || '[]') } catch { /* noop */ }
     if (local.length) { setMessages(local); return }
     setMessages([])
-    fetch(`/api/chat/history?session_id=${encodeURIComponent(sessionId)}&limit=20`)
+    apiFetch(`/api/chat/history?session_id=${encodeURIComponent(sessionId)}&limit=20`)
       .then(r => r.json())
       .then(data => {
         if (!cancelled && Array.isArray(data.messages) && data.messages.length > 0) {
@@ -218,7 +219,7 @@ export default function AssistantPage() {
   const { data: suggestionsData } = useQuery({
     queryKey: ['suggestions', userId],
     queryFn: () =>
-      fetch(`/api/chat/suggestions?user_id=${encodeURIComponent(userId)}`).then(r => r.json()),
+      apiFetch(`/api/chat/suggestions?user_id=${encodeURIComponent(userId)}`).then(r => r.json()),
     staleTime: 60_000,
     retry: false,
   })
