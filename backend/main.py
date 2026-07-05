@@ -712,6 +712,12 @@ app.include_router(provider_router, tags=["provider-auth"])
 from backend.routes.agent_os import router as agent_os_router
 app.include_router(agent_os_router)
 
+# Voice WebSocket (STT -> executor -> TTS) — WS /ws/voice
+# NOTE: app.include_router does NOT attach APIWebSocketRoute in this FastAPI version,
+# so register the websocket handler directly on the app.
+from backend.routes.voice import voice_ws as _voice_ws
+app.add_api_websocket_route("/ws/voice", _voice_ws)
+
 # ── Global authentication enforcement (Phase 0 security) ───────────────────────
 # Every route now requires either a valid Supabase JWT (sub mapped to an enabled
 # internal user) or the internal service token. Added BEFORE the trace middleware
