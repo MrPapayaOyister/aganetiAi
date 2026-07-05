@@ -31,11 +31,15 @@ class AgentState(TypedDict):
     allowed_tools: list
     step: int
     awaiting: dict | None
+    model_key: str | None
+    fallback_models: list
 
 
 async def _agent_node(state: AgentState) -> dict:
     schemas = registry.openai_schemas(state["allowed_tools"])
-    msg = await llm.chat(state["messages"], tools=schemas)
+    agent_cfg = {"model_key": state.get("model_key"), "fallback_models": state.get("fallback_models") or []}
+    ctx = {"user_id": state["user_id"], "agent_id": state["agent_id"]}
+    msg = await llm.chat(state["messages"], tools=schemas, agent=agent_cfg, ctx=ctx)
     return {"messages": [msg], "step": state["step"] + 1}
 
 
@@ -99,7 +103,8 @@ GRAPH = _build()
 
 def _init(user_id: str, agent: dict, messages: list, step: int = 0) -> AgentState:
     return {"messages": messages, "user_id": user_id, "agent_id": agent.get("id", "primary"),
-            "allowed_tools": agent.get("tools", registry.all_names()), "step": step, "awaiting": None}
+            "allowed_tools": agent.get("tools", registry.all_names()), "step": step, "awaiting": None,
+            "model_key": agent.get("model_key"), "fallback_models": agent.get("fallback_models") or []}
 
 
 def _result(state: dict) -> dict:
