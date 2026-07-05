@@ -96,27 +96,37 @@ async def get_or_create_user(s: AsyncSession, *, supabase_uid: str, email: str,
     Note: the primary-agent seed lives in Phase B onboarding; this only ensures
     the User + its Organization exist so identity resolves on first login.
     """
+    from sqlalchemy.dialects.postgresql import insert as _pg_insert
     existing = (await s.execute(
         select(M.User).where(M.User.supabase_uid == supabase_uid))).scalar_one_or_none()
     if existing:
         return existing
     org = await get_org_by_slug(s, org_slug)
     if org is None:
-        org = M.Organization(name=org_slug.title(), slug=org_slug)
-        s.add(org)
+        # ON CONFLICT so two concurrent first-logins don't both create the org.
+        await s.execute(_pg_insert(M.Organization.__table__)
+                        .values(name=org_slug.title(), slug=org_slug)
+                        .on_conflict_do_nothing(index_elements=["slug"]))
         await s.flush()
-    user = M.User(org_id=org.id, supabase_uid=supabase_uid, email=email,
-                  full_name=full_name, role=role)
-    s.add(user)
+        org = await get_org_by_slug(s, org_slug)
+    # ON CONFLICT (supabase_uid) so a concurrent first-login is a no-op, not a 503:
+    # the loser re-selects the winner's row instead of hitting a unique violation.
+    await s.execute(_pg_insert(M.User.__table__).values(
+        org_id=org.id, supabase_uid=supabase_uid, email=email, full_name=full_name, role=role)
+        .on_conflict_do_nothing(index_elements=["supabase_uid"]))
     await s.flush()
-    return user
+    return (await s.execute(
+        select(M.User).where(M.User.supabase_uid == supabase_uid))).scalar_one()
 
 
 # ── Agents + permissions ──────────────────────────────────────────────────────
 async def get_primary_agent(s: AsyncSession, user_id: uuid.UUID) -> Optional[M.Agent]:
+    # .first() (oldest) rather than scalar_one_or_none so a stray duplicate primary
+    # (e.g. a pre-index race) self-heals to one row instead of raising forever.
     return (await s.execute(
         select(M.Agent).where(M.Agent.user_id == user_id, M.Agent.kind == "primary",
-                              M.Agent.deleted_at.is_(None)))).scalar_one_or_none()
+                              M.Agent.deleted_at.is_(None))
+        .order_by(M.Agent.created_at.asc()).limit(1))).scalars().first()
 
 
 async def get_agent(s: AsyncSession, agent_id: uuid.UUID) -> Optional[M.Agent]:

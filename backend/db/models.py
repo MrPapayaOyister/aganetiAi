@@ -13,7 +13,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import (BigInteger, Boolean, DateTime, ForeignKey, Integer, Text,
+from sqlalchemy import (BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, Text,
                         UniqueConstraint, text)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -110,6 +110,12 @@ class Agent(Base, TS):
     status: Mapped[str] = mapped_column(Text, server_default=text("'active'"))  # active|paused|archived
     config: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
     department_id = fk("departments.id", ondelete="SET NULL", nullable=True)
+    # One active primary agent per user (partial unique index) — backstops the
+    # onboarding/create-agent read-then-create race at the DB layer.
+    __table_args__ = (
+        Index("uq_one_primary_per_user", "user_id", unique=True,
+              postgresql_where=text("kind = 'primary' AND deleted_at IS NULL")),
+    )
 
 
 class AgentPermission(Base, TS):

@@ -120,6 +120,14 @@ class AuthEnforceMiddleware:
         # ── normalize identity so handlers cannot be tricked by a supplied user_id ──
         scope = dict(scope)
 
+        # Authoritative, non-forgeable identity: strip any client-supplied copy of the
+        # trusted header and inject the resolved effective_user. Handlers read identity
+        # ONLY from this header (never body/query/X-Internal-User), so a caller can
+        # never act as another user or default to the seeded admin.
+        _hdrs = [(k, v) for k, v in scope.get("headers", []) if k != b"x-auth-user"]
+        _hdrs.append((b"x-auth-user", (effective_user or "").encode("latin-1")))
+        scope["headers"] = _hdrs
+
         # query string
         qs = scope.get("query_string", b"").decode("latin-1")
         if qs and "user_id=" in qs:

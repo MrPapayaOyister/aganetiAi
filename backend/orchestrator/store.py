@@ -106,12 +106,21 @@ async def _sq_list(user_id: str, status: str) -> list[dict]:
     return await asyncio.to_thread(_r)
 
 
-async def _sq_decide(aid: str, status: str, result: str | None) -> None:
+async def _sq_decide(aid: str, status: str, result: str | None) -> bool:
+    def _w() -> bool:
+        _init()
+        with _c() as c:
+            cur = c.execute("UPDATE agent_approvals SET status=?, result=COALESCE(?,result), decided_at=? "
+                            "WHERE id=? AND status='pending'", (status, result, _now(), aid))
+            return cur.rowcount > 0
+    return await asyncio.to_thread(_w)
+
+
+async def _sq_set_result(aid: str, result: str | None) -> None:
     def _w():
         _init()
         with _c() as c:
-            c.execute("UPDATE agent_approvals SET status=?, result=COALESCE(?,result), decided_at=? WHERE id=?",
-                      (status, result, _now(), aid))
+            c.execute("UPDATE agent_approvals SET result=? WHERE id=?", (result, aid))
     await asyncio.to_thread(_w)
 
 
@@ -179,7 +188,8 @@ async def _pg_list(identity: str, status: str) -> list[dict]:
                  "decided_at": r.decided_at.isoformat() if r.decided_at else None} for r in rows]
 
 
-async def _pg_decide(aid: str, status: str, result: str | None) -> None:
+async def _pg_decide(aid: str, status: str, result: str | None) -> bool:
+    """Compare-and-swap pending->decided. Returns True iff THIS call won the race."""
     from sqlalchemy import update
     from sqlalchemy import func as sqlfunc
     from backend.db.base import SessionLocal
@@ -189,8 +199,23 @@ async def _pg_decide(aid: str, status: str, result: str | None) -> None:
     except (ValueError, TypeError):
         return await _sq_decide(aid, status, result)
     async with SessionLocal() as s:
-        await s.execute(update(M.Approval).where(M.Approval.id == key)
-                        .values(status=status, result=result, decided_at=sqlfunc.now()))
+        r = await s.execute(update(M.Approval)
+                            .where(M.Approval.id == key, M.Approval.status == "pending")
+                            .values(status=status, result=result, decided_at=sqlfunc.now()))
+        await s.commit()
+        return (r.rowcount or 0) > 0
+
+
+async def _pg_set_result(aid: str, result: str | None) -> None:
+    from sqlalchemy import update
+    from backend.db.base import SessionLocal
+    from backend.db import models as M
+    try:
+        key = uuid.UUID(str(aid))
+    except (ValueError, TypeError):
+        return await _sq_set_result(aid, result)
+    async with SessionLocal() as s:
+        await s.execute(update(M.Approval).where(M.Approval.id == key).values(result=result))
         await s.commit()
 
 
@@ -213,7 +238,14 @@ async def list_approvals(user_id: str, status: str = "pending") -> list[dict]:
     return await _sq_list(user_id, status)
 
 
-async def decide(aid: str, status: str, result: str | None = None) -> None:
+async def decide(aid: str, status: str, result: str | None = None) -> bool:
+    """Atomically transition pending->status. Returns True iff this call won."""
     if BACKEND == "postgres":
         return await _pg_decide(aid, status, result)
     return await _sq_decide(aid, status, result)
+
+
+async def set_result(aid: str, result: str | None) -> None:
+    if BACKEND == "postgres":
+        return await _pg_set_result(aid, result)
+    return await _sq_set_result(aid, result)

@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from backend.orchestrator import graph, registry, store
@@ -35,11 +35,14 @@ PRIMARY_PROMPT = templates.PRIMARY_PROMPT
 DEFAULT_PRIMARY = {"id": "primary", "tools": list(templates.PRIMARY_TOOLS)}
 
 
-def _uid(request: Request, body: dict | None = None) -> str:
-    return ((body or {}).get("user_id")
-            or request.query_params.get("user_id")
-            or request.headers.get("X-Internal-User")
-            or "user_1")
+def _uid(request: Request) -> str:
+    """The caller's identity — read ONLY from the trusted header the auth
+    middleware injects (X-Auth-User). Client-supplied user_id/body/headers are
+    NEVER trusted, and there is no admin default: a missing identity fails closed."""
+    u = request.headers.get("x-auth-user")
+    if not u:
+        raise HTTPException(status_code=401, detail="unauthenticated")
+    return u
 
 
 async def _load_primary(user_id: str) -> tuple[dict, str]:
@@ -58,7 +61,10 @@ async def _load_primary(user_id: str) -> tuple[dict, str]:
                 if ag:
                     perms = await repo.allowed_tools(s, ag.id)
                     known = set(registry.all_names())
-                    tools = [t for t in perms if t in known] or list(templates.PRIMARY_TOOLS)
+                    # An empty list is a DELIBERATE lockdown (user revoked all tools) —
+                    # honor it verbatim; never re-inject the default toolset for an
+                    # agent that exists (the no-agent fallback is the outer path).
+                    tools = [t for t in perms if t in known]
                     agent = {"id": "primary", "tools": tools,
                              "model_key": ag.model_key, "fallback_models": ag.fallback_models or []}
                     prompt = ag.system_prompt or PRIMARY_PROMPT
@@ -95,8 +101,8 @@ async def _sse(user_id: str, message: str, session_id: str):
 
 @router.post("/chat")
 async def agent_chat(request: Request):
+    user_id = _uid(request)
     body = await request.json()
-    user_id = _uid(request, body)
     message = body.get("message", "")
     session_id = body.get("session_id", "sess")
     return StreamingResponse(_sse(user_id, message, session_id), media_type="text/event-stream")
@@ -107,18 +113,35 @@ async def list_approvals(request: Request, status: str = "pending"):
     return {"approvals": await store.list_approvals(_uid(request), status)}
 
 
-async def _resume(aid: str, approved: bool):
+async def _resume(request: Request, aid: str, approved: bool):
+    caller = _uid(request)
     rec = await store.get_approval(aid)
     if not rec:
         return JSONResponse({"error": "not found"}, status_code=404)
+    # OWNERSHIP: the caller must own this approval. Resolve both sides to the
+    # internal User and compare — a non-owner cannot see or trip another user's gate.
+    from backend.db.base import SessionLocal
+    from backend.db import repo
+    async with SessionLocal() as s:
+        cu = await repo.resolve_user(s, caller)
+        ou = await repo.resolve_user(s, rec["user_id"])
+    if not cu or not ou or cu.id != ou.id:
+        return JSONResponse({"error": "not found"}, status_code=404)  # don't leak existence
     if rec["status"] != "pending":
         return JSONResponse({"error": f"already {rec['status']}"}, status_code=409)
+    status = "approved" if approved else "rejected"
+    # ATOMIC CLAIM (compare-and-swap pending->decided) BEFORE executing. Only the
+    # winner proceeds, so the outbound tool runs EXACTLY once under a double-click /
+    # concurrent approve+reject race — preserving the single-execution guarantee.
+    won = await store.decide(aid, status)
+    if not won:
+        return JSONResponse({"error": "already decided"}, status_code=409)
     agent = json.loads(rec["agent"])
     messages = json.loads(rec["messages"])
     approval = json.loads(rec["approval"])
     res = await graph.resume(user_id=rec["user_id"], agent=agent, messages=messages,
                              approval=approval, approved=approved)
-    await store.decide(aid, "approved" if approved else "rejected", result=res.get("final") or "")
+    await store.set_result(aid, res.get("final") or "")
     if res["status"] == "awaiting_approval":
         new_aid = await store.create_approval(rec["user_id"], agent, res["messages"], res["approval"])
         return {"status": "awaiting_approval", "approval_id": new_aid, "approval": res["approval"]}
@@ -126,13 +149,13 @@ async def _resume(aid: str, approved: bool):
 
 
 @router.post("/approvals/{aid}/approve")
-async def approve(aid: str):
-    return await _resume(aid, approved=True)
+async def approve(request: Request, aid: str):
+    return await _resume(request, aid, approved=True)
 
 
 @router.post("/approvals/{aid}/reject")
-async def reject(aid: str):
-    return await _resume(aid, approved=False)
+async def reject(request: Request, aid: str):
+    return await _resume(request, aid, approved=False)
 
 
 @router.get("/tools")
@@ -217,15 +240,22 @@ async def create_agent(request: Request):
         tools = body.get("tools") or (tmpl["tools"] if tmpl else [])
         if kind == "primary" and await repo.get_primary_agent(s, user.id):
             return JSONResponse({"error": "primary agent already exists"}, status_code=409)
-        ag = await repo.create_agent(s, org_id=user.org_id, user_id=user.id, kind=kind, name=name,
-                                     system_prompt=prompt, template_key=tkey,
-                                     model_key=body.get("model_key"), config={"tools": tools})
-        known = set(registry.all_names())
-        await repo.set_permissions(s, org_id=user.org_id, agent_id=ag.id,
-                                   permissions=[t for t in tools if t in known], granted_by=user.id)
-        if kind == "primary":
-            user.primary_agent_id = ag.id
-        await s.commit()
+        from sqlalchemy.exc import IntegrityError
+        try:
+            ag = await repo.create_agent(s, org_id=user.org_id, user_id=user.id, kind=kind, name=name,
+                                         system_prompt=prompt, template_key=tkey,
+                                         model_key=body.get("model_key"), config={"tools": tools})
+            known = set(registry.all_names())
+            await repo.set_permissions(s, org_id=user.org_id, agent_id=ag.id,
+                                       permissions=[t for t in tools if t in known], granted_by=user.id)
+            if kind == "primary":
+                user.primary_agent_id = ag.id
+            await s.commit()
+        except IntegrityError:
+            # Concurrent create raced us past the pre-check; the DB partial-unique
+            # index (one primary per user) rejected the duplicate.
+            await s.rollback()
+            return JSONResponse({"error": "primary agent already exists"}, status_code=409)
         return _agent_json(ag, await repo.list_permissions(s, ag.id))
 
 

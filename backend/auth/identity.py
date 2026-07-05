@@ -42,6 +42,19 @@ def _email_allowed(email: str) -> bool:
     return dom in ALLOWED_DOMAINS
 
 
+def _is_disabled_config_sub(supabase_uid: str) -> bool:
+    """A sub an operator explicitly disabled in config.users (enabled=False) must
+    never be auto-provisioned by the domain allowlist — the disable is authoritative."""
+    try:
+        from config.users import USERS
+        for u in USERS.values():
+            if u.get("supabase_uid") == supabase_uid and not u.get("enabled", True):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 async def resolve_or_provision(supabase_uid: str, email: str = "",
                                full_name: str | None = None) -> dict:
     """Return {uid, org_id, supabase_uid, email} or raise NotAuthorized."""
@@ -58,7 +71,14 @@ async def resolve_or_provision(supabase_uid: str, email: str = "",
     async with SessionLocal() as s:
         user = await repo.resolve_user(s, supabase_uid)
 
-    if user is None:
+    if user is not None:
+        # An existing user whose login was revoked (status != active) is refused.
+        if (getattr(user, "status", "active") or "active") != "active":
+            raise NotAuthorized(f"user {user.id} is not active")
+    else:
+        # New sub: never resurrect an operator-disabled config user, then gate on domain.
+        if _is_disabled_config_sub(supabase_uid):
+            raise NotAuthorized("login disabled for this user")
         if not _email_allowed(email):
             raise NotAuthorized(f"{email or supabase_uid} not permitted")
         from backend import onboarding
