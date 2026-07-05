@@ -1,14 +1,22 @@
 """Enterprise Agentic OS — agent orchestrator.
 
-Real LangGraph tool-calling executor + typed tool registry + async LLM client.
-Public entrypoint: `run()` (one user turn to completion). Streaming + delegation
-+ approval-interrupt + Postgres checkpointer build on top of this core.
+Real LangGraph tool-calling executor with:
+  - dynamic tool-calling (agent ⇄ tools cyclic loop),
+  - delegation-as-a-tool (primary → specialist nested runs — the mesh),
+  - a hard OUTBOUND approval gate (pause → approve/reject → resume),
+  - streaming (SSE) for the chat UI.
+
+Importing this package registers all v1 tools + the delegate tool.
+Public entrypoints: run_turn(), resume(), astream_turn().
 """
-from . import llm, registry, graph
-from .graph import run, GRAPH, AgentState
+from . import llm, registry, graph, agents  # noqa: F401  (agents registers `delegate`)
+from .graph import run_turn, resume, astream_turn, GRAPH, AgentState
 from .registry import Tool, register, get, openai_schemas, ApprovalRequired
+from .agents import SPECIALISTS, specialist_names
 
 __all__ = [
-    "llm", "registry", "graph", "run", "GRAPH", "AgentState",
+    "llm", "registry", "graph", "agents",
+    "run_turn", "resume", "astream_turn", "GRAPH", "AgentState",
     "Tool", "register", "get", "openai_schemas", "ApprovalRequired",
+    "SPECIALISTS", "specialist_names",
 ]
