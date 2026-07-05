@@ -15,10 +15,34 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional, Sequence
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import models as M
+
+
+def _alias_to_supabase_uid(alias: str) -> str | None:
+    """Legacy config alias ('user_1') → its configured supabase_uid, if any.
+
+    Bridges the old static config.users identity onto the new DB identity so a
+    request the auth middleware normalised to 'user_1' still resolves to the real
+    User row (and its approvals/tasks land in Postgres, not the SQLite fallback).
+    """
+    try:
+        from config.users import USERS
+        return (USERS.get(alias) or {}).get("supabase_uid") or None
+    except Exception:
+        return None
+
+
+def _tool_is_outbound(name: str) -> bool:
+    """Registry is the authority for whether a tool is approval-gated."""
+    try:
+        from backend.orchestrator import registry
+        t = registry.get(name)
+        return bool(t and t.is_outbound)
+    except Exception:
+        return False
 
 # ── Identity ──────────────────────────────────────────────────────────────────
 # The single tenant's slug. Multi-tenant later resolves org from the user row /
@@ -53,6 +77,12 @@ async def resolve_user(s: AsyncSession, identity: str) -> Optional[M.User]:
     # Email fallback
     if "@" in identity:
         row = (await s.execute(select(M.User).where(M.User.email == identity))).scalar_one_or_none()
+        if row:
+            return row
+    # Legacy config alias ("user_1") → configured supabase_uid → user
+    mapped = _alias_to_supabase_uid(identity)
+    if mapped and mapped != identity:
+        row = (await s.execute(select(M.User).where(M.User.supabase_uid == mapped))).scalar_one_or_none()
         if row:
             return row
     return None
@@ -137,6 +167,46 @@ async def grant_permission(s: AsyncSession, *, org_id: uuid.UUID, agent_id: uuid
     s.add(perm)
     await s.flush()
     return perm
+
+
+# Agent fields a user/admin is allowed to edit (id/org/user/kind are immutable here).
+_EDITABLE_AGENT_FIELDS = {"name", "persona", "system_prompt", "model_key", "fallback_models",
+                          "status", "config", "template_key"}
+
+
+async def update_agent(s: AsyncSession, agent_id: uuid.UUID, **fields) -> None:
+    vals = {k: v for k, v in fields.items() if k in _EDITABLE_AGENT_FIELDS and v is not None}
+    if vals:
+        await s.execute(update(M.Agent).where(M.Agent.id == agent_id).values(**vals))
+
+
+async def soft_delete_agent(s: AsyncSession, agent_id: uuid.UUID) -> None:
+    await s.execute(update(M.Agent).where(M.Agent.id == agent_id)
+                    .values(status="archived", deleted_at=func.now()))
+
+
+async def set_permissions(s: AsyncSession, *, org_id: uuid.UUID, agent_id: uuid.UUID,
+                          permissions: list[str], granted_by: uuid.UUID | None = None) -> None:
+    """Declaratively set an agent's tool allow-list: grant the missing, revoke the extra.
+
+    Outbound flags are derived from the registry (the executor's authority), so a
+    customization UI can never mark an inherently-outbound tool as non-approval-gated.
+    """
+    existing = {p.permission for p in await list_permissions(s, agent_id)}
+    want = set(permissions)
+    for perm in sorted(want - existing):
+        s.add(M.AgentPermission(org_id=org_id, agent_id=agent_id, permission=perm,
+                                is_outbound=_tool_is_outbound(perm), granted_by=granted_by))
+    extra = existing - want
+    if extra:
+        await s.execute(delete(M.AgentPermission).where(
+            M.AgentPermission.agent_id == agent_id, M.AgentPermission.permission.in_(extra)))
+    await s.flush()
+
+
+async def revoke_permission(s: AsyncSession, agent_id: uuid.UUID, permission: str) -> None:
+    await s.execute(delete(M.AgentPermission).where(
+        M.AgentPermission.agent_id == agent_id, M.AgentPermission.permission == permission))
 
 
 # ── Tasks ─────────────────────────────────────────────────────────────────────

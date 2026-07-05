@@ -100,8 +100,22 @@ class AuthEnforceMiddleware:
             caller_sub = str(claims.get("sub", ""))
             effective_user = internal_user_for_sub(caller_sub)
             if not effective_user:
-                log.warning("authenticated sub not authorized: %s (%s %s)", caller_sub, method, path)
-                return await JSONResponse({"detail": "user not authorized"}, status_code=403)(scope, receive, send)
+                # New/multi-user path (Phase B): authorize by allowed email domain and
+                # auto-provision on first login, then normalize identity to the stable
+                # Supabase sub (resolve_user-compatible → approvals/tasks key to the DB
+                # User). Config-registry users never reach here (short-circuited above).
+                from backend.auth import identity as _identity
+                email = str(claims.get("email", ""))
+                name = (claims.get("user_metadata") or {}).get("full_name") or claims.get("name")
+                try:
+                    await _identity.resolve_or_provision(caller_sub, email, name)
+                    effective_user = caller_sub
+                except _identity.NotAuthorized:
+                    log.warning("authenticated sub not authorized: %s (%s %s)", caller_sub, method, path)
+                    return await JSONResponse({"detail": "user not authorized"}, status_code=403)(scope, receive, send)
+                except Exception:  # noqa: BLE001
+                    log.exception("first-login provisioning failed for sub=%s", caller_sub)
+                    return await JSONResponse({"detail": "onboarding failed"}, status_code=503)(scope, receive, send)
 
         # ── normalize identity so handlers cannot be tricked by a supplied user_id ──
         scope = dict(scope)
