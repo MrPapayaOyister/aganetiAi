@@ -35,3 +35,8 @@ memory/*.json
 memory/collections/
 memory/aliases/
 memory/raft_state.json
+
+# runtime / sensitive — never commit
+*.bak
+data_vault/*.json
+memory/*/
