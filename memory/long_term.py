@@ -13,6 +13,15 @@ from qdrant_client.models import (
 QDRANT_URL = "http://localhost:6333"
 COLLECTION_PREFIX = "user_memory_"
 
+
+def _require_uid(user_id) -> str:
+    """A blank user_id would silently build `user_memory_`/`user_memory_None` and
+    cross-contaminate every user's memory. Refuse it for writes."""
+    uid = str(user_id).strip() if user_id is not None else ""
+    if not uid:
+        raise ValueError("memory: a non-blank user_id is required")
+    return uid
+
 # Embeddings are unified on the SAME fastembed model the corporate RAG uses
 # (BAAI/bge-small-en-v1.5, 384-dim). Previously memory used the llama.cpp embeddings
 # endpoint, whose dimension changed with the loaded model (3584 on a 7B, 5120 on the
@@ -38,6 +47,7 @@ def get_vector_size() -> int:
     return _VECTOR_SIZE
 
 def ensure_collection(user_id: str):
+    user_id = _require_uid(user_id)
     collection_name = f"{COLLECTION_PREFIX}{user_id}"
     try:
         client = QdrantClient(url=QDRANT_URL)
@@ -90,18 +100,14 @@ Summary:
                 pass
             if not parsed_facts:
                 parsed_facts = re.findall(r'"([^"]+)"', reply_text)
-            processed_facts = []
-            for fact in parsed_facts:
-                if "Ahmed" in summary_text and "Deadline is" in fact and "Ahmed" not in fact:
-                    fact = fact.replace("Deadline is", "Ahmed's deadline is")
-                processed_facts.append(fact)
-            return processed_facts
+            return list(parsed_facts)
     except Exception as e:
         print(f"Error extracting facts: {e}")
     return []
 
 def upsert_facts(facts: list[str], user_id: str, source_timestamp: str):
     try:
+        user_id = _require_uid(user_id)
         ensure_collection(user_id)
         points = []
         for fact in facts:
@@ -161,6 +167,8 @@ def format_timestamp_for_search(ts_str: str) -> str:
         return ts_str
 
 def search_memory(user_id: str, query: str, top_k: int = 3) -> str:
+    if not user_id or not str(user_id).strip():
+        return ""  # never search a blank/None collection
     vector = embed_text(query)
     if vector is None:
         return ""
