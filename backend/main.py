@@ -708,6 +708,10 @@ app = FastAPI(title="Collaborative AI Enterprise OS", lifespan=lifespan)
 from backend.routes.provider_auth import router as provider_router
 app.include_router(provider_router, tags=["provider-auth"])
 
+# Enterprise Agentic OS — real LangGraph executor surface (chat SSE + approvals)
+from backend.routes.agent_os import router as agent_os_router
+app.include_router(agent_os_router)
+
 # ── Global authentication enforcement (Phase 0 security) ───────────────────────
 # Every route now requires either a valid Supabase JWT (sub mapped to an enabled
 # internal user) or the internal service token. Added BEFORE the trace middleware
@@ -741,20 +745,45 @@ def _not_connected_payload(user_id: str, extra: dict | None = None) -> dict:
         base.update(extra)
     return base
 
-@app.middleware("http")
-async def _trace_middleware(request, call_next):
-    tid = request.headers.get("x-trace-id") or _uuid.uuid4().hex[:8]
-    set_trace_id(tid)
-    start = time.time()
-    try:
-        response = await call_next(request)
-    except Exception:
-        log.exception(f"{request.method} {request.url.path} raised")
-        raise
-    log.info(f"{request.method} {request.url.path} -> {response.status_code} "
-             f"({(time.time()-start)*1000:.0f}ms)")
-    response.headers["x-trace-id"] = tid
-    return response
+class _TraceASGIMiddleware:
+    # Pure ASGI (NOT BaseHTTPMiddleware): a BaseHTTPMiddleware wrapping a
+    # StreamingResponse/SSE buffers the body and raises "No response returned",
+    # which broke /agent/chat token streaming. Pure ASGI forwards send() directly.
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            return await self.app(scope, receive, send)
+        tid = None
+        for k, v in scope.get("headers", []):
+            if k == b"x-trace-id":
+                tid = v.decode("latin1")
+                break
+        tid = tid or _uuid.uuid4().hex[:8]
+        set_trace_id(tid)
+        start = time.time()
+        holder = {"status": 0}
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                holder["status"] = message["status"]
+                headers = list(message.get("headers", []))
+                headers.append((b"x-trace-id", tid.encode("latin1")))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_wrapper)
+        except Exception:
+            log.exception(f"{scope.get('method')} {scope.get('path')} raised")
+            raise
+        finally:
+            log.info(f"{scope.get('method')} {scope.get('path')} -> {holder['status']} "
+                     f"({(time.time() - start) * 1000:.0f}ms)")
+
+
+app.add_middleware(_TraceASGIMiddleware)
 
 @app.exception_handler(Exception)
 async def _unhandled_exception_handler(request, exc):

@@ -153,7 +153,10 @@ class AuthEnforceMiddleware:
                 if not _consumed:
                     _consumed = True
                     return {"type": "http.request", "body": new_body, "more_body": False}
-                return {"type": "http.disconnect"}
+                # Delegate to the real receive so a StreamingResponse's disconnect
+                # watcher blocks on a GENUINE client disconnect. Returning a fabricated
+                # http.disconnect here made Starlette abort every SSE stream instantly.
+                return await receive()
 
             return await self.app(scope, _receive, send)
 
