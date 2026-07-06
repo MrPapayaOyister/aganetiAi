@@ -252,6 +252,75 @@ async def _predict_relationship_value(ctx, person: str) -> str:
     ])
 
 
+# ── Deals / opportunities (predict_deal_outcome — the "profit of a deal") ─────
+async def _create_opportunity(ctx, title: str, value_amount: int = 0, counterparty: str = "",
+                              stage: str = "prospect", probability: int = 50,
+                              expected_close: str = "", notes: str = "") -> str:
+    from backend.db.base import SessionLocal
+    from backend.db import repo
+    ec = None
+    if expected_close:
+        try:
+            ec = datetime.fromisoformat(expected_close)
+        except ValueError:
+            ec = None
+    async with SessionLocal() as s:
+        user = await repo.resolve_user(s, ctx["user_id"])
+        if not user:
+            return "Couldn't identify the user to record this deal."
+        op = await repo.create_opportunity(s, org_id=user.org_id, user_id=user.id, title=title,
+                                           value_amount=int(value_amount or 0), counterparty=counterparty or None,
+                                           stage=stage, probability=int(probability or 50),
+                                           expected_close=ec, notes=notes or None)
+        await s.commit()
+        return (f"Deal tracked: '{title}'" + (f" with {counterparty}" if counterparty else "")
+                + f" — value {op.currency} {op.value_amount:,}, stage {op.stage}, base probability {op.probability}%.")
+
+
+async def _list_opportunities(ctx) -> str:
+    from backend.db.base import SessionLocal
+    from backend.db import repo
+    async with SessionLocal() as s:
+        user = await repo.resolve_user(s, ctx["user_id"])
+        ops = await repo.list_opportunities(s, user.id) if user else []
+    if not ops:
+        return "No open deals tracked yet. Add one with create_opportunity (title + value)."
+    return "Open deals:\n" + "\n".join(
+        f"- {o.title} ({o.counterparty or '—'}): {o.currency} {o.value_amount:,}, {o.stage}, {o.probability}%" for o in ops)
+
+
+async def _predict_deal_outcome(ctx, deal: str) -> str:
+    from backend.db.base import SessionLocal
+    from backend.db import repo
+    async with SessionLocal() as s:
+        user = await repo.resolve_user(s, ctx["user_id"])
+        op = await repo.find_opportunity(s, user.id, deal) if user else None
+    if not op:
+        return (f"No deal matching '{deal}' is on file. I don't forecast a profit without a real deal value — "
+                "add it first with create_opportunity (title, value, counterparty, stage).")
+    stage_factor = {"prospect": 0.40, "qualified": 0.60, "proposal": 0.75,
+                    "negotiation": 0.90, "won": 1.0, "lost": 0.0}.get(op.stage, 0.5)
+    base_p = max(0, min(100, op.probability)) / 100.0
+    p = round(base_p * 0.6 + stage_factor * 0.4, 2)          # blend manual estimate with stage
+    expected = int(op.value_amount * p)
+    days = (op.expected_close - datetime.now(timezone.utc)).days if op.expected_close else None
+    conf = "LOW" if op.value_amount == 0 else ("MEDIUM" if op.stage in ("prospect", "qualified") else "HIGH")
+    return "\n".join([
+        f"DEAL FORECAST — '{op.title}'{(' with ' + op.counterparty) if op.counterparty else ''} "
+        "(computed from the real deal record):",
+        f"- deal value on file: {op.currency} {op.value_amount:,}",
+        f"- stage: {op.stage} (stage-based win likelihood {int(stage_factor * 100)}%)",
+        f"- your recorded probability: {op.probability}%",
+        f"- BLENDED WIN PROBABILITY: {int(p * 100)}%",
+        f"- EXPECTED VALUE = value × probability = {op.currency} {expected:,}",
+        f"- expected close: {op.expected_close.date().isoformat() if op.expected_close else 'not set'}"
+        + (f" ({days} days out)" if days is not None else ""),
+        f"- CONFIDENCE: {conf}",
+        "INSTRUCTION: State the EXPECTED VALUE and win probability, the main risk (stage/timeline), and one "
+        "concrete next action to improve the odds. Use ONLY these figures — never invent numbers.",
+    ])
+
+
 # ── Registration ──────────────────────────────────────────────────────────────
 _obj = lambda props, req=None: {"type": "object", "properties": props, **({"required": req} if req else {})}  # noqa: E731
 
@@ -259,7 +328,8 @@ register(Tool("read_email", "Read the full body of a specific email by its id (g
               _obj({"message_id": {"type": "string"}}, ["message_id"]), _read_email, "email.read"))
 register(Tool("email_digest", "Summarize the user's inbox — a digest of recent/important emails.",
               _obj({}), _email_digest, "email.read"))
-register(Tool("create_task", "Create a to-do/task for the user.",
+register(Tool("create_task", "Create a personal TO-DO / action item for the user (e.g. 'call Sam', "
+              "'finish the slides'). NOT for sales deals — to track a deal/opportunity use create_opportunity.",
               _obj({"title": {"type": "string"}, "priority": {"type": "string", "enum": ["low", "medium", "high", "urgent"]},
                     "due_date": {"type": "string", "description": "YYYY-MM-DD, optional"}}, ["title"]),
               _create_task, "tasks.write"))
@@ -287,3 +357,20 @@ register(Tool("predict_relationship_value",
               "Estimate the POSSIBLE BENEFIT/value of investing in a relationship with a person, from real "
               "contact + email-interaction + memory signals. Use for 'is it worth connecting with X', 'value of X'.",
               _obj({"person": {"type": "string"}}, ["person"]), _predict_relationship_value, "predictions.read"))
+register(Tool("create_opportunity",
+              "Track a SALES DEAL / business opportunity so its profit can be forecast (this is a DEAL, "
+              "NOT a to-do task). Use whenever the user mentions 'a deal', 'an opportunity', a contract "
+              "value, or a prospect. Needs a title + value; optionally counterparty, stage, probability "
+              "(0-100), expected_close (YYYY-MM-DD).",
+              _obj({"title": {"type": "string"}, "value_amount": {"type": "integer"},
+                    "counterparty": {"type": "string"},
+                    "stage": {"type": "string", "enum": ["prospect", "qualified", "proposal", "negotiation", "won", "lost"]},
+                    "probability": {"type": "integer"}, "expected_close": {"type": "string"},
+                    "notes": {"type": "string"}}, ["title"]), _create_opportunity, "deals.write"))
+register(Tool("list_opportunities", "List the user's tracked deals/opportunities.",
+              _obj({}), _list_opportunities, "deals.read"))
+register(Tool("predict_deal_outcome",
+              "Forecast the likely outcome + EXPECTED VALUE (profit) of committing to a tracked deal, from its "
+              "real value/stage/probability. Use for 'is this deal worth it', 'profit of the X deal', 'will we win X'.",
+              _obj({"deal": {"type": "string", "description": "the deal title or counterparty to forecast"}}, ["deal"]),
+              _predict_deal_outcome, "predictions.read"))

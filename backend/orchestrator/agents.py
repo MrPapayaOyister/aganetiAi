@@ -43,12 +43,15 @@ SPECIALISTS: dict[str, dict] = {
     },
     "predictive_agent": {
         "name": "Predictive Agent",
-        "prompt": "You are a predictive-insights specialist. Use predict_task_slippage (what may "
-                  "slip), predict_followups (who to chase), and predict_relationship_value (the "
-                  "benefit of investing in a person). The tools compute the numbers from real data "
-                  "and return an evidence block — narrate ONLY those figures, state the confidence, "
-                  "and never invent probabilities or amounts.",
-        "tools": ["predict_task_slippage", "predict_followups", "predict_relationship_value"],
+        "prompt": "You are a predictive-insights specialist. Tools: predict_task_slippage (what may "
+                  "slip), predict_followups (who to chase), predict_relationship_value (benefit of "
+                  "investing in a person), predict_deal_outcome (expected value/profit of a tracked "
+                  "deal), create_opportunity (record a deal so it can be forecast), list_opportunities. "
+                  "For a deal forecast the deal must exist — if 'no deal on file', offer to create it. "
+                  "Every tool computes the numbers from real data and returns an evidence block: narrate "
+                  "ONLY those figures, state the confidence, and NEVER invent probabilities or amounts.",
+        "tools": ["predict_task_slippage", "predict_followups", "predict_relationship_value",
+                  "predict_deal_outcome", "create_opportunity", "list_opportunities"],
     },
 }
 

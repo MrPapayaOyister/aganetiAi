@@ -312,3 +312,52 @@ async def log_event(s: AsyncSession, *, kind: str, name: str | None = None,
     s.add(M.Event(kind=kind, name=name, org_id=org_id, user_id=user_id, agent_id=agent_id,
                   run_id=run_id, success=success, duration_ms=duration_ms, cost_micros=cost_micros,
                   meta=meta or {}))
+
+
+# ── Opportunities (deals) — grounding for predict_deal_outcome ─────────────────
+async def create_opportunity(s: AsyncSession, *, org_id: uuid.UUID, user_id: uuid.UUID, title: str,
+                             value_amount: int = 0, counterparty: str | None = None, currency: str = "USD",
+                             stage: str = "prospect", probability: int = 50,
+                             expected_close: datetime | None = None, notes: str | None = None) -> M.Opportunity:
+    op = M.Opportunity(org_id=org_id, user_id=user_id, title=title, value_amount=int(value_amount or 0),
+                       counterparty=counterparty, currency=currency, stage=stage,
+                       probability=int(probability or 50), expected_close=expected_close, notes=notes)
+    s.add(op)
+    await s.flush()
+    return op
+
+
+async def list_opportunities(s: AsyncSession, user_id: uuid.UUID, *, status: str = "open",
+                             limit: int = 50) -> Sequence[M.Opportunity]:
+    q = select(M.Opportunity).where(M.Opportunity.user_id == user_id, M.Opportunity.deleted_at.is_(None))
+    if status:
+        q = q.where(M.Opportunity.status == status)
+    return (await s.execute(q.order_by(M.Opportunity.value_amount.desc()).limit(limit))).scalars().all()
+
+
+async def find_opportunity(s: AsyncSession, user_id: uuid.UUID, title_like: str) -> Optional[M.Opportunity]:
+    q = (select(M.Opportunity).where(M.Opportunity.user_id == user_id, M.Opportunity.deleted_at.is_(None),
+                                     M.Opportunity.title.ilike(f"%{title_like}%"))
+         .order_by(M.Opportunity.created_at.desc()).limit(1))
+    return (await s.execute(q)).scalars().first()
+
+
+# ── Interactions — relationship signal (backfilled from Gmail/Calendar) ───────
+async def record_interaction(s: AsyncSession, *, org_id, user_id, contact_email, channel,
+                             ref_id, contact_name=None, direction=None, subject=None, ts=None) -> None:
+    from sqlalchemy.dialects.postgresql import insert as _pg
+    await s.execute(_pg(M.Interaction.__table__).values(
+        org_id=org_id, user_id=user_id, contact_email=(contact_email or "").lower(), contact_name=contact_name,
+        channel=channel, direction=direction, subject=subject, ref_id=ref_id, **({"ts": ts} if ts else {}))
+        .on_conflict_do_nothing(index_elements=["user_id", "channel", "ref_id"]))
+
+
+async def interaction_stats(s: AsyncSession, user_id: uuid.UUID, contact_email: str) -> dict:
+    rows = (await s.execute(select(M.Interaction).where(
+        M.Interaction.user_id == user_id,
+        M.Interaction.contact_email == (contact_email or "").lower()))).scalars().all()
+    if not rows:
+        return {"count": 0, "last": None, "inbound": 0, "outbound": 0}
+    return {"count": len(rows), "last": max((r.ts for r in rows if r.ts), default=None),
+            "inbound": sum(1 for r in rows if r.direction == "inbound"),
+            "outbound": sum(1 for r in rows if r.direction == "outbound")}

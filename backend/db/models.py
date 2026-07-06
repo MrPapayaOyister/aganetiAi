@@ -266,3 +266,40 @@ class Contact(Base, TS):
     role: Mapped[str | None] = mapped_column(Text)
     is_agent: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     notes: Mapped[str | None] = mapped_column(Text)
+
+
+# ── Predictive-intelligence signal tables ─────────────────────────────────────
+class Opportunity(Base, TS):
+    """A tracked deal/opportunity — the grounding row for predict_deal_outcome
+    (which refuses to forecast a profit without a real value on file)."""
+    __tablename__ = "opportunities"
+    id = pk()
+    org_id = fk("organizations.id", index=True)
+    user_id = fk("users.id", index=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    counterparty: Mapped[str | None] = mapped_column(Text)          # person / company
+    value_amount: Mapped[int] = mapped_column(BigInteger, server_default=text("0"))  # currency units
+    currency: Mapped[str] = mapped_column(Text, server_default=text("'USD'"))
+    stage: Mapped[str] = mapped_column(Text, server_default=text("'prospect'"))
+    # prospect|qualified|proposal|negotiation|won|lost
+    probability: Mapped[int] = mapped_column(Integer, server_default=text("50"))  # 0-100, manual/base
+    expected_close: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    notes: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text, server_default=text("'open'"))
+
+
+class Interaction(Base):
+    """One touch with a contact (email or meeting), backfilled from Gmail/Calendar.
+    Powers relationship-value trends (frequency, recency, direction)."""
+    __tablename__ = "interactions"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    org_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
+    contact_email: Mapped[str | None] = mapped_column(Text, index=True)
+    contact_name: Mapped[str | None] = mapped_column(Text)
+    channel: Mapped[str] = mapped_column(Text)              # email|meeting
+    direction: Mapped[str | None] = mapped_column(Text)     # inbound|outbound
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"), index=True)
+    subject: Mapped[str | None] = mapped_column(Text)
+    ref_id: Mapped[str | None] = mapped_column(Text)        # gmail msg id / calendar event id (idempotency)
+    __table_args__ = (UniqueConstraint("user_id", "channel", "ref_id", name="uq_interaction_ref"),)

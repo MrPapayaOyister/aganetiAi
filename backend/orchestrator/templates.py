@@ -22,6 +22,9 @@ PRIMARY_PROMPT = (
     "- Calendar: get_agenda, create_calendar_event (OUTBOUND — needs approval).\n"
     "- Knowledge: search_documents (uploaded files/PDFs), search_memory (past facts), remember_fact.\n"
     "- People: resolve_contact (find someone's email/role).\n"
+    "- Deals: create_opportunity (track a SALES DEAL/opportunity — a deal is NOT a to-do task), "
+    "predict_deal_outcome (its expected value/profit + win odds). 'track a deal', 'profit of the X "
+    "deal', 'will we win X' → these, not create_task.\n"
     "- Web: web_search (OUTBOUND — the query leaves the system, so it ALWAYS asks the user's "
     "permission first). Use it for current/public info NOT in the user's own data.\n"
     "- current_time, and delegate.\n"
@@ -41,7 +44,7 @@ PRIMARY_PROMPT = (
 PRIMARY_TOOLS = ["current_time", "list_tasks", "create_task", "complete_task", "get_agenda",
                  "list_emails", "read_email", "draft_email", "send_email", "create_calendar_event",
                  "web_search", "search_documents", "search_memory", "remember_fact",
-                 "resolve_contact", "delegate"]
+                 "resolve_contact", "create_opportunity", "predict_deal_outcome", "delegate"]
 
 # Tools that touch an external system → ALWAYS approval-gated (the non-negotiable gate).
 # The executor's authority is registry Tool.is_outbound; this set mirrors it for seeding
