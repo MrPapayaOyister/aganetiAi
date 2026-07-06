@@ -18,6 +18,14 @@ from datetime import date, datetime, timedelta, timezone
 from .registry import Tool, register
 
 
+def _ev(kind: str, user_id: str, name: str | None = None) -> None:
+    try:
+        from backend import events
+        events.log_event(kind, user_id=user_id, name=name)
+    except Exception:
+        pass
+
+
 # ── Email ─────────────────────────────────────────────────────────────────────
 async def _read_email(ctx, message_id: str) -> str:
     try:
@@ -56,6 +64,7 @@ async def _create_task(ctx, title: str, priority: str = "medium", due_date: str 
         await asyncio.to_thread(_c)
     except Exception as e:  # noqa: BLE001
         return f"Couldn't create the task ({e})."
+    _ev("task_created", ctx["user_id"], priority)
     return f"Task created: '{title}'" + (f", due {due_date}" if due_date else "") + f" [priority: {priority}]."
 
 
@@ -71,7 +80,10 @@ async def _complete_task(ctx, title: str) -> str:
         t = await asyncio.to_thread(_c)
     except Exception as e:  # noqa: BLE001
         return f"Couldn't complete the task ({e})."
-    return f"Marked done: '{t['title']}'." if t else f"No matching open task found for '{title}'."
+    if t:
+        _ev("task_completed", ctx["user_id"])
+        return f"Marked done: '{t['title']}'."
+    return f"No matching open task found for '{title}'."
 
 
 # ── Memory ────────────────────────────────────────────────────────────────────

@@ -95,14 +95,12 @@ def _normalise(msg) -> dict:
 
 def _log(user_id, agent_id, model_key, ti, to, dt, ok):
     cost = int((ti / 1000.0) * MODELS[model_key]["cost_in"] + (to / 1000.0) * MODELS[model_key]["cost_out"])
+    # Route through the dual-backend event logger so per-agent LLM metrics land in
+    # Postgres (kind='llm_call'; agent/tokens/cost in meta) for /analytics/agents.
     try:
-        con = sqlite3.connect(_DB, timeout=5.0)
-        con.execute("INSERT INTO events(ts,user_id,kind,name,success,duration_ms,meta) VALUES(?,?,?,?,?,?,?)",
-                    (datetime.now(timezone.utc).isoformat(), user_id, "llm_call", model_key,
-                     1 if ok else 0, dt,
-                     json.dumps({"agent_id": agent_id, "tokens_in": ti, "tokens_out": to, "cost_micros": cost})))
-        con.commit()
-        con.close()
+        from backend import events
+        events.log_event("llm_call", user_id=user_id, name=model_key, success=bool(ok), duration_ms=dt,
+                         meta={"agent_id": agent_id, "tokens_in": ti, "tokens_out": to, "cost_micros": cost})
     except Exception:
         pass
 

@@ -19,6 +19,7 @@ permission-derived tool allow-list); a saved edit takes effect on the next call
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -77,26 +78,42 @@ async def _load_primary(user_id: str) -> tuple[dict, str]:
 
 
 async def _sse(user_id: str, message: str, session_id: str):
+    from backend.orchestrator import conversation as convo
     agent, prompt = await _load_primary(user_id)
+    history = convo.load(user_id, session_id)  # short-term memory of this thread
     final: dict | None = None
     try:
         async for ev in graph.astream_turn(user_id=user_id, agent=agent,
                                             user_message=message, session_id=session_id,
-                                            system_prompt=prompt):
+                                            system_prompt=prompt, history=history):
             if ev["type"] == "final":
                 final = ev
                 continue
             if ev["type"] == "approval_required":
                 continue  # persisted on final (which carries the full message state)
             yield f"data: {json.dumps(ev)}\n\n"
+        # Persist the turn so the next message has context (fixes stateless re-asking).
+        convo.append(user_id, session_id, "user", message)
         if final and final.get("status") == "awaiting_approval":
             aid = await store.create_approval(user_id, agent, final["messages"], final["approval"])
+            convo.append(user_id, session_id, "assistant",
+                         f"(Prepared an action for your approval: {final['approval'].get('preview', '')})")
             yield f"data: {json.dumps({'type': 'approval_required', 'approval': final['approval'], 'approval_id': aid})}\n\n"
         else:
-            yield f"data: {json.dumps({'type': 'done', 'final': (final or {}).get('final', '')})}\n\n"
+            fin = (final or {}).get("final", "") or ""
+            if fin:
+                convo.append(user_id, session_id, "assistant", fin)
+            yield f"data: {json.dumps({'type': 'done', 'final': fin})}\n\n"
     except Exception as e:  # noqa: BLE001
         yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
     yield "data: [DONE]\n\n"
+
+
+@router.get("/history")
+async def chat_history(request: Request, session_id: str = "sess"):
+    """This session's conversation history (for the UI to restore on reload)."""
+    from backend.orchestrator import conversation as convo
+    return {"messages": convo.load_full(_uid(request), session_id)}
 
 
 @router.post("/chat")
@@ -164,6 +181,13 @@ async def list_tools():
         {"name": t.name, "description": t.description, "is_outbound": t.is_outbound,
          "required_permission": t.required_permission}
         for t in [registry.get(n) for n in registry.all_names()] if t]}
+
+
+@router.get("/analytics")
+async def agent_analytics(request: Request, days: int = 30):
+    """Per-agent performance (calls, latency, tokens, cost) from the events spine."""
+    from backend import events
+    return await asyncio.to_thread(events.per_agent, _uid(request), days)
 
 
 # ── Agent registry CRUD (Agent Matrix) ────────────────────────────────────────

@@ -1,38 +1,20 @@
-"""
-Read-only analytics over the agent's own data (tasks.db + email_log.json).
+"""Read-only analytics over the agent's own data.
 
-A narrow, parameterized allowlist — NOT free-form text-to-SQL — so it can be safely
-exposed to the LLM as a tool ("how many tasks did I finish last week?").
+A narrow, parameterized allowlist (NOT free-form SQL) safe to expose as a tool.
+Task metrics read through tasks.store (dual-backend: SQLite or Postgres); email
+metrics read the email log file.
 """
-
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from config.settings import BASE_DIR
 
-# settings.DB_PATH points at BASE_DIR/"tasks.db" which is wrong (the real DB lives in
-# tasks/tasks.db); use the correct path here.
-DB_PATH = str(BASE_DIR / "tasks" / "tasks.db")
 EMAIL_LOG = BASE_DIR / "logs" / "email_log.json"
 
-METRICS = [
-    "summary",              # totals + pending-by-priority
-    "completed",            # tasks completed in the last N days
-    "created",              # tasks created in the last N days
-    "pending_by_priority",  # open tasks grouped by priority
-    "top_contacts",         # most-triaged senders (from email_log)
-    "triage_volume",        # emails triaged in the last N days
-]
-
-
-def _conn() -> sqlite3.Connection:
-    c = sqlite3.connect(DB_PATH)
-    c.row_factory = sqlite3.Row
-    return c
+METRICS = ["summary", "completed", "created", "pending_by_priority", "top_contacts", "triage_volume"]
 
 
 def _cutoff(days: int) -> str:
@@ -47,43 +29,45 @@ def _load_email_log() -> list[dict]:
         return []
 
 
+def _tasks(user_id: str, status: str | None = None) -> list[dict]:
+    try:
+        from tasks.store import get_all_tasks
+        return get_all_tasks(user_id, status=status)
+    except Exception:
+        return []
+
+
 def run_metric(metric: str, user_id: str, days: int = 7) -> dict:
     if metric not in METRICS:
         return {"error": f"unknown metric '{metric}'", "available": METRICS}
 
     if metric == "summary":
-        with _conn() as c:
-            total = c.execute("SELECT COUNT(*) FROM tasks WHERE user_id=?", (user_id,)).fetchone()[0]
-            pending = c.execute("SELECT COUNT(*) FROM tasks WHERE user_id=? AND status='pending'", (user_id,)).fetchone()[0]
-            done = c.execute("SELECT COUNT(*) FROM tasks WHERE user_id=? AND status='done'", (user_id,)).fetchone()[0]
-            by_pri = {r["priority"]: r["n"] for r in c.execute(
-                "SELECT priority, COUNT(*) n FROM tasks WHERE user_id=? AND status='pending' GROUP BY priority", (user_id,))}
-        return {"metric": metric, "total": total, "pending": pending, "done": done,
+        allt = _tasks(user_id)
+        pending = [t for t in allt if t.get("status") == "pending"]
+        done = [t for t in allt if t.get("status") == "done"]
+        by_pri: dict[str, int] = {}
+        for t in pending:
+            by_pri[t.get("priority", "medium")] = by_pri.get(t.get("priority", "medium"), 0) + 1
+        return {"metric": metric, "total": len(allt), "pending": len(pending), "done": len(done),
                 "pending_by_priority": by_pri,
-                "human": f"{pending} pending, {done} done, {total} total tasks."}
+                "human": f"{len(pending)} pending, {len(done)} done, {len(allt)} total tasks."}
 
     if metric == "completed":
-        with _conn() as c:
-            rows = c.execute(
-                "SELECT title, updated_at FROM tasks WHERE user_id=? AND status='done' AND updated_at>=? ORDER BY updated_at DESC",
-                (user_id, _cutoff(days))).fetchall()
-        titles = [r["title"] for r in rows]
+        cut = _cutoff(days)
+        titles = [t["title"] for t in _tasks(user_id, status="done") if (t.get("updated_at") or "") >= cut]
         return {"metric": metric, "days": days, "count": len(titles), "titles": titles,
                 "human": f"You completed {len(titles)} task(s) in the last {days} day(s)."}
 
     if metric == "created":
-        with _conn() as c:
-            rows = c.execute(
-                "SELECT title FROM tasks WHERE user_id=? AND created_at>=? ORDER BY created_at DESC",
-                (user_id, _cutoff(days))).fetchall()
-        titles = [r["title"] for r in rows]
+        cut = _cutoff(days)
+        titles = [t["title"] for t in _tasks(user_id) if (t.get("created_at") or "") >= cut]
         return {"metric": metric, "days": days, "count": len(titles), "titles": titles,
                 "human": f"{len(titles)} task(s) were created in the last {days} day(s)."}
 
     if metric == "pending_by_priority":
-        with _conn() as c:
-            by_pri = {r["priority"]: r["n"] for r in c.execute(
-                "SELECT priority, COUNT(*) n FROM tasks WHERE user_id=? AND status='pending' GROUP BY priority", (user_id,))}
+        by_pri: dict[str, int] = {}
+        for t in _tasks(user_id, status="pending"):
+            by_pri[t.get("priority", "medium")] = by_pri.get(t.get("priority", "medium"), 0) + 1
         order = ["urgent", "high", "medium", "low"]
         parts = [f"{by_pri[p]} {p}" for p in order if p in by_pri]
         return {"metric": metric, "pending_by_priority": by_pri,
@@ -97,8 +81,8 @@ def run_metric(metric: str, user_id: str, days: int = 7) -> dict:
                 counts[s] = counts.get(s, 0) + 1
         top = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
         return {"metric": metric, "top": [{"sender": s, "count": n} for s, n in top],
-                "human": ("Most-triaged senders: " + "; ".join(f"{s} ({n})" for s, n in top))
-                         if top else "No triaged email on record yet."}
+                "human": ("Most-triaged senders: " + "; ".join(f"{s} ({n})" for s, n in top)) if top
+                         else "No triaged email on record yet."}
 
     if metric == "triage_volume":
         cutoff = _cutoff(days)

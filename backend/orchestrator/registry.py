@@ -89,19 +89,12 @@ async def _internal_post(path: str, body: dict, user_id: str) -> tuple[int, str]
 # ── read / internal tools ─────────────────────────────────────────────────────
 
 def _query_tasks(user_id: str, status: str | None) -> list[dict]:
-    con = sqlite3.connect(_DB, timeout=5.0)
-    con.row_factory = sqlite3.Row
-    try:
-        sql = "SELECT title, status, priority, due_date FROM tasks WHERE user_id=?"
-        args: list[Any] = [user_id]
-        if status:
-            sql += " AND status=?"
-            args.append(status)
-        sql += (" ORDER BY CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 "
-                "WHEN 'medium' THEN 2 ELSE 3 END, due_date LIMIT 25")
-        return [dict(r) for r in con.execute(sql, args).fetchall()]
-    finally:
-        con.close()
+    # Route through the dual-backend task store (Postgres when cut over) so the
+    # list_tasks tool never reads a stale SQLite copy after the tasks cutover.
+    from tasks.store import get_all_tasks
+    rows = get_all_tasks(user_id, status)
+    return [{"title": r.get("title"), "status": r.get("status"),
+             "priority": r.get("priority"), "due_date": r.get("due_date")} for r in rows[:25]]
 
 
 async def _list_tasks(ctx, status: str | None = None) -> str:
