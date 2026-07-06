@@ -73,6 +73,8 @@ def preview(name: str, args: dict) -> str:
         return f"Send email to {args.get('to')} — subject: {args.get('subject')!r}"
     if name == "create_calendar_event":
         return f"Create calendar event {args.get('title')!r} at {args.get('start')} with {args.get('attendees')}"
+    if name == "web_search":
+        return f"Search the web for: {args.get('query')!r} (top {args.get('max_results', 5)} results)"
     return f"{name}({', '.join(f'{k}={v!r}' for k, v in args.items())})"
 
 
@@ -121,6 +123,42 @@ async def _get_agenda(ctx, days_ahead: int = 2) -> str:
         return "No upcoming events."
     return "Upcoming events:\n" + "\n".join(
         f"- {e.get('title', '(untitled)')} at {e.get('start', '')}" for e in events[:8])
+
+
+async def _list_emails(ctx, max_results: int = 10) -> str:
+    try:
+        from backend.services.gmail import get_gmail_inbox
+        emails = await get_gmail_inbox(ctx["user_id"], max_results=max_results)
+    except Exception as e:
+        return f"Email unavailable ({e}). The user may need to connect Google in Settings."
+    if not emails:
+        return "No recent emails found (the inbox is empty or Google isn't connected — check Settings)."
+    lines = []
+    for e in emails[:max_results]:
+        mark = "•" if not e.get("is_read") else " "
+        star = "★" if e.get("is_important") else ""
+        subj = e.get("subject") or "(no subject)"
+        frm = e.get("from_name") or e.get("from_email") or "?"
+        # include the id so read_email can be called on a specific message
+        lines.append(f"{mark}{star} [{e.get('id')}] {subj} — {frm}")
+    return f"{len(emails)} recent email(s) (use the [id] with read_email):\n" + "\n".join(lines)
+
+
+async def _search_documents(ctx, query: str) -> str:
+    try:
+        from backend.ingest import search_corporate
+        hits = await asyncio.to_thread(search_corporate, query, 6)
+    except Exception as e:
+        return f"Document search unavailable ({e})."
+    lines = []
+    for h in (hits or []):
+        src = h.get("source") or "?"
+        txt = " ".join((h.get("text") or "").split())
+        if txt:
+            lines.append(f"[{src}] {txt[:500]}")
+    if not lines:
+        return "No matching document content found — the user may need to upload the file first."
+    return "Relevant excerpts from the user's documents:\n" + "\n\n".join(lines)
 
 
 async def _search_memory(ctx, query: str) -> str:
@@ -185,6 +223,17 @@ register(Tool("get_agenda",
               "Get the user's upcoming calendar events for the next N days.",
               {"type": "object", "properties": {"days_ahead": {"type": "integer"}}},
               _get_agenda, "calendar.read"))
+register(Tool("list_emails",
+              "List the user's recent inbox emails (subject + sender, with unread/important marks). "
+              "Use for 'show/list/fetch my emails', 'what's in my inbox', 'any new mail', 'recent emails'.",
+              {"type": "object", "properties": {"max_results": {"type": "integer"}}},
+              _list_emails, "email.read"))
+register(Tool("search_documents",
+              "Search the user's uploaded documents / knowledge base and use the excerpts to answer "
+              "questions about or SUMMARIZE an uploaded file (e.g. a PDF the user shared in chat). "
+              "Use whenever the user refers to a document, file, PDF, or 'the attachment'.",
+              {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+              _search_documents, "documents.read"))
 register(Tool("search_memory",
               "Search the user's long-term memory for relevant facts/preferences.",
               {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},

@@ -11,30 +11,44 @@ from __future__ import annotations
 
 from .registry import Tool, register
 
+# Specialist skill-packs (read-only / non-outbound — outbound tools stay on the
+# primary where the approval gate applies directly). Each pack is small + focused
+# so the sub-agent picks among ~3 tools near-perfectly (the scope-test design).
 SPECIALISTS: dict[str, dict] = {
     "calendar_agent": {
         "name": "Calendar Agent",
-        "prompt": "You are a calendar specialist. Use get_agenda / current_time to answer "
-                  "scheduling questions. Be concise and factual.",
-        "tools": ["get_agenda", "current_time"],
+        "prompt": "You are a calendar specialist. Use get_agenda / next_event / current_time to "
+                  "answer scheduling questions. Be concise and factual.",
+        "tools": ["get_agenda", "next_event", "current_time"],
     },
     "research_agent": {
         "name": "Research Agent",
-        "prompt": "You are a research specialist. Use search_memory to recall what the user "
-                  "knows. Report what you found; never invent facts.",
-        "tools": ["search_memory"],
+        "prompt": "You are a research specialist. Use search_memory (past facts) and "
+                  "search_documents (the user's uploaded files) to answer, and get_analytics for "
+                  "usage stats. Report what you found; never invent facts.",
+        "tools": ["search_memory", "search_documents", "get_analytics"],
     },
     "task_agent": {
         "name": "Task Agent",
-        "prompt": "You are a task specialist. Use list_tasks to report on the user's workload "
-                  "concisely.",
-        "tools": ["list_tasks"],
+        "prompt": "You are a task specialist. Use list_tasks to report workload, create_task to add "
+                  "one, and complete_task to close one. Be concise.",
+        "tools": ["list_tasks", "create_task", "complete_task"],
     },
     "email_agent": {
         "name": "Email Agent",
-        "prompt": "You are an email specialist. Draft with draft_email. To actually send, use "
-                  "send_email — that is an outbound action requiring the user's approval.",
-        "tools": ["draft_email", "send_email"],
+        "prompt": "You are an email specialist. Use list_emails to see the inbox, read_email to open "
+                  "one, email_digest to summarise, and draft_email to prepare a reply for the user "
+                  "to review. You cannot send directly — the primary sends with the user's approval.",
+        "tools": ["list_emails", "read_email", "email_digest", "draft_email"],
+    },
+    "predictive_agent": {
+        "name": "Predictive Agent",
+        "prompt": "You are a predictive-insights specialist. Use predict_task_slippage (what may "
+                  "slip), predict_followups (who to chase), and predict_relationship_value (the "
+                  "benefit of investing in a person). The tools compute the numbers from real data "
+                  "and return an evidence block — narrate ONLY those figures, state the confidence, "
+                  "and never invent probabilities or amounts.",
+        "tools": ["predict_task_slippage", "predict_followups", "predict_relationship_value"],
     },
 }
 
@@ -56,8 +70,11 @@ async def _delegate(ctx, to_agent: str, task: str) -> str:
 register(Tool(
     name="delegate",
     description=("Delegate a focused subtask to a specialist sub-agent and get its result. "
-                 "Specialists: calendar_agent (schedule), research_agent (memory/recall), "
-                 "task_agent (tasks), email_agent (email). Use when a subtask fits a domain."),
+                 "Specialists: calendar_agent (schedule/agenda), research_agent (memory, documents, "
+                 "analytics), task_agent (tasks), email_agent (inbox reading/summaries/drafts), "
+                 "predictive_agent (forecasts: what may slip, who to follow up with, the value of "
+                 "connecting with a person). Delegate any prediction/forecast request to "
+                 "predictive_agent. Use when a subtask fits a domain."),
     parameters={"type": "object", "properties": {
         "to_agent": {"type": "string", "enum": list(SPECIALISTS.keys())},
         "task": {"type": "string", "description": "the subtask in natural language"}},
@@ -68,3 +85,8 @@ register(Tool(
 
 def specialist_names() -> list[str]:
     return list(SPECIALISTS.keys())
+
+
+# Register the capability-sprint skills (side-effect import — must come after the
+# registry is defined). Imported here because __init__ already imports agents.
+from . import skills  # noqa: E402,F401
