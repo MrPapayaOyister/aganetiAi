@@ -41,6 +41,14 @@ SPECIALISTS: dict[str, dict] = {
                   "to review. You cannot send directly — the primary sends with the user's approval.",
         "tools": ["list_emails", "read_email", "email_digest", "draft_email"],
     },
+    "analyst_agent": {
+        "name": "Analyst Agent",
+        "prompt": "You are a data analyst. Use run_python to compute real answers in a secure sandbox "
+                  "(calculations, statistics, parsing/analyzing CSV/JSON or uploaded data) and "
+                  "search_documents to pull the data from the user's files. Always compute — never "
+                  "guess numbers. Show the key result clearly.",
+        "tools": ["run_python", "search_documents"],
+    },
     "predictive_agent": {
         "name": "Predictive Agent",
         "prompt": "You are a predictive-insights specialist. Tools: predict_task_slippage (what may "
@@ -76,8 +84,10 @@ register(Tool(
                  "Specialists: calendar_agent (schedule/agenda), research_agent (memory, documents, "
                  "analytics), task_agent (tasks), email_agent (inbox reading/summaries/drafts), "
                  "predictive_agent (forecasts: what may slip, who to follow up with, the value of "
-                 "connecting with a person). Delegate any prediction/forecast request to "
-                 "predictive_agent. Use when a subtask fits a domain."),
+                 "connecting with a person), analyst_agent (run Python to calculate / analyze data / "
+                 "crunch numbers). Delegate any prediction/forecast to predictive_agent, and any "
+                 "'calculate / run code / analyze this data' request to analyst_agent. Use when a "
+                 "subtask fits a domain."),
     parameters={"type": "object", "properties": {
         "to_agent": {"type": "string", "enum": list(SPECIALISTS.keys())},
         "task": {"type": "string", "description": "the subtask in natural language"}},

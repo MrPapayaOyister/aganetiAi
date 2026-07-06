@@ -128,9 +128,27 @@ async def _get_analytics(ctx, metric: str = "summary", days: int = 7) -> str:
 
 # ── Web search (OUTBOUND — the query egresses; approval-gated by is_outbound) ──
 async def _web_search(ctx, query: str, max_results: int = 5) -> str:
+    import os
+    n = min(int(max_results or 5), 10)
+    # Primary: self-hosted SearxNG on the DGX — only SearxNG touches the public
+    # internet, so the query never goes to a third-party API (on-prem posture).
+    base = os.getenv("SEARXNG_URL", "http://127.0.0.1:5555")
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get(f"{base}/search", params={"q": query, "format": "json"})
+        if r.status_code == 200:
+            hits = (r.json().get("results") or [])[:n]
+            if hits:
+                lines = [f"**{x.get('title', '')}**\n{(x.get('content') or '')[:300]}\n🔗 {x.get('url', '')}"
+                         for x in hits]
+                return f"Web results for '{query}':\n\n" + "\n\n".join(lines)
+    except Exception:  # noqa: BLE001
+        pass
+    # Fallback: ddgs scraper.
     def _run():
         from ddgs import DDGS
-        return DDGS().text(query, max_results=min(int(max_results or 5), 10))
+        return DDGS().text(query, max_results=n)
     try:
         results = await asyncio.to_thread(_run)
     except Exception as e:  # noqa: BLE001
@@ -140,6 +158,37 @@ async def _web_search(ctx, query: str, max_results: int = 5) -> str:
     lines = [f"**{r.get('title', '')}**\n{(r.get('body') or r.get('snippet') or '')[:300]}\n🔗 {r.get('href', '')}"
              for r in results]
     return f"Web results for '{query}':\n\n" + "\n\n".join(lines)
+
+
+# ── Sandboxed code interpreter (Docker: --network none, ephemeral, resource-capped) ──
+async def _run_python(ctx, code: str) -> str:
+    import shutil
+    import subprocess
+    import tempfile
+
+    def _run() -> str:
+        d = tempfile.mkdtemp(prefix="pyrun_")
+        try:
+            with open(f"{d}/main.py", "w", encoding="utf-8") as f:
+                f.write(code)
+            proc = subprocess.run(
+                ["docker", "run", "--rm", "--network", "none", "--memory", "256m", "--cpus", "1",
+                 "--pids-limit", "128", "--read-only", "--tmpfs", "/tmp:size=32m",
+                 "-v", f"{d}:/work:ro", "-w", "/work", "python:3.12-slim", "python", "main.py"],
+                capture_output=True, text=True, timeout=25)
+            out = (proc.stdout or "")[:4000]
+            err = (proc.stderr or "")[:1500]
+            res = out + (("\n[stderr]\n" + err) if err.strip() else "")
+            return res.strip() or "(the code ran but produced no output — remember to print() results)"
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    try:
+        return await asyncio.to_thread(_run)
+    except subprocess.TimeoutExpired:
+        return "Execution timed out (25s limit)."
+    except Exception as e:  # noqa: BLE001
+        return f"Code execution unavailable ({e})."
 
 
 # ── Predictive intelligence (read-only; numbers computed in Python) ───────────
@@ -347,6 +396,11 @@ register(Tool("web_search",
               "requires the user's approval each time. Use for news, facts, or anything not in the user's data.",
               _obj({"query": {"type": "string"}, "max_results": {"type": "integer"}}, ["query"]),
               _web_search, "web.search", is_outbound=True))
+register(Tool("run_python",
+              "Run Python code in a secure sandbox (no network, ephemeral, resource-capped) and return its "
+              "output. Use for real calculations, data analysis, parsing CSV/JSON, or transforming data — "
+              "always print() the results. Prefer this over guessing numbers.",
+              _obj({"code": {"type": "string"}}, ["code"]), _run_python, "code.run"))
 register(Tool("predict_task_slippage",
               "Predict which of the user's tasks are at risk of slipping, from their real tasks + calendar load.",
               _obj({}), _predict_task_slippage, "predictions.read"))
