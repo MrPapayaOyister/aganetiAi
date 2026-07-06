@@ -190,6 +190,35 @@ async def agent_analytics(request: Request, days: int = 30):
     return await asyncio.to_thread(events.per_agent, _uid(request), days)
 
 
+# ── User settings (preferences) ───────────────────────────────────────────────
+@router.get("/settings")
+async def get_settings(request: Request):
+    from backend.db.base import SessionLocal
+    from backend.db import repo
+    async with SessionLocal() as s:
+        user = await repo.resolve_user(s, _uid(request))
+        return {"settings": (user.settings or {}) if user else {}}
+
+
+@router.put("/settings")
+async def put_settings(request: Request):
+    body = await request.json()
+    incoming = body.get("settings") if isinstance(body.get("settings"), dict) else body
+    if not isinstance(incoming, dict):
+        return JSONResponse({"error": "settings must be an object"}, status_code=400)
+    from sqlalchemy import update as _upd
+    from backend.db.base import SessionLocal
+    from backend.db import models as M, repo
+    async with SessionLocal() as s:
+        user = await repo.resolve_user(s, _uid(request))
+        if not user:
+            return JSONResponse({"error": "unknown user"}, status_code=404)
+        merged = {**(user.settings or {}), **incoming}
+        await s.execute(_upd(M.User).where(M.User.id == user.id).values(settings=merged))
+        await s.commit()
+        return {"settings": merged}
+
+
 # ── Agent registry CRUD (Agent Matrix) ────────────────────────────────────────
 def _agent_json(ag, perms: list) -> dict:
     return {"id": str(ag.id), "kind": ag.kind, "name": ag.name, "persona": ag.persona,

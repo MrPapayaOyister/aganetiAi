@@ -79,6 +79,7 @@ class User(Base, TS):
     primary_agent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     locale: Mapped[str] = mapped_column(Text, server_default=text("'en'"))
     status: Mapped[str] = mapped_column(Text, server_default=text("'active'"))
+    settings: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))  # UI/user prefs
 
 
 class EmployeeProfile(Base, TS):
