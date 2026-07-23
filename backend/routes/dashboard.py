@@ -81,10 +81,15 @@ async def _render(cfg: dict) -> dict:
     sql = cfg["sql"].replace("{where}", "")
 
     def _run():
-        try:
-            return {"data": coreshare_db.run_query(sql), "error": None}
-        except Exception as e:  # noqa: BLE001
-            return {"data": [], "error": str(e)[:200]}
+        import time as _t
+        for _a in range(2):
+            try:
+                return {"data": coreshare_db.run_query(sql), "error": None}
+            except Exception as e:  # noqa: BLE001
+                if _a == 0:
+                    _t.sleep(0.6)  # transient pool/connection contention under a load burst
+                    continue
+                return {"data": [], "error": str(e)[:200]}
 
     r = await asyncio.to_thread(_run)
     data = r["data"]
@@ -124,7 +129,11 @@ async def dashboard_ask(request: Request):
 async def list_charts(request: Request, board_id: str | None = None, include_unclaimed: bool = False):
     _uid(request)
     cfgs = await asyncio.to_thread(config_db.list_configs, board_id, include_unclaimed)
-    charts = await asyncio.gather(*[_render(c) for c in cfgs]) if cfgs else []
+    _sem = asyncio.Semaphore(4)
+    async def _capped(c):
+        async with _sem:
+            return await _render(c)
+    charts = await asyncio.gather(*[_capped(c) for c in cfgs]) if cfgs else []
     return {"charts": list(charts)}
 
 

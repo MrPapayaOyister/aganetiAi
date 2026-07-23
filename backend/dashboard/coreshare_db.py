@@ -63,6 +63,9 @@ def _build_url() -> URL:
 engine = create_engine(
     _build_url(),
     pool_pre_ping=True,
+    pool_recycle=300,
+    pool_size=8,
+    max_overflow=8,
     connect_args={"timeout": _LOGIN_TIMEOUT_S},
 )
 
