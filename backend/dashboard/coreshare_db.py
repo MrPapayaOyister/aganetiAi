@@ -29,6 +29,7 @@ from __future__ import annotations
 import os
 import re
 import time
+import threading
 
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import URL
@@ -207,3 +208,22 @@ def get_forecast_context() -> dict:
     _fc_cache["data"] = out
     _fc_cache["ts"] = now
     return out
+
+
+# --- Keep-warm ------------------------------------------------------------------
+# Serverless CORE-SHARE auto-pauses when idle; the first query then takes ~60s to
+# resume ("temporary issue connecting to the data" + stuck dashboard skeletons). A
+# tiny background ping keeps it warm so the dashboard stays snappy. Trade-off: the
+# serverless DB stays billing-active during quiet periods — disable with
+# CORESHARE_KEEPWARM=0 if cost matters more than latency.
+def _keepwarm_loop() -> None:  # pragma: no cover
+    while True:
+        time.sleep(240)
+        try:
+            run_query("SELECT 1")
+        except Exception:
+            pass
+
+
+if os.getenv("CORESHARE_KEEPWARM", "1") != "0":
+    threading.Thread(target=_keepwarm_loop, daemon=True, name="coreshare-keepwarm").start()
