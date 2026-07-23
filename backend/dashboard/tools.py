@@ -23,7 +23,7 @@ from backend.dashboard import coreshare_db, config_db
 
 config_db.init_dashboard_configs_table()
 
-VALID_CHART_TYPES = {"kpi", "line", "bar", "pie"}
+VALID_CHART_TYPES = {"kpi", "line", "bar", "pie", "forecast"}
 
 
 # ── dedup helpers (verbatim from Hermes mcp_server.py) ─────────────────────────
@@ -282,10 +282,10 @@ _TOOLS = [
          "user asks for a chart; it checks for duplicates itself by comparing the query (table, "
          "grouping, measure), not the title. For non-kpi charts alias the label column AS x and the "
          "numeric value AS y; for kpi alias the single number AS value. Include the literal text "
-         "{where} right before any GROUP BY (or at the end). chart_type is one of kpi/line/bar/pie. "
+         "{where} right before any GROUP BY (or at the end). chart_type is one of kpi/line/bar/pie/forecast (forecast = monthly history x,y; the system appends a 3-month projection + 95% band). "
          "Pass board_id verbatim if the system prompt gives you one.",
          {"type": "object", "properties": {
-             "title": {"type": "string"}, "chart_type": {"type": "string", "enum": ["kpi", "line", "bar", "pie"]},
+             "title": {"type": "string"}, "chart_type": {"type": "string", "enum": ["kpi", "line", "bar", "pie", "forecast"]},
              "sql": {"type": "string"}, "board_id": {"type": "string"}},
           "required": ["title", "chart_type", "sql"]},
          _save_chart, "charts.write"),

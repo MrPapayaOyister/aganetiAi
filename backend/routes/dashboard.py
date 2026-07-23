@@ -43,6 +43,39 @@ def _uid(request: Request) -> str:
     return u
 
 
+def _next_month(m: str, k: int) -> str:
+    y, mo = int(m[:4]), int(m[5:7]) + k
+    y += (mo - 1) // 12
+    mo = (mo - 1) % 12 + 1
+    return f"{y:04d}-{mo:02d}"
+
+
+def _add_forecast(data: list) -> list:
+    """history rows [{x:'yyyy-MM', y:num}] -> history + 3-month forecast w/ 95% band
+    (forecast points carry yhat + range=[lo,hi]); the last actual bridges line & band."""
+    try:
+        from backend.dashboard import forecast
+        hist = sorted((r for r in data if r.get("y") is not None and str(r.get("x"))),
+                      key=lambda r: str(r["x"]))
+        if len(hist) >= 5:
+            hist = hist[:-1]  # drop the current (partial) month so it does not skew the fit
+        vals = [float(r["y"] or 0) for r in hist]
+        if len(vals) < 4:
+            return data
+        res = forecast.forecast_series(vals, 3)
+        if "error" in res:
+            return data
+        out = [{"x": str(r["x"]), "y": float(r["y"] or 0)} for r in hist]
+        out[-1]["yhat"] = out[-1]["y"]
+        out[-1]["range"] = [out[-1]["y"], out[-1]["y"]]
+        lm = str(hist[-1]["x"])
+        for i, f in enumerate(res["forecast"]):
+            out.append({"x": _next_month(lm, i + 1), "yhat": f["point"], "range": [f["low95"], f["high95"]]})
+        return out
+    except Exception:
+        return data
+
+
 async def _render(cfg: dict) -> dict:
     """Run a chart's SQL live against CORE-SHARE (filters not yet wired → {where} = '')."""
     sql = cfg["sql"].replace("{where}", "")
@@ -54,8 +87,11 @@ async def _render(cfg: dict) -> dict:
             return {"data": [], "error": str(e)[:200]}
 
     r = await asyncio.to_thread(_run)
+    data = r["data"]
+    if cfg["type"] == "forecast" and not r["error"] and data:
+        data = _add_forecast(data)
     return {"id": cfg["id"], "type": cfg["type"], "title": cfg["title"],
-            "board_id": cfg.get("board_id"), "data": r["data"], "error": r["error"]}
+            "board_id": cfg.get("board_id"), "data": data, "error": r["error"]}
 
 
 @router.post("/chat")

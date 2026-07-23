@@ -94,6 +94,14 @@ def validate_select_only(sql: str) -> None:
         raise ValueError("Only SELECT queries are allowed.")
     if _FORBIDDEN.search(stripped):
         raise ValueError("Query contains a forbidden keyword.")
+    _toks = stripped[:80].upper().split()
+    _i = 1
+    if _i < len(_toks) and _toks[_i] == "DISTINCT":
+        _i += 1
+    if _i < len(_toks) and _toks[_i] == "TOP":
+        _i += 2 if (_i + 1 < len(_toks) and _toks[_i + 1].isdigit()) else 1
+    if _i < len(_toks) and _toks[_i].startswith("*"):
+        raise ValueError("SELECT * is not allowed - select specific, non-personal columns.")
     if ";" in stripped:
         raise ValueError("Multiple statements are not allowed.")
 
