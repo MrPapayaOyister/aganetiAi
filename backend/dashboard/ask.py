@@ -18,17 +18,19 @@ import uuid
 from backend.orchestrator import graph
 from backend.dashboard.tools import register_dashboard_tools
 from backend.dashboard.forecast_tools import register_forecast_tools
+from backend.dashboard.compare_tools import register_compare_tools
 
 log = logging.getLogger("aganeti.analytics")
 
-# Ensure the shared read-only SQL tools + the statistical forecaster exist (idempotent).
+# Ensure the shared read-only SQL tools + forecaster + period-comparator exist (idempotent).
 register_dashboard_tools()
 register_forecast_tools()
+register_compare_tools()
 
 # The /ask agent gets READ-ONLY data tools only — it answers in words, never builds or
 # deletes charts. get_database_schema + query_data are SELECT-only against the real DB;
 # current_time anchors relative dates like "this month".
-ASK_TOOL_NAMES = ["get_database_schema", "query_data", "forecast_metric", "current_time"]
+ASK_TOOL_NAMES = ["get_database_schema", "query_data", "forecast_metric", "compare_periods", "current_time"]
 
 
 def system_prompt() -> str:
@@ -103,6 +105,8 @@ def system_prompt() -> str:
         "counts over time, CALL forecast_metric — it returns a proper trend + 95% prediction band + the "
         "history range. Report the point forecast AND the low95-high95 band, and name the method. Do NOT "
         "hand-roll a SQL trend for these.\n"
+        "- PERIOD COMPARISON: for 'X this period vs last period' or 'compare X between two periods', CALL "
+        "compare_periods (returns both values, the delta, and % change). State both figures and the change.\n"
         f"- INTAKE -> APPROVED: when projecting approved cases or spend from a change in intake, you MUST "
         f"apply the approval rate. new_approved = new_intake x {rate}%; spend_impact = new_approved x "
         f"avg_grant. Do NOT multiply raw intake by the grant — only {rate}% get approved, so that overstates "
