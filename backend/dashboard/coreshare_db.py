@@ -157,6 +157,82 @@ def run_query(sql: str) -> list[dict]:
     raise last  # unreachable, keeps type-checkers happy
 
 
+# --- Live result cache (stale-while-revalidate) ---------------------------------
+# Chart DATA is re-queried on every board open and on every incremental chart-build
+# re-fetch. Against remote serverless Azure SQL (each round-trip ~0.5-0.7s, some
+# aggregations multi-second) that made a 9-chart board cost ~24s on EVERY open. Cache
+# each query's rows by SQL text: fresh (<TTL) -> return instantly; stale -> return the
+# cached rows now AND refresh in the background; cold -> query live once, then cache.
+# A saved board thus queries live only the very first time; every re-open is instant.
+import hashlib
+
+_result_cache: dict = {}                       # sqlhash -> {"data": list, "ts": float, "refreshing": bool}
+_result_lock = threading.Lock()
+_RESULT_TTL_S = float(os.getenv("CORESHARE_RESULT_TTL_S", "180"))       # "fresh" window
+_RESULT_STALE_S = float(os.getenv("CORESHARE_RESULT_STALE_S", "3600"))  # serve stale up to here while revalidating
+_RESULT_MAX = 800                              # soft cap on distinct cached queries
+
+
+def _cache_put(key: str, data: list) -> None:
+    with _result_lock:
+        _result_cache[key] = {"data": data, "ts": time.time(), "refreshing": False}
+        if len(_result_cache) > _RESULT_MAX:   # evict oldest ~20%
+            for k in sorted(_result_cache, key=lambda k: _result_cache[k]["ts"])[: _RESULT_MAX // 5]:
+                _result_cache.pop(k, None)
+
+
+def _refresh_async(key: str, sql: str) -> None:
+    with _result_lock:
+        ent = _result_cache.get(key)
+        if ent is None or ent.get("refreshing"):
+            return
+        ent["refreshing"] = True
+
+    def _job() -> None:
+        try:
+            _cache_put(key, run_query(sql))
+        except Exception:
+            with _result_lock:
+                e = _result_cache.get(key)
+                if e:
+                    e["refreshing"] = False
+
+    threading.Thread(target=_job, daemon=True, name="coreshare-refresh").start()
+
+
+def run_query_cached(sql: str, ttl: float | None = None) -> list:
+    """SELECT with stale-while-revalidate caching (keyed by SQL text).
+
+    fresh (<ttl): cached rows. stale (<stale window): cached rows now + background
+    refresh. cold: query live, then cache. For read-only idempotent chart/KPI queries
+    where <ttl staleness is fine (the underlying aid data changes slowly)."""
+    ttl = _RESULT_TTL_S if ttl is None else ttl
+    key = hashlib.sha1(sql.encode("utf-8")).hexdigest()
+    now = time.time()
+    with _result_lock:
+        ent = _result_cache.get(key)
+        snap = None if ent is None else (ent["data"], now - ent["ts"])
+    if snap is not None:
+        data, age = snap
+        if age < ttl:
+            return data
+        if age < _RESULT_STALE_S:
+            _refresh_async(key, sql)
+            return data
+    data = run_query(sql)
+    _cache_put(key, data)
+    return data
+
+
+def warm_query(sql: str, ttl: float | None = None) -> None:
+    """Seed/refresh the cache for a query, ignoring the result (used by the pre-warmer)."""
+    try:
+        run_query_cached(sql, ttl=ttl)
+    except Exception:
+        pass
+
+
+
 # System/derived schemas that never hold chartable client data.
 _SKIP_SCHEMAS = {"sys", "INFORMATION_SCHEMA", "guest"}
 

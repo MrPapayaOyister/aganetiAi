@@ -1,11 +1,12 @@
 import { NavLink } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { MessageSquare, BarChart2, FolderOpen, Inbox, Settings } from 'lucide-react'
+import { MessageSquare, BarChart2, LayoutDashboard, FolderOpen, Inbox, Settings } from 'lucide-react'
 
 const links = [
-  { to: '/',          icon: MessageSquare, label: 'Chat'      },
-  { to: '/analytics', icon: BarChart2,     label: 'Analytics' },
-  { to: '/files',     icon: FolderOpen,    label: 'Files'     },
+  { to: '/',          icon: MessageSquare,   label: 'Chat'      },
+  { to: '/analytics', icon: BarChart2,       label: 'Analytics' },
+  { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
+  { to: '/files',     icon: FolderOpen,      label: 'Files'     },
   { to: '/inbox',     icon: Inbox,         label: 'Inbox'     },
   { to: '/settings',  icon: Settings,      label: 'Settings'  },
 ]

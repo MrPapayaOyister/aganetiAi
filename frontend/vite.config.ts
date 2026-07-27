@@ -4,7 +4,10 @@ import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  server: {
+   server: {
+    host: '0.0.0.0',
+    port: 3000,
+    allowedHosts: ['papayaoyster.com', 'www.papayaoyster.com', '100.107.179.44'],
     proxy: {
       '/api': {
         target: 'http://192.168.1.155:8000',

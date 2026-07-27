@@ -139,11 +139,14 @@ async def google_callback(code: str = Query(None), state: str = Query(""),
         "scopes": granted_scopes or GOOGLE_SCOPES,
         "raw_profile": profile,
     }
+    # Encrypt the OAuth tokens once, at rest, before either store sees them.
+    from backend.services import token_crypto
+    epayload = token_crypto.enc_row(payload)
     supabase_ok = False
     try:
         sb = get_supabase_admin()
         sb.table("provider_connections").upsert({
-            **payload,
+            **epayload,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }, on_conflict="user_id,provider").execute()
         supabase_ok = True
@@ -152,7 +155,7 @@ async def google_callback(code: str = Query(None), state: str = Query(""),
     # ALWAYS write to the file store too — guaranteed durability.
     try:
         from backend.services import _token_file_store as _file
-        _file.upsert(user_id, "google", payload)
+        _file.upsert(user_id, "google", epayload)
     except Exception as e:
         if not supabase_ok:
             log.warning("google connection upsert failed (both stores) for %s: %s", user_id, e)

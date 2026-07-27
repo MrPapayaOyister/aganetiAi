@@ -26,6 +26,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from backend.services import token_crypto
+
 _STORE_PATH = Path(__file__).resolve().parents[2] / "data_vault" / "provider_connections.json"
 _LOCK = threading.Lock()
 
@@ -35,20 +37,24 @@ def _ensure_dir() -> None:
 
 
 def _load() -> dict[str, dict]:
+    # Tokens are stored encrypted at rest; decrypt on load so callers see plaintext.
     if not _STORE_PATH.exists():
         return {}
     try:
         with _STORE_PATH.open("r", encoding="utf-8") as f:
-            return json.load(f) or {}
+            raw = json.load(f) or {}
     except (json.JSONDecodeError, OSError):
         return {}
+    return {k: token_crypto.dec_row(row) for k, row in raw.items()}
 
 
 def _save(data: dict[str, dict]) -> None:
+    # Encrypt the sensitive token fields before they ever touch disk.
     _ensure_dir()
+    enc = {k: token_crypto.enc_row(row) for k, row in data.items()}
     tmp = _STORE_PATH.with_suffix(".tmp")
     with tmp.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+        json.dump(enc, f, indent=2)
     os.replace(tmp, _STORE_PATH)
 
 

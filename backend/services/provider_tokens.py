@@ -43,24 +43,40 @@ def _now() -> datetime:
 
 
 from backend.services import _token_file_store as _file
+from backend.services import token_crypto
 
 
 async def _fetch_connection(user_id: str) -> dict | None:
-    """Load the user's google row. Tries Supabase first; falls back to the
-    JSON file store if Supabase is unavailable (e.g. the migration hasn't
-    been run yet)."""
-    def _q():
+    """Load the user's google row. Tries Supabase first; falls back to the JSON file
+    store. IDENTITY-AWARE: the OAuth connect flow stores tokens under the Supabase sub,
+    but the agent executor looks them up by the internal alias (e.g. "user_1"). If the
+    direct lookup misses, resolve the identity to its canonical Supabase uid and retry —
+    otherwise a connected mailbox reads as "not connected" for the aliased user. Tokens
+    are decrypted before returning."""
+    def _q(uid: str):
         try:
             sb = get_supabase_admin()
             r = (sb.table("provider_connections").select("*")
-                 .eq("user_id", user_id).eq("provider", "google").limit(1).execute())
+                 .eq("user_id", uid).eq("provider", "google").limit(1).execute())
             row = (r.data or [None])[0]
             if row:
                 return row
         except Exception as e:
             log.info("Supabase fetch failed, using file store: %s", e)
-        return _file.fetch(user_id, "google")
-    return await asyncio.to_thread(_q)
+        return _file.fetch(uid, "google")
+    row = await asyncio.to_thread(_q, user_id)
+    if not row:
+        try:
+            from backend.db.base import SessionLocal
+            from backend.db import repo
+            async with SessionLocal() as s:
+                u = await repo.resolve_user(s, user_id)
+            alt = getattr(u, "supabase_uid", None) if u else None
+            if alt and alt != user_id:
+                row = await asyncio.to_thread(_q, alt)
+        except Exception:  # noqa: BLE001
+            pass
+    return token_crypto.dec_row(row) if row else None
 
 
 async def _update_tokens(row_id: str, access_token: str, expiry_iso: str,
@@ -69,14 +85,15 @@ async def _update_tokens(row_id: str, access_token: str, expiry_iso: str,
         patch = {"access_token": access_token, "token_expiry": expiry_iso}
         if refresh_token:
             patch["refresh_token"] = refresh_token
+        epatch = token_crypto.enc_row(patch)  # encrypt tokens before either store
         # Update both stores — Supabase first (best-effort), then always JSON.
         try:
             sb = get_supabase_admin()
-            sb.table("provider_connections").update({**patch,
+            sb.table("provider_connections").update({**epatch,
                 "updated_at": _now().isoformat()}).eq("id", row_id).execute()
         except Exception:
             pass
-        _file.update(row_id, patch)
+        _file.update(row_id, epatch)
     await asyncio.to_thread(_u)
 
 
@@ -119,8 +136,9 @@ async def get_google_token(user_id: str) -> str:
         return access_token
 
     if not refresh_token:
-        # Can't refresh without a refresh token — force reconnect.
-        await _delete_connection(row["id"])
+        # Can't refresh without a refresh token — ask the user to reconnect. Do NOT
+        # delete the row: deleting makes the UI flip to "connected → gone" and loses the
+        # record; reconnecting simply overwrites it with a fresh token.
         raise HTTPException(status_code=401, detail=TOKEN_EXPIRED)
 
     resp = await google_request(
@@ -133,9 +151,10 @@ async def get_google_token(user_id: str) -> str:
         },
     )
     if resp.status_code != 200:
-        # invalid_grant → refresh token revoked/expired. Delete + reconnect.
-        log.warning("Google token refresh failed for %s: %s", user_id, resp.status_code)
-        await _delete_connection(row["id"])
+        # invalid_grant → refresh token revoked/expired (common when the Google OAuth app
+        # is in "Testing" mode: refresh tokens expire after 7 days). Ask the user to
+        # reconnect; keep the row so the status stays truthful and reconnect overwrites it.
+        log.warning("Google token refresh failed for %s: %s %s", user_id, resp.status_code, resp.text[:120])
         raise HTTPException(status_code=401, detail=TOKEN_EXPIRED)
 
     data = resp.json()

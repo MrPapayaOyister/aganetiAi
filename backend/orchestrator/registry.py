@@ -140,7 +140,8 @@ async def _list_emails(ctx, max_results: int = 10) -> str:
 async def _search_documents(ctx, query: str) -> str:
     try:
         from backend.ingest import search_corporate
-        hits = await asyncio.to_thread(search_corporate, query, 6)
+        # ACL: scope to the caller's own docs + the shared org corpus (never other users').
+        hits = await asyncio.to_thread(search_corporate, query, 6, ctx.get("user_id"))
     except Exception as e:
         return f"Document search unavailable ({e})."
     lines = []
@@ -189,6 +190,18 @@ async def _calc(ctx, expr: str) -> str:
         return str(ev(ast.parse(expr, mode="eval").body))
     except Exception as e:
         return f"error: {e}"
+
+
+async def _set_reminder(ctx, message: str, remind_at: str) -> str:
+    from backend import reminders
+    res = await asyncio.to_thread(reminders.add, ctx["user_id"], message, remind_at)
+    if res.get("ok"):
+        try:
+            when = datetime.fromisoformat(res["fire_at"]).astimezone().strftime("%A %I:%M %p")
+        except Exception:
+            when = res.get("fire_at", "")
+        return f'Reminder set: "{message}" for {when}. It will appear in your dashboard notifications.'
+    return "I could not understand the time. Try 'in 30 minutes', 'at 5pm', or 'tomorrow 9am'."
 
 
 # ── outbound tools (handler runs ONLY after approval) ─────────────────────────
@@ -241,6 +254,13 @@ register(Tool("current_time", "Get the current date and time.",
 register(Tool("calc", "Evaluate an arithmetic expression.",
               {"type": "object", "properties": {"expr": {"type": "string"}}, "required": ["expr"]},
               _calc, ""))
+register(Tool("set_reminder",
+              "Set a reminder that appears in the user's dashboard notifications at a future time. "
+              "Use when the user says 'remind me to X at/in Y'. remind_at accepts an ISO 8601 datetime "
+              "OR a phrase like 'in 30 minutes', 'in 2 hours', 'at 5pm', 'tomorrow 9am'.",
+              {"type": "object", "properties": {"message": {"type": "string"}, "remind_at": {"type": "string"}},
+               "required": ["message", "remind_at"]},
+              _set_reminder, ""))
 # outbound
 register(Tool("send_email",
               "Send an email on the user's behalf. OUTBOUND — requires user approval.",

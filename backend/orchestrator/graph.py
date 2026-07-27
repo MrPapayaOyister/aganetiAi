@@ -28,24 +28,43 @@ class AgentState(TypedDict):
     messages: Annotated[list, operator.add]
     user_id: str
     agent_id: str
+    board_id: str
     allowed_tools: list
     step: int
     awaiting: dict | None
     model_key: str | None
     fallback_models: list
+    has_image: bool
+
+
+def _has_image(messages: list) -> bool:
+    return any(isinstance(m.get("content"), list) for m in messages)
 
 
 async def _agent_node(state: AgentState) -> dict:
+    has_image = state.get("has_image", False)
     schemas = registry.openai_schemas(state["allowed_tools"])
     agent_cfg = {"model_key": state.get("model_key"), "fallback_models": state.get("fallback_models") or []}
-    ctx = {"user_id": state["user_id"], "agent_id": state["agent_id"]}
-    msg = await llm.chat(state["messages"], tools=schemas, agent=agent_cfg, ctx=ctx)
+    ctx = {"user_id": state["user_id"], "agent_id": state["agent_id"], "board_id": state.get("board_id", "")}
+    # need_vision is gated at the TURN level (state.has_image), not per-message — else
+    # after a tool call this node re-runs and would flip back to a text-only model.
+    # On a vision turn we send NO tools: the deployed vision-vl vLLM is launched
+    # without --enable-auto-tool-choice, so a tool_choice='auto' request 400s. Vision
+    # turns are perception ("what's in this image?"); tool-use is a follow-up turn
+    # (has_image false → normal tool model + schemas). To enable tools+vision in one
+    # turn, relaunch vision-vl with --enable-auto-tool-choice --tool-call-parser hermes.
+    # Analytics/chart agents write SQL — pin temperature to 0 for deterministic,
+    # reproducible queries; the conversational Assistant stays at the 0.2 default.
+    _temp = 0.0 if state.get("agent_id") in ("dashboard", "analytics") else 0.2
+    _tc = "required" if (state.get("agent_id") == "dashboard" and state.get("step", 0) == 0 and not has_image) else "auto"
+    msg = await llm.chat(state["messages"], tools=(None if has_image else schemas),
+                         agent=agent_cfg, ctx=ctx, need_vision=has_image, temperature=_temp, tool_choice=_tc)
     return {"messages": [msg], "step": state["step"] + 1}
 
 
 async def _tools_node(state: AgentState) -> dict:
     last = state["messages"][-1]
-    ctx = {"user_id": state["user_id"], "agent_id": state["agent_id"]}
+    ctx = {"user_id": state["user_id"], "agent_id": state["agent_id"], "board_id": state.get("board_id", "")}
     outs: list[dict] = []
     pending: list[dict] = []
     for tc in last.get("tool_calls", []):
@@ -104,7 +123,17 @@ GRAPH = _build()
 def _init(user_id: str, agent: dict, messages: list, step: int = 0) -> AgentState:
     return {"messages": messages, "user_id": user_id, "agent_id": agent.get("id", "primary"),
             "allowed_tools": agent.get("tools", registry.all_names()), "step": step, "awaiting": None,
-            "model_key": agent.get("model_key"), "fallback_models": agent.get("fallback_models") or []}
+            "model_key": agent.get("model_key"), "fallback_models": agent.get("fallback_models") or [],
+            "has_image": _has_image(messages)}
+
+
+def _user_msg(user_message: str, images: list | None) -> dict:
+    """A multimodal user message when images (data: URLs) are attached, else plain text."""
+    if images:
+        content = [{"type": "text", "text": user_message}]
+        content += [{"type": "image_url", "image_url": {"url": u}} for u in images if u]
+        return {"role": "user", "content": content}
+    return {"role": "user", "content": user_message}
 
 
 def _result(state: dict) -> dict:
@@ -118,13 +147,13 @@ def _result(state: dict) -> dict:
 
 async def run_turn(*, user_id: str, agent: dict, user_message: str,
                    session_id: str = "sess", system_prompt: str | None = None,
-                   history: list | None = None) -> dict:
+                   history: list | None = None, images: list | None = None) -> dict:
     msgs: list[dict] = []
     if system_prompt:
         msgs.append({"role": "system", "content": system_prompt})
     if history:
         msgs.extend(history)
-    msgs.append({"role": "user", "content": user_message})
+    msgs.append(_user_msg(user_message, images))
     cfg = {"recursion_limit": 3 * STEP_BUDGET}
     out = await GRAPH.ainvoke(_init(user_id, agent, msgs), cfg)
     return _result(out)
@@ -155,7 +184,7 @@ async def resume(*, user_id: str, agent: dict, messages: list, approval: dict,
 
 async def astream_turn(*, user_id: str, agent: dict, user_message: str,
                        session_id: str = "sess", system_prompt: str | None = None,
-                       history: list | None = None) -> AsyncIterator[dict]:
+                       history: list | None = None, images: list | None = None) -> AsyncIterator[dict]:
     """Stream graph events for SSE: {type: thinking|tool_call|token|approval_required|final|done}.
     LangGraph streams node updates; we translate them into UI events."""
     msgs: list[dict] = []
@@ -163,7 +192,7 @@ async def astream_turn(*, user_id: str, agent: dict, user_message: str,
         msgs.append({"role": "system", "content": system_prompt})
     if history:
         msgs.extend(history)
-    msgs.append({"role": "user", "content": user_message})
+    msgs.append(_user_msg(user_message, images))
     state = _init(user_id, agent, msgs)
     acc_msgs = list(msgs)
     awaiting = None
