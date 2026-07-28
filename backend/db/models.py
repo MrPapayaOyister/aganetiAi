@@ -79,7 +79,7 @@ class User(Base, TS):
     primary_agent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     locale: Mapped[str] = mapped_column(Text, server_default=text("'en'"))
     status: Mapped[str] = mapped_column(Text, server_default=text("'active'"))
-    settings: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))  # UI/user prefs
+    settings: Mapped[dict] = mapped_column(JSONB, nullable=True, server_default=text("'{}'::jsonb"))  # UI/user prefs (nullable in live DB; default fills it)
 
 
 class EmployeeProfile(Base, TS):
@@ -304,3 +304,127 @@ class Interaction(Base):
     subject: Mapped[str | None] = mapped_column(Text)
     ref_id: Mapped[str | None] = mapped_column(Text)        # gmail msg id / calendar event id (idempotency)
     __table_args__ = (UniqueConstraint("user_id", "channel", "ref_id", name="uq_interaction_ref"),)
+
+
+# ── RAG lineage (P1): canonical source/chunk provenance + email/meeting envelopes ──
+# documents/document_chunks are the Postgres source-of-truth for the retrieve→cite→act
+# layer; Qdrant holds the vectors (1 chunk = 1 point via qdrant_point_id). email_* and
+# meeting_* are thin envelope tables giving threads/transcripts real 1:N structure.
+class Document(Base, TS):
+    """One ingested source: a file upload, an email message, or a meeting transcript."""
+    __tablename__ = "documents"
+    id = pk()
+    org_id = fk("organizations.id", index=True)
+    user_id = fk("users.id", index=True)                    # owner (email/meeting=real user; file=uploader or __org__ curator)
+    source_type: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'file'"))  # file|email|meeting
+    source_id: Mapped[str | None] = mapped_column(Text)     # gmail thread/msg id, calendar event id, or filename
+    title: Mapped[str | None] = mapped_column(Text)
+    uri: Mapped[str | None] = mapped_column(Text)           # storage path / external ref
+    content_hash: Mapped[str | None] = mapped_column(Text)  # sha256 of full source (file-level change detection)
+    version: Mapped[int] = mapped_column(Integer, server_default=text("1"))
+    sensitivity: Mapped[str] = mapped_column(Text, server_default=text("'internal'"))
+    workspace: Mapped[str | None] = mapped_column(Text)
+    meta: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    __table_args__ = (UniqueConstraint("user_id", "content_hash", name="uq_document_user_hash"),
+                      Index("ix_document_owner_type", "user_id", "source_type"))
+
+
+class DocumentChunk(Base, TS):
+    """One embedded chunk == one Qdrant point (1:1 via qdrant_point_id)."""
+    __tablename__ = "document_chunks"
+    id = pk()
+    org_id = fk("organizations.id", index=True)
+    user_id = fk("users.id", index=True)
+    document_id = fk("documents.id", index=True)            # ondelete CASCADE (default) — doc delete cleans chunk rows
+    source_type: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'file'"))
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_hash: Mapped[str | None] = mapped_column(Text)  # sha256 of NORMALIZED chunk text (per-chunk change detection)
+    heading_path: Mapped[dict] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
+    sensitivity: Mapped[str] = mapped_column(Text, server_default=text("'internal'"))
+    version: Mapped[int] = mapped_column(Integer, server_default=text("1"))
+    embed_model: Mapped[str | None] = mapped_column(Text)
+    qdrant_point_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # payload timestamp (since-filter)
+    __table_args__ = (UniqueConstraint("qdrant_point_id", name="uq_chunk_point"),
+                      Index("ix_chunk_owner_type", "user_id", "source_type"))
+
+
+class EmailThread(Base, TS):
+    __tablename__ = "email_threads"
+    id = pk()
+    org_id = fk("organizations.id", index=True)
+    user_id = fk("users.id", index=True)                    # NON-NULL — private mailbox
+    gmail_thread_id: Mapped[str] = mapped_column(Text, nullable=False)
+    subject: Mapped[str | None] = mapped_column(Text)
+    participants: Mapped[dict] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
+    __table_args__ = (UniqueConstraint("user_id", "gmail_thread_id", name="uq_thread_user_gmail"),)
+
+
+class EmailMessage(Base, TS):
+    __tablename__ = "email_messages"
+    id = pk()
+    org_id = fk("organizations.id", index=True)
+    user_id = fk("users.id", index=True)
+    thread_id = fk("email_threads.id", index=True)
+    document_id = fk("documents.id", ondelete="SET NULL", nullable=True)  # chunks link via documents
+    gmail_msg_id: Mapped[str] = mapped_column(Text, nullable=False)
+    sender: Mapped[str | None] = mapped_column(Text)
+    recipients: Mapped[dict] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
+    direction: Mapped[str | None] = mapped_column(Text)     # inbound|outbound
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (UniqueConstraint("user_id", "gmail_msg_id", name="uq_msg_user_gmail"),)
+
+
+class Meeting(Base, TS):
+    __tablename__ = "meetings"
+    id = pk()
+    org_id = fk("organizations.id", index=True)
+    user_id = fk("users.id", index=True)                    # NON-NULL — private
+    calendar_event_id: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str | None] = mapped_column(Text)
+    starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attendees: Mapped[dict] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
+    __table_args__ = (UniqueConstraint("user_id", "calendar_event_id", name="uq_meeting_user_event"),)
+
+
+class MeetingSegment(Base, TS):
+    __tablename__ = "meeting_segments"
+    id = pk()
+    org_id = fk("organizations.id", index=True)
+    user_id = fk("users.id", index=True)
+    meeting_id = fk("meetings.id", index=True)
+    document_id = fk("documents.id", ondelete="SET NULL", nullable=True)
+    speaker: Mapped[str | None] = mapped_column(Text)
+    t_start: Mapped[int | None] = mapped_column(Integer)    # seconds offset from meeting start
+    t_end: Mapped[int | None] = mapped_column(Integer)
+
+
+class GmailSyncState(Base, TS):
+    """Per-user incremental Gmail sync cursor (history.list startHistoryId)."""
+    __tablename__ = "gmail_sync_state"
+    id = pk()
+    org_id = fk("organizations.id", index=True)
+    user_id = fk("users.id", index=True)
+    history_id: Mapped[str | None] = mapped_column(Text)
+    page_token: Mapped[str | None] = mapped_column(Text)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (UniqueConstraint("user_id", name="uq_gmailsync_user"),)
+
+
+# ── Chat session registry (metadata only) ─────────────────────────────────────
+# Message BODIES stay in the JSON store (orchestrator/conversation.py, keyed by
+# this session id). This row just makes a user's chat threads enumerable + titled
+# for the history dropdown. id is the CLIENT-supplied uuid (lazy upsert on 1st msg).
+class ChatSession(Base, TS):
+    __tablename__ = "chat_sessions"
+    id = pk()
+    org_id = fk("organizations.id", ondelete="SET NULL", nullable=True, index=True)
+    user_id = fk("users.id", index=True)
+    title: Mapped[str | None] = mapped_column(Text)
+    title_source: Mapped[str] = mapped_column(Text, server_default=text("'auto'"))  # auto|user
+    message_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    meta: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    __table_args__ = (Index("ix_chat_sessions_user_active", "user_id", "archived", "last_message_at"),)

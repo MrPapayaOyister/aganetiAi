@@ -1,0 +1,172 @@
+"""Read-only connection to the Dar Al Ber CORE-SHARE database (the chart DATA source).
+
+This is the client's Azure SQL DB (``dabsproductionodssql``), reached from this host
+through the GCP VM socat relay. ``/etc/hosts`` maps the Azure FQDN to the VM's
+Tailscale IP so strict-TLS cert validation (Encrypt=yes, TrustServerCertificate=no)
+still passes while traffic is relayed. The DB user is read-only at the permission
+level (effective grants: CONNECT + SELECT); ``validate_select_only`` is defence in
+depth on top of that.
+
+Credentials come from SEPARATE env vars, never a single URL string. The password
+contains '@' and '$'; embedded in a URL string, SQLAlchemy's parser reads the
+password as just "P" and folds the rest into the hostname. ``URL.create()`` takes
+each field as a literal, so no manual %-encoding is ever needed.
+
+Ported from Hermes ``daralber/coreshare_db.py``, plus:
+  - cold-start tolerance: DABS-CORE-SHARE is a SERVERLESS Azure SQL DB that
+    auto-pauses when idle. After idle, login + server-scalar queries return
+    instantly, but the FIRST storage/catalog query blocks ~15-60s while the DB
+    resumes. We set a generous per-query timeout (90s) so that first query waits
+    for the resume and succeeds instead of failing, and retry once on a query
+    timeout.
+  - ``get_schema`` + ``validate_select_only`` live here (engine-agnostic), so the
+    tools never build their own connection.
+
+WARNING: everything that touches CORE-SHARE is SELECT-only. Never write here.
+"""
+from __future__ import annotations
+
+import os
+import re
+import time
+
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.engine import URL
+
+# The reader auto-resumes serverless storage on the first query after idle; give it
+# room. Warm queries return in <5s; the ceiling only bounds a pathological hang.
+_QUERY_TIMEOUT_S = 90
+_LOGIN_TIMEOUT_S = 30
+
+
+def _build_url() -> URL:
+    # Env is loaded by config.settings (load_dotenv). Fail loudly if unset — the
+    # dashboard cannot function without the real data source.
+    return URL.create(
+        "mssql+pyodbc",
+        username=os.environ["DABS_CORESHARE_USER"],
+        password=os.environ["DABS_CORESHARE_PASSWORD"],  # literal; '@' and '$' safe
+        host=os.environ["DABS_CORESHARE_HOST"],
+        port=int(os.environ.get("DABS_CORESHARE_PORT", "1433")),
+        database=os.environ["DABS_CORESHARE_DB"],
+        query={
+            "driver": os.environ.get("DABS_CORESHARE_DRIVER", "ODBC Driver 18 for SQL Server"),
+            "Encrypt": "yes",
+            "TrustServerCertificate": "no",
+        },
+    )
+
+
+# pool_pre_ping mirrors the resilience need: the relay/VM can drop idle sockets, so
+# validate a pooled connection before handing it out rather than failing a query.
+engine = create_engine(
+    _build_url(),
+    pool_pre_ping=True,
+    connect_args={"timeout": _LOGIN_TIMEOUT_S},
+)
+
+
+@event.listens_for(engine, "connect")
+def _set_query_timeout(dbapi_conn, _record):  # pragma: no cover - driver hook
+    # pyodbc Connection.timeout is the per-query timeout in seconds (0 = infinite).
+    # A generous bound lets the serverless auto-resume complete on a cold first
+    # query while still capping a genuinely stuck query.
+    try:
+        dbapi_conn.timeout = _QUERY_TIMEOUT_S
+    except Exception:
+        pass
+
+
+# --- Query safety (ported verbatim from Hermes daralber/db.py) ----------------
+# Applied BOTH when an agent saves a new chart AND every time the dashboard re-runs
+# a saved chart's SQL. Defence in depth on top of the read-only DB user.
+_SELECT_ONLY = re.compile(r"^\s*SELECT\b", re.IGNORECASE)
+_FORBIDDEN = re.compile(
+    r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|ATTACH|PRAGMA|CREATE|REPLACE|TRUNCATE|GRANT|EXEC|MERGE)\b",
+    re.IGNORECASE,
+)
+
+
+def validate_select_only(sql: str) -> None:
+    stripped = sql.strip().rstrip(";")
+    if not _SELECT_ONLY.match(stripped):
+        raise ValueError("Only SELECT queries are allowed.")
+    if _FORBIDDEN.search(stripped):
+        raise ValueError("Query contains a forbidden keyword.")
+    if ";" in stripped:
+        raise ValueError("Multiple statements are not allowed.")
+
+
+# --- Beneficiary-PII hard block --------------------------------------------------
+# Individual identifiers + sensitive personal finance. Hidden from get_schema AND
+# rejected if a query names one. Demographics (Gender/Nationality/Religion/
+# MaritalStatus/NumberOfFamilyMembers) stay queryable for aggregate analytics.
+_PII_COLUMNS = {
+    "arabicfullname", "englishfullname", "idnumber", "phonenumber", "email",
+    "debitedfromaccount", "currentsalary", "netmonthlyincome",
+    "totalsourcesofincome", "employer", "jobtitle",
+}
+
+
+def validate_no_pii(sql: str) -> None:
+    """Reject any query naming a beneficiary-PII column. Aggregate analytics only."""
+    hit = {t.lower() for t in re.findall("[A-Za-z_]+", sql)} & _PII_COLUMNS
+    if hit:
+        raise ValueError(
+            f"'{sorted(hit)[0]}' is a restricted personal-data column and cannot be "
+            "queried. Only aggregate, non-identifying analytics are allowed.")
+
+
+def _is_cold_start_timeout(exc: Exception) -> bool:
+    s = str(exc)
+    return "HYT00" in s or "Query timeout expired" in s or "HYT01" in s
+
+
+def run_query(sql: str) -> list[dict]:
+    """Validate then execute a SELECT-only query against CORE-SHARE. Returns row dicts.
+
+    Retries once on a query-timeout, which on this serverless DB almost always means
+    the first query is still resuming paused storage — the retry then lands warm.
+    """
+    validate_select_only(sql)
+    validate_no_pii(sql)
+    last: Exception | None = None
+    for attempt in range(2):
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text(sql))
+                return [dict(row._mapping) for row in result]
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            if attempt == 0 and _is_cold_start_timeout(exc):
+                time.sleep(2)  # let the resume finish, then retry warm
+                continue
+            raise
+    raise last  # unreachable, keeps type-checkers happy
+
+
+# System/derived schemas that never hold chartable client data.
+_SKIP_SCHEMAS = {"sys", "INFORMATION_SCHEMA", "guest"}
+
+
+def get_schema() -> dict:
+    """Table/column map of the REAL database, schema-qualified.
+
+    Reads INFORMATION_SCHEMA.COLUMNS directly (the reader can read it even without
+    VIEW DEFINITION perms, and SQLAlchemy's default-schema inspector would miss the
+    DataShare/Analytics schemas where the real data lives). Keys are
+    ``schema.table`` so the agent can query them verbatim (e.g. DataShare.VRequests).
+    """
+    rows = run_query(
+        "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE "
+        "FROM INFORMATION_SCHEMA.COLUMNS ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
+    )
+    out: dict[str, list] = {}
+    for r in rows:
+        if r["TABLE_SCHEMA"] in _SKIP_SCHEMAS:
+            continue
+        if r["COLUMN_NAME"].lower() in _PII_COLUMNS:
+            continue
+        key = f'{r["TABLE_SCHEMA"]}.{r["TABLE_NAME"]}'
+        out.setdefault(key, []).append({"name": r["COLUMN_NAME"], "type": r["DATA_TYPE"]})
+    return out

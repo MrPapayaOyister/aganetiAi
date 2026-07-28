@@ -101,11 +101,18 @@ async def get_or_create_user(s: AsyncSession, *, supabase_uid: str, email: str,
         select(M.User).where(M.User.supabase_uid == supabase_uid))).scalar_one_or_none()
     if existing:
         return existing
+    # MULTI-TENANT: one Organization per email domain. The slug is the FULL domain
+    # (injective — no dotted/hyphen collision merging tenants); the name is the first
+    # label. Only when the caller didn't pin a slug (config-registry legacy still can).
+    if not org_slug or org_slug == DEFAULT_ORG_SLUG:
+        domain = (email or "").rsplit("@", 1)[-1].lower().strip()
+        org_slug = domain or DEFAULT_ORG_SLUG
+    org_name = (org_slug.split(".")[0] if "." in org_slug else org_slug).title()
     org = await get_org_by_slug(s, org_slug)
     if org is None:
         # ON CONFLICT so two concurrent first-logins don't both create the org.
         await s.execute(_pg_insert(M.Organization.__table__)
-                        .values(name=org_slug.title(), slug=org_slug)
+                        .values(name=org_name, slug=org_slug)
                         .on_conflict_do_nothing(index_elements=["slug"]))
         await s.flush()
         org = await get_org_by_slug(s, org_slug)
@@ -361,3 +368,43 @@ async def interaction_stats(s: AsyncSession, user_id: uuid.UUID, contact_email: 
     return {"count": len(rows), "last": max((r.ts for r in rows if r.ts), default=None),
             "inbound": sum(1 for r in rows if r.direction == "inbound"),
             "outbound": sum(1 for r in rows if r.direction == "outbound")}
+
+
+# ── Chat sessions — metadata registry for the history dropdown ─────────────────
+# Message bodies live in orchestrator/conversation.py JSON (keyed by session_id);
+# these rows only make a user's threads enumerable + titled. Every query is
+# ownership-scoped by user_id (session ids are client-generated → IDOR guard).
+async def upsert_and_touch_chat_session(s: AsyncSession, *, session_id, user_id, org_id,
+                                        title: str, count: int) -> None:
+    """Lazy-create on first message (ON CONFLICT DO NOTHING preserves the first title),
+    then bump message_count + last_message_at on every turn."""
+    from sqlalchemy.dialects.postgresql import insert as _pg
+    await s.execute(_pg(M.ChatSession.__table__).values(
+        id=session_id, user_id=user_id, org_id=org_id, title=title,
+        message_count=count, last_message_at=func.now())
+        .on_conflict_do_nothing(index_elements=["id"]))
+    await s.execute(update(M.ChatSession)
+                    .where(M.ChatSession.id == session_id, M.ChatSession.user_id == user_id)
+                    .values(message_count=count, last_message_at=func.now()))
+
+
+async def list_chat_sessions(s: AsyncSession, user_id: uuid.UUID, archived: bool = False,
+                             limit: int = 100) -> Sequence[M.ChatSession]:
+    return (await s.execute(select(M.ChatSession).where(
+        M.ChatSession.user_id == user_id, M.ChatSession.archived == archived,
+        M.ChatSession.deleted_at.is_(None))
+        .order_by(M.ChatSession.last_message_at.desc()).limit(limit))).scalars().all()
+
+
+async def rename_chat_session(s: AsyncSession, session_id, user_id, title: str) -> bool:
+    r = await s.execute(update(M.ChatSession).where(
+        M.ChatSession.id == session_id, M.ChatSession.user_id == user_id,
+        M.ChatSession.deleted_at.is_(None)).values(title=title, title_source="user"))
+    return (r.rowcount or 0) > 0
+
+
+async def delete_chat_session(s: AsyncSession, session_id, user_id) -> bool:
+    r = await s.execute(update(M.ChatSession).where(
+        M.ChatSession.id == session_id, M.ChatSession.user_id == user_id)
+        .values(deleted_at=func.now()))
+    return (r.rowcount or 0) > 0

@@ -566,6 +566,9 @@ async def lifespan(app: FastAPI):
         return
 
     scheduler.add_job(poll_inbox, "interval", seconds=30, max_instances=1, coalesce=True)
+    from backend import reminders as _rem
+    scheduler.add_job(lambda: asyncio.create_task(asyncio.to_thread(_rem.fire_due_all)),
+                      "interval", seconds=60, max_instances=1, coalesce=True, id="fire_reminders")
     scheduler.add_job(check_upcoming_meetings, "interval", minutes=5)
 
     # P3 — pre-meeting prep: every 5 min, scan each user's next ~20 min of
@@ -711,6 +714,16 @@ app.include_router(provider_router, tags=["provider-auth"])
 # Enterprise Agentic OS — real LangGraph executor surface (chat SSE + approvals)
 from backend.routes.agent_os import router as agent_os_router
 app.include_router(agent_os_router)
+
+# Prompt-to-chart Dashboard — SSE chart builder over the read-only Dar Al Ber Azure DB.
+# Purely additive; registers its own tools (kept out of the primary agent's allow-list).
+# Guarded so a missing Azure driver degrades only the dashboard, never the whole app.
+try:
+    from backend.routes.dashboard import router as dashboard_router
+    app.include_router(dashboard_router)
+except Exception as _e:  # noqa: BLE001
+    import logging as _logging
+    _logging.getLogger("aganeti").warning("dashboard router not mounted: %s", _e)
 
 # Voice WebSocket (STT -> executor -> TTS) — WS /ws/voice
 # NOTE: app.include_router does NOT attach APIWebSocketRoute in this FastAPI version,
@@ -950,18 +963,29 @@ async def stt_endpoint(audio: UploadFile = File(...)):
 
 # ── File ingest ───────────────────────────────────────────────
 @app.post("/ingest/upload")
-async def ingest_upload(file: UploadFile = File(...), user_id: str = "user_1"):
+async def ingest_upload(request: Request, file: UploadFile = File(...)):
+    # Identity from the trusted auth header ONLY (never a client-supplied user_id) —
+    # this both scopes the RAG chunks per-user and closes the upload IDOR.
+    user_id = request.headers.get("x-auth-user") or "user_1"
     dest = Path(f"data_vault/{user_id}/{file.filename}")
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(await file.read())
 
     def _do_ingest() -> int:
-        # ingest_file(client, path) requires a Qdrant client and the collection
-        # to exist; build both here (same helpers ingest_all uses).
+        # ingest_file(client, path, owner) requires a Qdrant client and the collection
+        # to exist; build both here (same helpers ingest_all uses). owner=user_id tags
+        # every chunk so search_documents can ACL-filter to this uploader; org_id is
+        # resolved so the canonical metadata carries the tenant.
         from backend.ingest import ingest_file, get_client, ensure_collection
+        org_id = None
+        try:
+            from backend.db import sync as _dbsync
+            _u, org_id = _dbsync.resolve_ids(user_id)
+        except Exception:
+            org_id = None
         client = get_client()
         ensure_collection(client)
-        return ingest_file(client, dest)
+        return ingest_file(client, dest, user_id, org_id=org_id, source_type="file")
 
     try:
         chunks = await asyncio.to_thread(_do_ingest)
@@ -1188,12 +1212,16 @@ async def stream_plain_answer(messages: list):
             if tok:
                 yield tok
 
-def retrieve_corporate_context(query: str) -> str:
+def retrieve_corporate_context(query: str, owner: str | None = None) -> str:
+    # ACL-SAFE: delegate to the per-user-scoped search_corporate instead of an
+    # unfiltered query_points. owner=None returns ONLY the shared org corpus
+    # ('__org__'); a real user_id also returns that user's own docs — never another
+    # user's. This closes the pre-ACL cross-user leak (was: raw limit=1, no filter).
     try:
-        query_vector = list(embed_model.embed([query]))[0].tolist()
-        search_results = qdrant.query_points(collection_name="corporate_memory", query=query_vector, limit=1)
-        if search_results and search_results.points:
-            return search_results.points[0].payload['text']
+        from backend.ingest import search_corporate
+        hits = search_corporate(query, top_k=1, owner=owner)
+        if hits:
+            return hits[0].get("text") or "No specific corporate guidelines found."
     except Exception as e:
         print(f"RAG Error: {e}")
     return "No specific corporate guidelines found."
@@ -1210,7 +1238,8 @@ class AgentState(TypedDict):
     awaiting_task_confirmation: bool         # True when agent is waiting for user to confirm
 
 def manager_officer(state: AgentState):
-    corporate_context = retrieve_corporate_context(state['input_task'])
+    # /delegate mesh has no user in scope → org-only corpus (owner=None), never private docs.
+    corporate_context = retrieve_corporate_context(state['input_task'], owner=None)
     sys_prompt = f"You are the Manager AI Officer. Draft structural instructions.\nPOLICY:\n{corporate_context}"
     res = query_local_llm(sys_prompt, state['input_task'])
     return {"manager_notes": res, "status": "delegated"}
@@ -1877,7 +1906,7 @@ async def chat_endpoint(request: ChatRequest, http_request: Request):
 
     # Mode A - Normal chat flow. Each context source is best-effort: a missing M365
     # token, an empty Qdrant collection, or a cold user must NOT 500 the whole chat.
-    context = retrieve_corporate_context(request.message)
+    context = retrieve_corporate_context(request.message, owner=user_id)
     # Calendar context: prefer M365 (legacy), fall back to Google. Either
     # provider gives the LLM the user's schedule at the top of the prompt;
     # if neither is connected, the get_agenda tool path still works.
@@ -2643,6 +2672,66 @@ async def send_email_outbox(request: SendEmailRequest):
         log.warning("send_email failed for %s: %s", request.user_id, e)
         return {"status": "error", "message": "Failed to send"}
 
+@app.post("/documents/summarize")
+async def documents_summarize(request: Request, file: UploadFile = File(...)):
+    """Extract text (with vision-OCR fallback for scans) + summarize an uploaded
+    document WITHOUT indexing it. The user then decides whether to add it to the
+    Knowledge Hub (via /ingest/upload). Never 500s."""
+    user_id = request.headers.get("x-auth-user") or "user_1"
+    dest = Path(f"data_vault/{user_id}/_preview/{file.filename}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(await file.read())
+
+    def _extract() -> str:
+        from backend.ingest import extract_file_text
+        try:
+            return extract_file_text(dest) or ""
+        finally:
+            try:
+                dest.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    try:
+        text = await asyncio.to_thread(_extract)
+    except Exception:
+        log.exception("summarize: extract failed for %s", file.filename)
+        text = ""
+
+    chars = len(text)
+    if not text.strip():
+        return {"filename": file.filename, "summary": "I couldn't extract readable text from this file.",
+                "bullets": [], "chars": 0, "meta": ""}
+
+    snippet = text[:8000]
+
+    def _summ() -> str:
+        import httpx as _httpx, os as _os
+        _url = _os.getenv("VLLM_TOOL_URL", "http://localhost:9000/v1").rstrip("/")
+        _model = _os.getenv("VLLM_TOOL_MODEL", "qwen2.5-32b")
+        _sys = ("You are an executive assistant. In 2-3 sentences summarize the document, "
+                "then list 3-5 key points, each on its own line starting with '- '. Be concise and factual.")
+        _r = _httpx.post(f"{_url}/chat/completions", timeout=90.0, json={
+            "model": _model, "temperature": 0.2, "max_tokens": 400,
+            "messages": [{"role": "system", "content": _sys},
+                         {"role": "user", "content": f"Document '{file.filename}':\n\n{snippet}"}]})
+        _r.raise_for_status()
+        return _r.json()["choices"][0]["message"]["content"] or ""
+
+    try:
+        raw = await asyncio.to_thread(_summ)
+    except Exception:
+        log.exception("summarize: llm failed for %s", file.filename)
+        raw = ""
+
+    lines = [l.strip() for l in (raw or "").splitlines() if l.strip()]
+    bullets = [l.lstrip("-\u2022* ").strip() for l in lines if l.lstrip().startswith(("-", "\u2022", "*"))]
+    summary = " ".join(l for l in lines if not l.lstrip().startswith(("-", "\u2022", "*"))) or (raw or "")[:600]
+    return {"filename": file.filename, "summary": summary or "Summary unavailable.",
+            "bullets": bullets[:6], "chars": chars, "meta": f"{chars:,} chars extracted"}
+
+
+
 @app.get("/mail/inbox")
 async def get_inbox(user_id: str = "user_1"):
     """Returns the user's Gmail inbox. Soft-fails to {connected:false} if Google
@@ -2672,12 +2761,12 @@ async def get_inbox_count_endpoint(user_id: str = "user_1"):
         return {"unread": 0}
 
 @app.get("/calendar/agenda")
-async def get_calendar_agenda(user_id: str = "user_1"):
+async def get_calendar_agenda(user_id: str = "user_1", days: int = 7):
     """Returns the dashboard agenda as a STRUCTURED list of events (Google Calendar).
     Must be an array (frontend maps over it). Never 500s."""
     from backend.services import gcalendar
     try:
-        events = await gcalendar.get_google_agenda(user_id, days_ahead=2)
+        events = await gcalendar.get_google_agenda(user_id, days_ahead=days)
         return {"user_id": user_id, "agenda": events if isinstance(events, list) else []}
     except HTTPException:
         return {"user_id": user_id, "agenda": [], **_not_connected_payload(user_id)}
@@ -3412,6 +3501,12 @@ def poll_mail_for_user(user_id: str):
                 print(f"✅ Draft saved to UI Queue for {user_id}.")
             except Exception as e:
                 print(f"[mail_poll] {user_id} triage error: {e}")
+            # Proactive dashboard alert + task proposal for this new email (bell).
+            try:
+                from backend import mail_intel
+                mail_intel.proactive_alert(user_id, em)
+            except Exception as e:
+                print(f"[mail_poll] {user_id} proactive alert error: {e}")
             finally:
                 # De-dup marker so a poison email is never re-triaged in a loop.
                 # NOTE: we do NOT mark_as_read here — the email stays unread for the digest.

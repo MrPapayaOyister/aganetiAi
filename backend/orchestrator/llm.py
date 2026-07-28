@@ -9,7 +9,7 @@ from . import router
 
 
 async def chat(messages: list[dict], tools: list[dict] | None = None, *,
-               tier: str = "tool", temperature: float = 0.2, max_tokens: int = 1024,
+               tier: str = "tool", temperature: float = 0.2, max_tokens: int = 1024, tool_choice: str = "auto",
                agent: dict | None = None, ctx: dict | None = None,
                need_vision: bool = False) -> dict:
     """One assistant turn, routed. `agent` may carry {model_key, fallback_models};
@@ -17,5 +17,5 @@ async def chat(messages: list[dict], tools: list[dict] | None = None, *,
     _tier = "fast" if tier == "fast" else None
     msg, _model_key = await router.complete(
         messages, tools, agent=agent, tier=_tier, need_vision=need_vision,
-        temperature=temperature, max_tokens=max_tokens, ctx=ctx)
+        temperature=temperature, max_tokens=max_tokens, tool_choice=tool_choice, ctx=ctx)
     return msg

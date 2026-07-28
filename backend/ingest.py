@@ -38,8 +38,13 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     PointStruct, VectorParams, Distance,
-    Filter, FieldCondition, MatchValue,
+    Filter, FieldCondition, MatchValue, MatchAny, Range,
 )
+
+# Sentinel owner for the shared, org-wide corpus (CLI-ingested docs + legacy chunks).
+# Per-user uploads are tagged with the uploader's identity; search returns the
+# caller's own chunks PLUS the shared org corpus — never another user's private docs.
+ORG_OWNER = "__org__"
 from fastembed import TextEmbedding
 
 from config.settings import (
@@ -77,6 +82,20 @@ def ensure_collection(client: QdrantClient, reset: bool = False) -> None:
             vectors_config=VectorParams(size=EMBED_DIM, distance=Distance.COSINE),
         )
         print(f"[ingest] created collection '{RAG_COLLECTION}' (dim={EMBED_DIM})")
+    _ensure_payload_indexes(client)
+
+
+def _ensure_payload_indexes(client: QdrantClient) -> None:
+    """Additive, idempotent payload indexes for ACL + metadata filtering. Safe on an
+    existing collection (builds over current points). The tenant-HNSW optimization
+    (is_tenant / payload_m) needs a collection recreate and is deferred until scale."""
+    for field, schema in (("user_id", "keyword"), ("source_type", "keyword"),
+                          ("sensitivity", "keyword"), ("timestamp", "integer")):
+        try:
+            client.create_payload_index(collection_name=RAG_COLLECTION,
+                                        field_name=field, field_schema=schema)
+        except Exception:
+            pass  # already exists / older Qdrant — filtering still works, just unindexed
 
 
 # ── text extraction (full text, no char cap) ────────────────────────────────
@@ -88,7 +107,13 @@ def extract_file_text(path: Path) -> str:
         if ext == ".pdf":
             import pdfplumber
             with pdfplumber.open(path) as pdf:
-                return "\n\n".join((p.extract_text() or "") for p in pdf.pages)
+                text = "\n\n".join((p.extract_text() or "") for p in pdf.pages)
+            # Scanned/image PDFs (e.g. a photographed business licence) yield no text
+            # from pdfplumber → OCR them with the local vision model so they're readable.
+            if len(text.strip()) >= 40:
+                return text
+            ocr = _ocr_pdf_via_vision(path)
+            return ocr if ocr.strip() else text
         if ext == ".docx":
             from docx import Document
             doc = Document(path)
@@ -111,6 +136,50 @@ def extract_file_text(path: Path) -> str:
     except Exception as e:
         print(f"[ingest] extract failed for {path.name}: {e}")
     return ""
+
+
+def _ocr_pdf_via_vision(path: Path, max_pages: int = 6) -> str:
+    """OCR a scanned/image PDF with the local vision model (qwen2.5-vl): render each
+    page to PNG, ask the VLM to transcribe it verbatim. Multilingual (handles the
+    Chinese business-licence case). Best-effort — returns '' if anything is unavailable."""
+    import base64
+    import os as _os
+    try:
+        import fitz  # pymupdf
+        import httpx
+    except ImportError as e:
+        print(f"[ocr] deps missing ({e}); cannot OCR {path.name}")
+        return ""
+    vl_url = _os.getenv("VLLM_VL_URL", "http://localhost:9001/v1").rstrip("/")
+    vl_model = _os.getenv("VLLM_VL_MODEL", "qwen2.5-vl-32b")
+    prompt = ("Transcribe ALL text in this document image verbatim (OCR), preserving "
+              "line order. Output ONLY the transcribed text — no commentary, no translation.")
+    out: list[str] = []
+    try:
+        doc = fitz.open(path)
+    except Exception as e:  # noqa: BLE001
+        print(f"[ocr] cannot open {path.name}: {e}")
+        return ""
+    for i, page in enumerate(doc):
+        if i >= max_pages:
+            break
+        try:
+            png = page.get_pixmap(dpi=150).tobytes("png")
+            data_url = "data:image/png;base64," + base64.b64encode(png).decode()
+            r = httpx.post(f"{vl_url}/chat/completions", timeout=120.0, json={
+                "model": vl_model, "temperature": 0, "max_tokens": 2048,
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}}]}]})
+            r.raise_for_status()
+            txt = (r.json()["choices"][0]["message"]["content"] or "").strip()
+            if txt:
+                out.append(txt)
+        except Exception as e:  # noqa: BLE001
+            print(f"[ocr] page {i} of {path.name} failed: {e}")
+    if out:
+        print(f"[ocr] {path.name}: OCR'd {len(out)} page(s) via vision model")
+    return "\n\n".join(out)
 
 
 def chunk_text(text: str, size: int, overlap: int) -> list[str]:
@@ -148,17 +217,22 @@ def _file_hash(path: Path) -> str:
     return h.hexdigest()
 
 
-def _delete_source(client: QdrantClient, source: str) -> None:
+def _delete_source(client: QdrantClient, source: str, owner: str = ORG_OWNER) -> None:
+    # Scope the delete to THIS owner's chunks for the source, so re-uploading your
+    # file only replaces your own copy and never touches another user's documents.
     client.delete(
         collection_name=RAG_COLLECTION,
         points_selector=Filter(
-            must=[FieldCondition(key="source", match=MatchValue(value=source))]
+            must=[FieldCondition(key="source", match=MatchValue(value=source)),
+                  FieldCondition(key="user_id", match=MatchValue(value=owner))]
         ),
     )
 
 
 # ── ingest one file ─────────────────────────────────────────────────────────
-def ingest_file(client: QdrantClient, path: Path) -> int:
+def ingest_file(client: QdrantClient, path: Path, owner: str = ORG_OWNER, *,
+                org_id=None, source_type: str = "file", sensitivity: str = "internal",
+                version: int = 1) -> int:
     source = path.name
     text = extract_file_text(path)
     if not text.strip():
@@ -170,18 +244,34 @@ def ingest_file(client: QdrantClient, path: Path) -> int:
         return 0
 
     vectors = list(get_embedder().embed(chunks))
-    _delete_source(client, source)  # replace, don't duplicate
+    _delete_source(client, source, owner)  # replace THIS owner's copy, don't duplicate
+    try:
+        ts = int(path.stat().st_mtime)
+    except OSError:
+        ts = 0
+    # deterministic document id groups this owner's chunks for one source+version
+    document_id = str(uuid.uuid5(_NS, f"{owner}::{source_type}::{source}::v{version}"))
 
     points = [
         PointStruct(
-            id=str(uuid.uuid5(_NS, f"{source}::{i}")),
+            # id namespaced by owner+type+version so two users' same filename (or a new
+            # version) don't collide/overwrite each other's chunks.
+            id=str(uuid.uuid5(_NS, f"{owner}::{source_type}::{source}::{i}::v{version}")),
             vector=vec.tolist(),
-            payload={"text": chunk, "source": source, "chunk": i},
+            payload={
+                # legacy keys kept for backward-compat with pre-P1 readers
+                "text": chunk, "source": source, "chunk": i,
+                # canonical metadata superset (retrieve→cite→act boundary)
+                "chunk_index": i, "user_id": owner,
+                "org_id": (str(org_id) if org_id else None),
+                "document_id": document_id, "source_type": source_type,
+                "sensitivity": sensitivity, "version": version, "timestamp": ts,
+            },
         )
         for i, (chunk, vec) in enumerate(zip(chunks, vectors))
     ]
     client.upsert(collection_name=RAG_COLLECTION, points=points)
-    print(f"[ingest] {source}: {len(points)} chunks")
+    print(f"[ingest] {source}: {len(points)} chunks (owner={owner}, type={source_type})")
     return len(points)
 
 
@@ -221,20 +311,47 @@ def ingest_all(reset: bool = False, force: bool = False) -> dict:
     return summary
 
 
-def search_corporate(query: str, top_k: int = 3) -> list[dict]:
-    """Semantic search over the corporate_memory collection. Returns [{text, source}]."""
+def search_corporate(query: str, top_k: int = 3, owner: str | None = None,
+                     source_types: list | None = None, since: int | None = None) -> list[dict]:
+    """Semantic search over corporate_memory, ACL-scoped. Returns a superset dict per hit:
+    {text, source, score, chunk_index, source_type, document_id, timestamp, sensitivity,
+    user_id}. 'text'/'source' are kept byte-identical for backward-compat.
+
+    Results are restricted to the caller's own documents PLUS the shared org corpus.
+    owner=None (unauthenticated/legacy) returns ONLY the shared org corpus — never another
+    user's private content. Optional source_types (['email','meeting','file']) and since
+    (epoch seconds) narrow the search ('what did X say 3 days ago')."""
     client = get_client()
     if not client.collection_exists(RAG_COLLECTION):
         return []
+    allowed = [ORG_OWNER] if owner is None else [owner, ORG_OWNER]
+    must = [FieldCondition(key="user_id", match=MatchAny(any=allowed))]
+    if source_types:
+        must.append(FieldCondition(key="source_type", match=MatchAny(any=list(source_types))))
+    if since is not None:
+        must.append(FieldCondition(key="timestamp", range=Range(gte=int(since))))
+    acl = Filter(must=must)
     try:
         vec = list(get_embedder().embed([query]))[0].tolist()
         res = client.query_points(collection_name=RAG_COLLECTION, query=vec,
-                                  limit=top_k, with_payload=True)
-        return [{"text": p.payload.get("text", ""), "source": p.payload.get("source", "")}
-                for p in res.points]
+                                  limit=top_k, with_payload=True, query_filter=acl)
     except Exception as e:
         print(f"[rag] search_corporate failed: {e}")
         return []
+    out = []
+    for p in res.points:
+        pl = p.payload or {}
+        out.append({
+            "text": pl.get("text", ""), "source": pl.get("source", ""),   # legacy keys
+            "score": getattr(p, "score", None),
+            "chunk_index": pl.get("chunk_index", pl.get("chunk")),
+            "source_type": pl.get("source_type", "file"),
+            "document_id": pl.get("document_id"),
+            "timestamp": pl.get("timestamp"),
+            "sensitivity": pl.get("sensitivity", "internal"),
+            "user_id": pl.get("user_id"),
+        })
+    return out
 
 
 def watch(interval: int = 30) -> None:

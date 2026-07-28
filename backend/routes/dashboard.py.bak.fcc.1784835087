@@ -1,0 +1,139 @@
+"""HTTP surface for the prompt-to-chart Dashboard (additive, auth-enforced).
+
+    POST   /dashboard/chat                     → SSE: token/tool_call/chart_saved/done
+    GET    /dashboard/charts?board_id&include_unclaimed  → charts + live data
+    GET    /dashboard/charts/{id}              → one chart + data
+    POST   /dashboard/charts/{id}/board        → claim an untagged chart to a board
+    GET    /dashboard/boards                   → boards with chart counts
+    POST   /dashboard/board-session            → mint a new board id
+    DELETE /dashboard/boards/{id}              → delete a board's charts
+
+Identity is read ONLY from the trusted X-Auth-User header the auth middleware injects
+(same rule as agent_os) — client-supplied ids are never trusted. Chart DATA is queried
+live from the read-only Azure DB; chart DEFINITIONS come from the local registry.
+"""
+from __future__ import annotations
+
+import asyncio
+import uuid
+
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+
+from backend.dashboard import coreshare_db, config_db, stream, ask as ask_mod
+from backend.orchestrator.router import dashboard_model
+from backend.dashboard.tools import register_dashboard_tools
+from backend.dashboard.analytics_tools import register_analytics_tools
+
+# Register the 5 chart tools into the shared registry at import time (kept out of the
+# primary agent's allow-list). Doing it here means a missing Azure driver only breaks
+# the dashboard router, never the core agent.
+register_dashboard_tools()
+# Register the analytics tools (list_metrics/run_metric) — also kept out of PRIMARY_TOOLS;
+# the /dashboard/ask agent supplies them as its own allow-list.
+register_analytics_tools()
+
+router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+
+
+def _uid(request: Request) -> str:
+    u = request.headers.get("x-auth-user")
+    if not u:
+        raise HTTPException(status_code=401, detail="unauthenticated")
+    return u
+
+
+async def _render(cfg: dict) -> dict:
+    """Run a chart's SQL live against CORE-SHARE (filters not yet wired → {where} = '')."""
+    sql = cfg["sql"].replace("{where}", "")
+
+    def _run():
+        try:
+            return {"data": coreshare_db.run_query(sql), "error": None}
+        except Exception as e:  # noqa: BLE001
+            return {"data": [], "error": str(e)[:200]}
+
+    r = await asyncio.to_thread(_run)
+    return {"id": cfg["id"], "type": cfg["type"], "title": cfg["title"],
+            "board_id": cfg.get("board_id"), "data": r["data"], "error": r["error"]}
+
+
+@router.post("/chat")
+async def dashboard_chat(request: Request):
+    uid = _uid(request)
+    body = await request.json()
+    message = (body.get("message") or "").strip()
+    board_id = body.get("board_id") or ""
+    if not message:
+        return JSONResponse({"error": "message required"}, status_code=400)
+    return StreamingResponse(stream.stream_dashboard(uid, message, board_id, dashboard_model()),
+                             media_type="text/event-stream")
+
+
+@router.post("/ask")
+async def dashboard_ask(request: Request):
+    """Exact-number analytics Q&A (SSE: token/tool_call/tool_result/done). Distinct from
+    /chat: this agent answers in words with real figures from the curated metric whitelist,
+    it does NOT build charts."""
+    uid = _uid(request)
+    body = await request.json()
+    message = (body.get("message") or "").strip()
+    if not message:
+        return JSONResponse({"error": "message required"}, status_code=400)
+    return StreamingResponse(ask_mod.ask_stream(uid, message, None, dashboard_model(), (body.get("board_id") or "").strip() or "analytics"),
+                             media_type="text/event-stream")
+
+
+@router.get("/charts")
+async def list_charts(request: Request, board_id: str | None = None, include_unclaimed: bool = False):
+    _uid(request)
+    cfgs = await asyncio.to_thread(config_db.list_configs, board_id, include_unclaimed)
+    charts = await asyncio.gather(*[_render(c) for c in cfgs]) if cfgs else []
+    return {"charts": list(charts)}
+
+
+@router.get("/charts/{chart_id}")
+async def get_chart(request: Request, chart_id: str):
+    _uid(request)
+    cfg = await asyncio.to_thread(config_db.get_config, chart_id)
+    if not cfg:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return await _render(cfg)
+
+
+@router.delete("/charts/{chart_id}")
+async def remove_chart(request: Request, chart_id: str):
+    _uid(request)
+    ok = await asyncio.to_thread(config_db.delete_chart, chart_id)
+    return {"ok": bool(ok), "id": chart_id}
+
+
+@router.post("/charts/{chart_id}/board")
+async def claim_chart(request: Request, chart_id: str):
+    _uid(request)
+    body = await request.json()
+    board_id = (body.get("board_id") or "").strip()
+    if not board_id:
+        return JSONResponse({"error": "board_id required"}, status_code=400)
+    ok = await asyncio.to_thread(config_db.assign_board, chart_id, board_id)
+    return {"ok": bool(ok), "id": chart_id, "board_id": board_id}
+
+
+@router.get("/boards")
+async def list_boards(request: Request):
+    _uid(request)
+    boards = await asyncio.to_thread(config_db.list_boards)
+    return {"boards": boards}
+
+
+@router.post("/board-session")
+async def new_board_session(request: Request):
+    _uid(request)
+    return {"board_id": uuid.uuid4().hex}
+
+
+@router.delete("/boards/{board_id}")
+async def delete_board(request: Request, board_id: str):
+    _uid(request)
+    n = await asyncio.to_thread(config_db.delete_board, board_id)
+    return {"ok": True, "deleted": n, "board_id": board_id}

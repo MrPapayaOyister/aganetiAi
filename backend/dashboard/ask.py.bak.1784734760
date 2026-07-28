@@ -1,0 +1,107 @@
+"""Analytics agent SSE generator — the exact-number Q&A half of the dashboard.
+
+Distinct from stream.stream_dashboard (which builds CHARTS): this agent answers in WORDS
+with exact figures, reusing the same LangGraph executor scoped to the analytics tools
+(list_metrics/run_metric/current_time). It is the backend of POST /dashboard/ask.
+
+SSE frames: token | tool_call | tool_result | done | error | [DONE].
+A fresh run_id is minted per turn and threaded through ctx into the events audit
+(agent_runs is currently unused, so no run row is created).
+"""
+from __future__ import annotations
+
+import json
+import logging
+import uuid
+
+from backend.orchestrator import graph
+from backend.dashboard.analytics_tools import ANALYTICS_TOOL_NAMES
+
+log = logging.getLogger("aganeti.analytics")
+
+
+def system_prompt() -> str:
+    return (
+        "You are the analytics assistant for Dar Al Ber Society staff. You answer questions about "
+        "the charity's aid-request data with EXACT numbers, in plain warm language.\n\n"
+        "HOW YOU WORK:\n"
+        "1. If you are not certain which metric fits, call list_metrics first — never guess a metric id.\n"
+        "2. Call run_metric to get the real numbers. Pick the period that matches the question "
+        "(e.g. 'yesterday' -> yesterday, 'this month' -> this_month, no time mentioned -> all).\n"
+        "3. State the figure plainly, with its period. Money is in AED (e.g. 'AED 1,240,500'). "
+        "You may chain calls — compare two periods, or run a breakdown then summarise the top items.\n"
+        "4. If a metric returns no rows or low confidence, SAY SO honestly rather than guessing.\n\n"
+        "HARD RULES:\n"
+        "- EVERY number you state must come from a run_metric result. Never invent, round-guess, or "
+        "estimate a number that a tool did not return.\n"
+        "- This database has ONLY aid-request (expenditure) data. There is NO donation, collection, "
+        "income, or fundraising data. If asked about donations/collections/money received, say plainly "
+        "that this data is not available in this system — do not substitute expenditure for it.\n"
+        "- Never mention SQL, tables, columns, tool names, or the word 'query' in your reply. Keep it to "
+        "a sentence or two. The first data call may take a few seconds while the database wakes up."
+    )
+
+
+def _sse(obj: dict) -> str:
+    return f"data: {json.dumps(obj)}\n\n"
+
+
+def _init_state(user_id: str, message: str, history: list, model_key, run_id: str) -> dict:
+    msgs: list[dict] = [{"role": "system", "content": system_prompt()}]
+    if history:
+        msgs.extend(history)
+    msgs.append({"role": "user", "content": message})
+    return {
+        "messages": msgs, "user_id": user_id, "agent_id": "analytics",
+        "allowed_tools": ANALYTICS_TOOL_NAMES, "step": 0, "awaiting": None,
+        "model_key": model_key, "fallback_models": [], "has_image": False,
+        "run_id": run_id,
+    }
+
+
+async def ask_stream(user_id: str, message: str, history: list | None = None, model_key=None):
+    """Async generator of SSE 'data:' lines for POST /dashboard/ask."""
+    convo = None
+    hist = history or []
+    if history is None:
+        try:
+            from backend.orchestrator import conversation as convo
+            hist = convo.load(user_id, "analytics")
+        except Exception:
+            convo = None
+
+    run_id = uuid.uuid4().hex
+    state = _init_state(user_id, message, hist, model_key, run_id)
+    cfg = {"recursion_limit": 3 * graph.STEP_BUDGET}
+    final_text = ""
+    try:
+        async for _mode, chunk in graph.GRAPH.astream(state, cfg, stream_mode=["updates"]):
+            for _node, upd in chunk.items():
+                if not upd:
+                    continue
+                for m in upd.get("messages", []):
+                    role = m.get("role")
+                    if role == "assistant":
+                        for tc in (m.get("tool_calls") or []):
+                            yield _sse({"type": "tool_call", "name": tc["function"]["name"]})
+                        content = m.get("content")
+                        if content:
+                            final_text = content
+                            yield _sse({"type": "token", "content": content})
+                    elif role == "tool":
+                        name = m.get("name", "")
+                        content = str(m.get("content", ""))
+                        yield _sse({"type": "tool_result", "name": name,
+                                    "ok": not content.startswith("error")})
+        try:
+            if convo is not None:
+                convo.append(user_id, "analytics", "user", message)
+                if final_text:
+                    convo.append(user_id, "analytics", "assistant", final_text)
+        except Exception:
+            pass
+        yield _sse({"type": "done", "final": final_text})
+    except Exception as e:  # noqa: BLE001
+        log.exception("analytics ask stream failed")
+        yield _sse({"type": "error", "message": str(e)})
+    yield "data: [DONE]\n\n"

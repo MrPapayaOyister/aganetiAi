@@ -44,3 +44,7 @@ google-auth-oauthlib
 
 # ── Misc ───────────────────────────────────────────────────
 python-dotenv
+
+# ── Dashboard (prompt-to-chart): read-only Dar Al Ber Azure SQL data source ──
+# Needs the system ODBC Driver 18 for SQL Server (msodbcsql18) present as well.
+pyodbc

@@ -84,7 +84,7 @@ async def _render(cfg: dict) -> dict:
         import time as _t
         for _a in range(2):
             try:
-                return {"data": coreshare_db.run_query(sql), "error": None}
+                return {"data": coreshare_db.run_query_cached(sql), "error": None}
             except Exception as e:  # noqa: BLE001
                 if _a == 0:
                     _t.sleep(0.6)  # transient pool/connection contention under a load burst
@@ -182,3 +182,37 @@ async def delete_board(request: Request, board_id: str):
     _uid(request)
     n = await asyncio.to_thread(config_db.delete_board, board_id)
     return {"ok": True, "deleted": n, "board_id": board_id}
+
+
+# --- Pre-warm: keep every saved chart's data hot so boards open instantly ----------
+# Walks all saved chart configs on an interval and seeds/refreshes the CORE-SHARE result
+# cache for each distinct query. With run_query_cached's stale-while-revalidate, opening
+# ANY saved board then serves cached rows immediately (no live wait). Disable: DASH_PREWARM=0.
+import os as _os
+import threading as _thr
+
+_PREWARM_INTERVAL_S = float(_os.getenv("DASH_PREWARM_INTERVAL_S", "150"))
+_PREWARM_FRESH_S = float(_os.getenv("DASH_PREWARM_FRESH_S", "120"))  # refresh entries older than this
+
+
+def _prewarm_loop() -> None:  # pragma: no cover
+    import time as _t
+    _t.sleep(8)  # let the app finish booting
+    while True:
+        try:
+            cfgs = config_db.list_configs(None, True) or []
+            seen: set = set()
+            for c in cfgs:
+                sql = (c.get("sql") or "").replace("{where}", "")
+                if not sql or sql in seen:
+                    continue
+                seen.add(sql)
+                coreshare_db.warm_query(sql, ttl=_PREWARM_FRESH_S)
+                _t.sleep(0.25)  # stagger so pre-warm never bursts the pool
+        except Exception:
+            pass
+        _t.sleep(_PREWARM_INTERVAL_S)
+
+
+if _os.getenv("DASH_PREWARM", "1") != "0":
+    _thr.Thread(target=_prewarm_loop, daemon=True, name="dash-prewarm").start()

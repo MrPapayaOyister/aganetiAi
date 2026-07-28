@@ -188,22 +188,36 @@ async def _pg_list(identity: str, status: str) -> list[dict]:
                  "decided_at": r.decided_at.isoformat() if r.decided_at else None} for r in rows]
 
 
-async def _pg_decide(aid: str, status: str, result: str | None) -> bool:
-    """Compare-and-swap pending->decided. Returns True iff THIS call won the race."""
+async def _pg_decide(aid: str, status: str, result: str | None, decided_by=None) -> bool:
+    """Compare-and-swap pending->decided. Returns True iff THIS call won the race.
+    Writes an atomic audit event (kind='approval') recording WHO decided WHAT."""
     from sqlalchemy import update
     from sqlalchemy import func as sqlfunc
     from backend.db.base import SessionLocal
-    from backend.db import models as M
+    from backend.db import models as M, repo
     try:
         key = uuid.UUID(str(aid))
     except (ValueError, TypeError):
         return await _sq_decide(aid, status, result)
+    db = None
+    if decided_by:
+        try:
+            db = decided_by if isinstance(decided_by, uuid.UUID) else uuid.UUID(str(decided_by))
+        except (ValueError, TypeError):
+            db = None
     async with SessionLocal() as s:
+        ap = await s.get(M.Approval, key)                      # capture audit fields pre-update
         r = await s.execute(update(M.Approval)
                             .where(M.Approval.id == key, M.Approval.status == "pending")
-                            .values(status=status, result=result, decided_at=sqlfunc.now()))
+                            .values(status=status, result=result, decided_at=sqlfunc.now(), decided_by=db))
+        won = (r.rowcount or 0) > 0
+        if won and ap is not None:
+            await repo.log_event(s, kind="approval", name=status, org_id=ap.org_id, user_id=ap.user_id,
+                                 agent_id=ap.agent_id, run_id=ap.run_id, success=(status == "approved"),
+                                 meta={"approval_id": str(key), "tool_key": ap.tool_key,
+                                       "action_type": ap.action_type, "decided_by": (str(db) if db else None)})
         await s.commit()
-        return (r.rowcount or 0) > 0
+        return won
 
 
 async def _pg_set_result(aid: str, result: str | None) -> None:
@@ -238,10 +252,11 @@ async def list_approvals(user_id: str, status: str = "pending") -> list[dict]:
     return await _sq_list(user_id, status)
 
 
-async def decide(aid: str, status: str, result: str | None = None) -> bool:
-    """Atomically transition pending->status. Returns True iff this call won."""
+async def decide(aid: str, status: str, result: str | None = None, decided_by=None) -> bool:
+    """Atomically transition pending->status. Returns True iff this call won.
+    decided_by (internal User id) is recorded on the row + the audit event."""
     if BACKEND == "postgres":
-        return await _pg_decide(aid, status, result)
+        return await _pg_decide(aid, status, result, decided_by)
     return await _sq_decide(aid, status, result)
 
 

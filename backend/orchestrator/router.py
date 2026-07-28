@@ -42,14 +42,49 @@ MODELS: dict[str, dict] = {
                   "caps": {"tool_call": True, "vision": True, "ctx": 32768},
                   "tier": "interactive", "cost_in": 0, "cost_out": 0},
 }
+
 DEFAULT_CHAIN = ["tool-32b", "fast-7b"]
+
+# ── External provider: Azure OpenAI (dashboard builder only) ──────────────────
+# Enabled only when AZURE_OPENAI_API_KEY is set. The dashboard agents select it
+# when DASHBOARD_LLM=azure (or openai); plan() auto-appends the local vLLM chain
+# as fallback, so a bad key / outage silently degrades to local.
+_AZURE_KEY = os.getenv("AZURE_OPENAI_API_KEY", "")
+if _AZURE_KEY:
+    MODELS["azure"] = {
+        "provider": "azure",
+        "azure_endpoint": os.getenv("AZURE_OPENAI_ENDPOINT", "https://nazo-openai.openai.azure.com"),
+        "api_version": os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview"),
+        "model": os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1"),  # Azure DEPLOYMENT name
+        "api_key": _AZURE_KEY,
+        "caps": {"tool_call": True, "vision": True, "ctx": 128000},
+        "tier": "interactive",
+        "cost_in": 2000, "cost_out": 8000,  # micro-USD per 1k (~GPT-4.1 $2/$8 per 1M)
+    }
+
+
+def dashboard_model() -> "str | None":
+    """model_key for the dashboard agents; None → local default chain.
+    DASHBOARD_LLM=azure|openai → Azure GPT-4.1 (local vLLM auto-appended fallback)."""
+    if os.getenv("DASHBOARD_LLM", "").lower() in ("azure", "openai") and "azure" in MODELS:
+        return "azure"
+    return None
 
 _clients: dict[str, AsyncOpenAI] = {}
 
 
 def _client(key: str) -> AsyncOpenAI:
     if key not in _clients:
-        _clients[key] = AsyncOpenAI(base_url=MODELS[key]["base_url"], api_key="local")
+        m = MODELS[key]
+        if m.get("provider") == "azure":
+            from openai import AsyncAzureOpenAI
+            _clients[key] = AsyncAzureOpenAI(
+                azure_endpoint=m["azure_endpoint"],
+                api_key=m["api_key"],
+                api_version=m.get("api_version", "2025-01-01-preview"),
+            )
+        else:
+            _clients[key] = AsyncOpenAI(base_url=m["base_url"], api_key=m.get("api_key") or "local")
     return _clients[key]
 
 
@@ -107,7 +142,7 @@ def _log(user_id, agent_id, model_key, ti, to, dt, ok):
 
 async def complete(messages: list[dict], tools: list[dict] | None = None, *,
                    agent: dict | None = None, need_vision: bool = False, tier: str | None = None,
-                   temperature: float = 0.2, max_tokens: int = 1024, ctx: dict | None = None) -> tuple[dict, str]:
+                   temperature: float = 0.2, max_tokens: int = 1024, tool_choice: str = "auto", ctx: dict | None = None) -> tuple[dict, str]:
     """Route + call with fallback. Returns (assistant_message_dict, model_key_used)."""
     need_tools = bool(tools)
     chain = plan(agent, need_tools=need_tools, need_vision=need_vision, tier=tier)
@@ -118,7 +153,7 @@ async def complete(messages: list[dict], tools: list[dict] | None = None, *,
         kwargs: dict = dict(model=m["model"], messages=messages, temperature=temperature, max_tokens=max_tokens)
         if tools:
             kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
+            kwargs["tool_choice"] = tool_choice
         t0 = time.monotonic()
         try:
             resp = await _client(mk).chat.completions.create(timeout=90, **kwargs)

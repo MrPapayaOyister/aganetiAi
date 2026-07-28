@@ -8,6 +8,7 @@ import CommandPalette from './components/CommandPalette'
 import IntelligenceCore from './components/IntelligenceCore'
 import AssistantPage from './pages/AssistantPage'
 import AnalyticsPage from './pages/AnalyticsPage'
+import DashboardPage from './pages/DashboardPage'
 import FilesPage from './pages/FilesPage'
 import InboxPage from './pages/InboxPage'
 import DraftsPage from './pages/DraftsPage'
@@ -72,6 +73,7 @@ function AnimatedRoutes() {
       <Routes location={location} key={location.pathname}>
         <Route path="/"          element={<Page><AssistantPage /></Page>} />
         <Route path="/analytics" element={<Page><AnalyticsPage /></Page>} />
+        <Route path="/dashboard" element={<Page><DashboardPage /></Page>} />
         <Route path="/files"     element={<Page><FilesPage /></Page>} />
         <Route path="/inbox"     element={<Page><InboxPage /></Page>} />
         <Route path="/drafts"    element={<Page><DraftsPage /></Page>} />
@@ -100,7 +102,7 @@ function AuthenticatedShell() {
   // Utility pages get a slightly quieter feel via opacity — but the
   // IntelligenceCore itself remains mounted (only ONE WebGL context for the
   // whole app lifetime → no flash on route change).
-  const calmRoutes = ['/settings', '/files', '/analytics']
+  const calmRoutes = ['/settings', '/files', '/analytics', '/dashboard']
   const calm = calmRoutes.some(p => location.pathname.startsWith(p))
 
   return (

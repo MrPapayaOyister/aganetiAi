@@ -77,7 +77,21 @@ async def _load_primary(user_id: str) -> tuple[dict, str]:
     return dict(DEFAULT_PRIMARY), PRIMARY_PROMPT
 
 
-async def _sse(user_id: str, message: str, session_id: str):
+def _strip_images(messages: list) -> list:
+    """Replace multimodal content (image data-URLs) with just its text so the
+    persisted approval blob stays small and images aren't re-sent on resume."""
+    out = []
+    for m in messages:
+        c = m.get("content")
+        if isinstance(c, list):
+            text = " ".join(p.get("text", "") for p in c if isinstance(p, dict) and p.get("type") == "text")
+            out.append({**m, "content": text or "[image]"})
+        else:
+            out.append(m)
+    return out
+
+
+async def _sse(user_id: str, message: str, session_id: str, images: list | None = None):
     from backend.orchestrator import conversation as convo
     agent, prompt = await _load_primary(user_id)
     history = convo.load(user_id, session_id)  # short-term memory of this thread
@@ -85,7 +99,7 @@ async def _sse(user_id: str, message: str, session_id: str):
     try:
         async for ev in graph.astream_turn(user_id=user_id, agent=agent,
                                             user_message=message, session_id=session_id,
-                                            system_prompt=prompt, history=history):
+                                            system_prompt=prompt, history=history, images=images):
             if ev["type"] == "final":
                 final = ev
                 continue
@@ -95,7 +109,7 @@ async def _sse(user_id: str, message: str, session_id: str):
         # Persist the turn so the next message has context (fixes stateless re-asking).
         convo.append(user_id, session_id, "user", message)
         if final and final.get("status") == "awaiting_approval":
-            aid = await store.create_approval(user_id, agent, final["messages"], final["approval"])
+            aid = await store.create_approval(user_id, agent, _strip_images(final["messages"]), final["approval"])
             convo.append(user_id, session_id, "assistant",
                          f"(Prepared an action for your approval: {final['approval'].get('preview', '')})")
             yield f"data: {json.dumps({'type': 'approval_required', 'approval': final['approval'], 'approval_id': aid})}\n\n"
@@ -106,14 +120,126 @@ async def _sse(user_id: str, message: str, session_id: str):
             yield f"data: {json.dumps({'type': 'done', 'final': fin})}\n\n"
     except Exception as e:  # noqa: BLE001
         yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+    await _record_session(user_id, session_id, message)
     yield "data: [DONE]\n\n"
+
+
+async def _record_session(uid: str, session_id: str, first_message: str) -> None:
+    """Best-effort: upsert the chat_sessions registry row + bump count/last_activity so
+    the thread appears in the history dropdown. Never raises into the SSE stream."""
+    import uuid as _uuid
+    from backend.orchestrator import conversation as convo
+    try:
+        skey = _uuid.UUID(str(session_id))
+    except (ValueError, TypeError):
+        return  # legacy non-uuid session — JSON store still works, just not listed
+    n = convo.count(uid, session_id)
+    if n <= 0:
+        return
+    title = (first_message or "").strip().replace("\n", " ")[:60] or "New chat"
+    try:
+        from backend.db.base import SessionLocal
+        from backend.db import repo
+        async with SessionLocal() as s:
+            user = await repo.resolve_user(s, uid)
+            if not user:
+                return
+            await repo.upsert_and_touch_chat_session(
+                s, session_id=skey, user_id=user.id, org_id=user.org_id, title=title, count=n)
+            await s.commit()
+    except Exception:  # noqa: BLE001
+        log.debug("chat session registry update failed", exc_info=True)
 
 
 @router.get("/history")
 async def chat_history(request: Request, session_id: str = "sess"):
-    """This session's conversation history (for the UI to restore on reload)."""
+    """This session's conversation history (for the UI to restore). The JSON store is
+    keyed by the caller's own uid, so a caller can only ever read their own sessions."""
     from backend.orchestrator import conversation as convo
     return {"messages": convo.load_full(_uid(request), session_id)}
+
+
+@router.get("/sessions")
+async def list_sessions(request: Request, archived: bool = False):
+    """This user's chat sessions, newest-first, for the history dropdown."""
+    from backend.db.base import SessionLocal
+    from backend.db import repo
+    async with SessionLocal() as s:
+        user = await repo.resolve_user(s, _uid(request))
+        if not user:
+            return {"sessions": []}
+        rows = await repo.list_chat_sessions(s, user.id, archived=archived)
+        return {"sessions": [{
+            "id": str(r.id), "title": r.title or "New chat",
+            "message_count": r.message_count,
+            "last_message_at": r.last_message_at.isoformat() if r.last_message_at else None,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        } for r in rows]}
+
+
+@router.patch("/sessions/{session_id}")
+async def update_session(request: Request, session_id: str):
+    """Rename a session (title_source→'user' so auto-titling never clobbers it)."""
+    import uuid as _uuid
+    from backend.db.base import SessionLocal
+    from backend.db import repo
+    body = await request.json()
+    try:
+        skey = _uuid.UUID(session_id)
+    except (ValueError, TypeError):
+        return JSONResponse({"error": "bad session id"}, status_code=400)
+    async with SessionLocal() as s:
+        user = await repo.resolve_user(s, _uid(request))
+        if not user:
+            return JSONResponse({"error": "unknown user"}, status_code=404)
+        title = body.get("title")
+        if not isinstance(title, str) or not title.strip():
+            return JSONResponse({"error": "title required"}, status_code=400)
+        ok = await repo.rename_chat_session(s, skey, user.id, title.strip()[:120])
+        await s.commit()
+    return {"ok": True} if ok else JSONResponse({"error": "not found"}, status_code=404)
+
+
+@router.delete("/sessions/{session_id}")
+async def delete_session(request: Request, session_id: str):
+    """Soft-delete a session row + unlink its JSON body file (ownership-scoped)."""
+    import uuid as _uuid
+    from backend.db.base import SessionLocal
+    from backend.db import repo
+    from backend.orchestrator import conversation as convo
+    uid = _uid(request)
+    try:
+        skey = _uuid.UUID(session_id)
+    except (ValueError, TypeError):
+        return JSONResponse({"error": "bad session id"}, status_code=400)
+    async with SessionLocal() as s:
+        user = await repo.resolve_user(s, uid)
+        if not user:
+            return JSONResponse({"error": "unknown user"}, status_code=404)
+        ok = await repo.delete_chat_session(s, skey, user.id)
+        await s.commit()
+    if ok:
+        convo.delete(uid, session_id)
+        return {"ok": True}
+    return JSONResponse({"error": "not found"}, status_code=404)
+
+
+MAX_IMAGES = 4
+
+
+def _clean_images(raw) -> list:
+    """Accept a list of data: URLs (or {url} objects); cap count; drop junk.
+    Vision is expensive and the context is finite — 4 images per turn is plenty."""
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for it in raw:
+        u = it.get("url") if isinstance(it, dict) else it
+        if isinstance(u, str) and u.startswith("data:image"):
+            out.append(u)
+        if len(out) >= MAX_IMAGES:
+            break
+    return out
 
 
 @router.post("/chat")
@@ -122,7 +248,9 @@ async def agent_chat(request: Request):
     body = await request.json()
     message = body.get("message", "")
     session_id = body.get("session_id", "sess")
-    return StreamingResponse(_sse(user_id, message, session_id), media_type="text/event-stream")
+    images = _clean_images(body.get("images"))
+    return StreamingResponse(_sse(user_id, message, session_id, images),
+                             media_type="text/event-stream")
 
 
 @router.get("/approvals")
@@ -150,7 +278,8 @@ async def _resume(request: Request, aid: str, approved: bool):
     # ATOMIC CLAIM (compare-and-swap pending->decided) BEFORE executing. Only the
     # winner proceeds, so the outbound tool runs EXACTLY once under a double-click /
     # concurrent approve+reject race — preserving the single-execution guarantee.
-    won = await store.decide(aid, status)
+    # decided_by (the resolved caller) is recorded on the row + the audit event.
+    won = await store.decide(aid, status, decided_by=cu.id)
     if not won:
         return JSONResponse({"error": "already decided"}, status_code=409)
     agent = json.loads(rec["agent"])
@@ -368,3 +497,50 @@ async def delete_agent(request: Request, agent_id: str):
         await repo.soft_delete_agent(s, ag.id)
         await s.commit()
         return {"status": "archived", "id": str(ag.id)}
+
+
+# ── Notifications (proactive mail alerts + task proposals for the header bell) ──
+@router.get("/notifications")
+async def list_notifications(request: Request):
+    from backend import notifications as notif
+    uid = _uid(request)
+    return {"notifications": notif.list_notifications(uid), "unread": notif.unread_count(uid)}
+
+
+@router.post("/notifications/{nid}/read")
+async def read_notification(request: Request, nid: str):
+    from backend import notifications as notif
+    ok = notif.mark_read(_uid(request), nid)
+    return {"ok": ok}
+
+
+@router.post("/notifications/read_all")
+async def read_all_notifications(request: Request):
+    from backend import notifications as notif
+    notif.mark_all_read(_uid(request))
+    return {"ok": True}
+
+
+@router.post("/notifications/{nid}/approve")
+async def approve_notification(request: Request, nid: str):
+    """Approve a 'task_proposal' notification → create the real task (approval-gated:
+    nothing is created until the user clicks approve)."""
+    from backend import notifications as notif
+    uid = _uid(request)
+    n = notif.get(uid, nid)
+    if not n:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if n.get("kind") != "task_proposal":
+        return JSONResponse({"error": "not a task proposal"}, status_code=400)
+    ent = n.get("entity") or {}
+    title = (ent.get("title") or "").strip()
+    if not title:
+        return JSONResponse({"error": "no task title"}, status_code=400)
+    try:
+        from tasks.store import create_task
+        await asyncio.to_thread(create_task, uid, title=title, source="email",
+                                priority=(ent.get("priority") or "Medium").lower())
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"error": f"could not create task: {e}"}, status_code=500)
+    notif.set_acted(uid, nid)
+    return {"ok": True, "task": title}
