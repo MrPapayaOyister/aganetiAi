@@ -68,7 +68,6 @@ def embed_text(text: str) -> list[float] | None:
     return None
 
 def extract_facts_from_summary(summary_text: str, user_id: str) -> list[str]:
-    url = "http://localhost:8080/v1/chat/completions"
     prompt = f"""Extract atomic facts from this conversation summary. 
 Each fact must be a single standalone sentence.
 Facts must include names, dates, decisions, preferences, and commitments.
@@ -78,15 +77,11 @@ Example output: ["Ahmed's deadline is July 1", "User prefers morning meetings"]
 Summary:
 {summary_text}"""
 
-    payload = {
-        "model": "local-model",
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.0
-    }
+    from backend.services import llm as _llm
     try:
-        response = httpx.post(url, json=payload, timeout=30.0)
-        if response.status_code == 200:
-            reply_text = response.json()["choices"][0]["message"]["content"].strip()
+        reply_text = _llm.complete([{"role": "user", "content": prompt}],
+                                   temperature=0.0, timeout=40.0).strip()
+        if reply_text:
             parsed_facts = []
             try:
                 start = reply_text.find('[')

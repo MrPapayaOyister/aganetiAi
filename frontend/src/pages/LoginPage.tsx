@@ -8,11 +8,13 @@ import ParticleCanvas from '../components/ParticleCanvas'
 import { OrbAnimation } from '../components/OrbAnimation'
 
 export default function LoginPage() {
-  const { signInWithGoogle, session } = useAuth()
+  const { signInWithGoogle, signInWithMicrosoft, session } = useAuth()
   const { addToast } = useToast()
   const navigate = useNavigate()
   const [booting, setBooting] = useState(true)
   const [authLoading, setAuthLoading] = useState(false)
+  // Which provider was clicked, so only that button shows a spinner.
+  const [pending, setPending] = useState<'google' | 'microsoft' | null>(null)
 
   // "Awakening" — particles converge then settle as the page mounts
   useEffect(() => {
@@ -76,9 +78,9 @@ export default function LoginPage() {
           <button
             onClick={async () => {
               if (authLoading) return
-              setAuthLoading(true)
+              setPending('google'); setAuthLoading(true)
               try { await signInWithGoogle() }
-              catch { setAuthLoading(false) }
+              catch { setAuthLoading(false); setPending(null); addToast('Google sign-in failed', 'error') }
               // success → redirect unmounts the page; leave spinner running.
             }}
             disabled={authLoading}
@@ -86,7 +88,7 @@ export default function LoginPage() {
                        bg-white text-[#1a1a1a] font-medium text-sm
                        hover:bg-white/90 disabled:opacity-70 disabled:cursor-wait"
           >
-            {authLoading ? (
+            {authLoading && pending === 'google' ? (
               <Loader2 size={18} className="animate-spin text-[#1a1a1a]" />
             ) : (
               <>
@@ -102,18 +104,32 @@ export default function LoginPage() {
           </button>
 
           <button
-            onClick={() => addToast('Microsoft login coming soon', 'info')}
-            className="w-full flex items-center justify-center gap-3 px-5 h-12 rounded-xl
+            onClick={async () => {
+              if (authLoading) return
+              setPending('microsoft'); setAuthLoading(true)
+              try { await signInWithMicrosoft() }
+              catch { setAuthLoading(false); setPending(null); addToast('Microsoft sign-in failed', 'error') }
+              // success → redirect unmounts the page; leave spinner running.
+            }}
+            disabled={authLoading}
+            className="press w-full flex items-center justify-center gap-3 px-5 h-12 rounded-xl
                        bg-white/[0.04] border border-white/[0.1] text-[#E2E8F0] font-medium text-sm
-                       hover:bg-white/[0.08] active:scale-[0.98] transition-all duration-150"
+                       hover:bg-white/[0.08] disabled:opacity-70 disabled:cursor-wait
+                       active:scale-[0.98] transition-all duration-150"
           >
-            <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24">
-              <path fill="#F25022" d="M1 1h10v10H1z"/>
-              <path fill="#7FBA00" d="M13 1h10v10H13z"/>
-              <path fill="#00A4EF" d="M1 13h10v10H1z"/>
-              <path fill="#FFB900" d="M13 13h10v10H13z"/>
-            </svg>
-            Continue with Microsoft 365
+            {authLoading && pending === 'microsoft' ? (
+              <Loader2 size={18} className="animate-spin" />
+            ) : (
+              <>
+                <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24">
+                  <path fill="#F25022" d="M1 1h10v10H1z"/>
+                  <path fill="#7FBA00" d="M13 1h10v10H13z"/>
+                  <path fill="#00A4EF" d="M1 13h10v10H1z"/>
+                  <path fill="#FFB900" d="M13 13h10v10H13z"/>
+                </svg>
+                Continue with Microsoft 365
+              </>
+            )}
           </button>
         </motion.div>
 

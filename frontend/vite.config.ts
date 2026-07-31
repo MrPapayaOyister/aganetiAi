@@ -7,10 +7,14 @@ export default defineConfig({
    server: {
     host: '0.0.0.0',
     port: 3000,
-    allowedHosts: ['papayaoyster.com', 'www.papayaoyster.com', '100.107.179.44'],
+    allowedHosts: ['papayaoyster.com', 'www.papayaoyster.com', '100.107.179.44',
+                   'localhost', '127.0.0.1'],
     proxy: {
       '/api': {
-        target: 'http://192.168.1.155:8000',
+        // Which backend `npm run dev` talks to. Defaults to the shared LAN
+        // instance; set API_TARGET=http://127.0.0.1:8001 to hit a local dev
+        // backend (see scripts/dev_backend.sh) without editing this file.
+        target: process.env.API_TARGET || 'http://192.168.1.155:8000',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
       }

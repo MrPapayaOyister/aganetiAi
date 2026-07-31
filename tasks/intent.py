@@ -1,9 +1,9 @@
 import json
 from openai import OpenAI
-from config.settings import LLM_BASE_URL
+from config.settings import LLM_BASE_URL, LLM_API_KEY, LLM_MODEL
 
-# Initialize a separate OpenAI client to avoid circular dependencies
-client = OpenAI(base_url=LLM_BASE_URL, api_key="local-dev")
+# Separate client (avoids a circular import on backend.main); same LiteLLM gateway.
+client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY or "unset")
 
 SYSTEM_PROMPT = """You are a task intent classifier. Analyze the user message and determine if it expresses an intention to do something, a commitment, a reminder need, or a to-do item.
 
@@ -31,7 +31,7 @@ def detect_task_intent(user_message: str) -> dict | None:
     """
     try:
         response = client.chat.completions.create(
-            model="local-model",
+            model=LLM_MODEL,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_message}

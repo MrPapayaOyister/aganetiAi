@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { usePrefs } from '../contexts/PrefsContext'
 import { isMuted, setMuted } from '../lib/sound'
 import { PressButton } from '../components/ui/PressButton'
@@ -216,11 +216,35 @@ function AccountSection() {
     onError: () => addToast('Failed to disconnect', 'error'),
   })
 
-  const handleConnectGoogle = () => {
-    window.location.href = `/api/auth/google/connect?user_id=${encodeURIComponent(userId)}&redirect_uri=/settings`
+  const handleConnect = (provider: 'google' | 'microsoft') => {
+    window.location.href = `/api/auth/${provider}/connect?user_id=${encodeURIComponent(userId)}&redirect_uri=/settings`
   }
 
+  // The OAuth callback bounces back here with ?connected= or ?connect_error=.
+  // Report the outcome, refetch status, then strip the params so a refresh is clean.
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search)
+    const ok = q.get('connected')
+    const err = q.get('connect_error')
+    if (!ok && !err) return
+    if (ok) {
+      addToast(`${ok === 'microsoft' ? 'Microsoft 365' : 'Google'} connected`, 'success')
+      qc.invalidateQueries({ queryKey: ['provider-status', userId] })
+    } else if (err === 'already_connected') {
+      const other = q.get('connected_provider') === 'microsoft' ? 'Microsoft 365' : 'Google'
+      addToast(`Disconnect ${other} first — only one account can be linked at a time.`, 'error')
+    } else {
+      addToast(`Could not connect ${err === 'microsoft' ? 'Microsoft 365' : 'Google'}`, 'error')
+    }
+    window.history.replaceState({}, '', window.location.pathname)
+  }, [])
+
   const google = providerData?.google
+  const microsoft = providerData?.microsoft
+  const anyConnected = !!google?.connected || !!microsoft?.connected
+  // Only ONE mailbox may be linked at a time — the backend refuses the second.
+  const otherLinked = (p: 'google' | 'microsoft') =>
+    p === 'google' ? !!microsoft?.connected : !!google?.connected
 
   return (
     <div className="space-y-4">
@@ -365,10 +389,18 @@ function AccountSection() {
                 </div>
               ) : (
                 <button
-                  onClick={handleConnectGoogle}
+                  onClick={() => handleConnect('google')}
+                  disabled={google?.configured === false || otherLinked('google')}
+                  title={
+                    google?.configured === false
+                      ? 'Google OAuth is not configured on the server'
+                      : otherLinked('google')
+                        ? 'Disconnect Microsoft 365 first — one account at a time'
+                        : undefined
+                  }
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium
                              bg-[#00D4FF]/12 border border-[#00D4FF]/25 text-[#00D4FF]
-                             hover:bg-[#00D4FF]/20 transition-colors shrink-0"
+                             hover:bg-[#00D4FF]/20 disabled:opacity-40 transition-colors shrink-0"
                 >
                   <Link2 size={12} />
                   Connect
@@ -376,26 +408,74 @@ function AccountSection() {
               )}
             </div>
 
-            {/* Microsoft placeholder */}
-            <div className="glass-sm rounded-xl p-4 flex items-center gap-3 opacity-50">
+            {/* Microsoft 365 */}
+            <div className="glass-sm rounded-xl p-4 flex items-center gap-3">
               <svg className="w-6 h-6 shrink-0" viewBox="0 0 24 24">
                 <path fill="#F25022" d="M1 1h10v10H1z"/>
                 <path fill="#7FBA00" d="M13 1h10v10H13z"/>
                 <path fill="#00A4EF" d="M1 13h10v10H1z"/>
                 <path fill="#FFB900" d="M13 13h10v10H13z"/>
               </svg>
+
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-[#E2E8F0]">Microsoft 365</p>
-                <p className="text-xs text-[#4A6080]">Outlook · Teams · OneDrive</p>
+                {microsoft?.connected ? (
+                  <p className="text-xs text-[#4A6080] truncate">{microsoft.email ?? 'Connected'}</p>
+                ) : (
+                  <p className="text-xs text-[#4A6080]">Outlook · Calendar · Contacts</p>
+                )}
               </div>
-              <span className="text-xs text-[#4A6080] shrink-0">Coming soon</span>
+
+              {microsoft?.connected ? (
+                <div className="flex items-center gap-2 shrink-0">
+                  <CheckCircle size={14} className="text-[#00FF88]" />
+                  <button
+                    onClick={() => disconnectMut.mutate('microsoft')}
+                    disabled={disconnectMut.isPending}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs
+                               text-[#FF4466] bg-[#FF4466]/10 border border-[#FF4466]/20
+                               hover:bg-[#FF4466]/20 disabled:opacity-40 transition-colors"
+                  >
+                    {disconnectMut.isPending
+                      ? <Loader2 size={12} className="animate-spin" />
+                      : <Link2Off size={12} />}
+                    Disconnect
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => handleConnect('microsoft')}
+                  disabled={microsoft?.configured === false || otherLinked('microsoft')}
+                  title={
+                    microsoft?.configured === false
+                      ? 'Microsoft OAuth is not configured on the server'
+                      : otherLinked('microsoft')
+                        ? 'Disconnect Google first — one account at a time'
+                        : undefined
+                  }
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium
+                             bg-[#00D4FF]/12 border border-[#00D4FF]/25 text-[#00D4FF]
+                             hover:bg-[#00D4FF]/20 disabled:opacity-40 transition-colors shrink-0"
+                >
+                  <Link2 size={12} />
+                  Connect
+                </button>
+              )}
             </div>
           </div>
         )}
 
-        {!google?.connected && !providerLoading && (
+        {!anyConnected && !providerLoading && (
           <p className="text-xs text-[#4A6080] pt-1 leading-relaxed">
-            Connect Google to unlock your real inbox, agenda, and contacts inside Aria.
+            Connect Microsoft 365 <span className="text-[#4A6080]/70">or</span> Google to
+            unlock your real inbox, agenda, and contacts inside Aria. Only one account can
+            be linked at a time.
+          </p>
+        )}
+        {anyConnected && !providerLoading && (
+          <p className="text-xs text-[#4A6080] pt-1 leading-relaxed">
+            Aria reads mail and calendar from your {microsoft?.connected ? 'Microsoft 365' : 'Google'} account.
+            To switch, disconnect it first.
           </p>
         )}
       </div>

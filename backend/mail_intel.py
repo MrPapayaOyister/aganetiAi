@@ -14,21 +14,16 @@ import os
 import re
 
 from backend import notifications
+from backend.services import llm as _llm
 
 
 def _json_llm(prompt: str, max_tokens: int = 320) -> str:
-    """Call the 32B tool model in JSON mode — the 7B is unreliable at strict JSON;
-    the 32B + response_format=json_object returns well-formed output. Background job,
-    so the extra latency is fine."""
-    import httpx
-    url = os.getenv("VLLM_TOOL_URL", "http://localhost:9000/v1").rstrip("/")
-    model = os.getenv("VLLM_TOOL_MODEL", "qwen2.5-32b")
-    r = httpx.post(f"{url}/chat/completions", timeout=90.0, json={
-        "model": model, "temperature": 0.1, "max_tokens": max_tokens,
-        "response_format": {"type": "json_object"},
-        "messages": [{"role": "user", "content": prompt}]})
-    r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"] or ""
+    """Ask the gateway for strict JSON. response_format=json_object keeps the output
+    parseable; this is a background job so latency is not critical."""
+    return _llm.complete([{"role": "user", "content": prompt}],
+                         temperature=0.1, max_tokens=max_tokens,
+                         response_format={"type": "json_object"},
+                         timeout=90.0)
 
 
 _PROMPT = (

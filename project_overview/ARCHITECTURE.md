@@ -28,9 +28,11 @@ served separately. Everything talks over loopback.
 │   │  │ aiogram bot          │  │──HTTPS────│  Telegram Bot API           │   │
 │   │  │ (long polling)       │  │           └─────────────────────────────┘   │
 │   │  └──────────────────────┘  │           ┌─────────────────────────────┐   │
-│   │                            │──HTTPS────│  Microsoft Graph            │   │
-│   │  SQLite tasks.db (WAL)     │           │  /me/messages, calendarView │   │
-│   │  tokens/{user}_m365.json   │           └─────────────────────────────┘   │
+│   │                            │──HTTPS────│  Microsoft Graph / Google   │   │
+│   │  SQLite tasks.db (WAL)     │           │  mail + calendar + contacts │   │
+│   │  data_vault/               │           └─────────────────────────────┘   │
+│   │    provider_connections    │                                             │
+│   │    .json (encrypted)       │                                             │
 │   │  email_store/{user}/*.json │                                             │
 │   │  logs/email_log.json       │                                             │
 │   └────────────────────────────┘                                             │
@@ -46,7 +48,7 @@ served separately. Everything talks over loopback.
 | Layer | Module | Responsibility |
 |---|---|---|
 | Config | `config/settings.py` | `.env` loader, paths, all URLs/keys/scopes. Source of truth. |
-| Config | `config/users.py` | 2-user registry; `telegram_chat_id ↔ user_id ↔ M365 email ↔ agent_id`. |
+| Config | `config/users.py` | 2-user registry; `telegram_chat_id ↔ user_id ↔ supabase_uid ↔ agent_id`. |
 | API | `backend/main.py` | FastAPI app, all REST endpoints, LangGraph meshes, APScheduler lifespan, every background job. **1503 lines — biggest hot-spot.** |
 | API | `backend/action_parser.py` | Parses `[ACTION:{…}]` tags from LLM output, dispatches via httpx loopback. |
 | API | `backend/ingest.py` | Loads `data_vault/company_handbook.txt` into Qdrant `corporate_memory`. |
@@ -55,9 +57,14 @@ served separately. Everything talks over loopback.
 | LLM | `integrations/model_router.py` | Keyword-routed smart/fast selection. |
 | Tasks | `tasks/store.py` | SQLite tasks + contacts. WAL, per-user scoping, on-import migrations. |
 | Tasks | `scheduler/schedule_manager.py` | Natural-language → cron, SQLite-backed schedules, hand-off to APScheduler. |
-| Mail | `integrations/m365_auth.py` | MSAL public-client device-flow + per-user token cache. |
-| Mail | `integrations/m365_mail.py` | Graph `/me/messages` fetch/send/mark-read. |
-| Calendar | `integrations/m365_calendar.py` | Graph `calendarView`, 5-min agenda cache, 2-min events cache, meeting-brief formatter. |
+| Auth | `backend/routes/provider_auth.py` | OAuth connect/callback/status/disconnect for **both** Google and Microsoft — one shared authorization-code flow. |
+| Auth | `backend/services/provider_tokens.py` | Per-user token load + transparent refresh for either provider; Fernet-encrypted at rest; `which_provider()` decides routing. |
+| Mail/Cal | `backend/services/mailbox.py` | **The facade every caller uses.** Dispatches inbox/agenda/send/contacts to Graph or Google per user; `*_sync` mirrors for off-loop callers. |
+| Mail | `backend/services/msmail.py` / `gmail.py` | Graph `/me/messages` and Gmail v1 — same return shape. |
+| Calendar | `backend/services/mscalendar.py` / `gcalendar.py` | Graph `calendarView` (5-min agenda cache, 2-min events cache) and Google Calendar v3. |
+| Contacts | `backend/services/mscontacts.py` / `gcontacts.py` | Graph contacts + tenant directory; Google People. |
+| Util | `backend/services/timeparse.py` | Natural-language → ISO meeting times (provider-agnostic). |
+| Util | `backend/services/async_bridge.py` | Runs async provider calls from sync, off-loop code. |
 | Inter-agent | `integrations/agent_inbox.py` | SQLite-backed message queue between `agent_1` ↔ `agent_2`. |
 | Reports | `reports/email_digest.py` | Telegram-Markdown digest from `email_store/{u}/unread.json`. |
 | Reports | `reports/pdf_generator.py` | Jinja2 + WeasyPrint, per-user style overrides. |
@@ -118,8 +125,11 @@ served separately. Everything talks over loopback.
 
 ## External dependencies
 
-- **Microsoft 365** — Graph API for mail + calendar, MSAL device flow for auth.
-  Per-user tokens cached under `tokens/{user_id}_m365_token.json`.
+- **Microsoft 365** — Graph API for mail + calendar + contacts. Confidential-client
+  web OAuth (`/auth/microsoft/connect`); needs `M365_CLIENT_ID`, `M365_CLIENT_SECRET`,
+  `M365_TENANT_ID`. The MSAL device flow was removed — tokens now live encrypted in
+  `provider_connections` alongside Google's.
+- **Google** — Gmail / Calendar / People, same OAuth flow (`/auth/google/connect`).
 - **Telegram Bot API** — single bot, two authorized chat ids.
 - **Qdrant** — vector DB, embeddings via `fastembed` (`BAAI/bge-small-en-v1.5`).
 - **llama.cpp** — OpenAI-compatible `/v1/chat/completions` and `/v1/embeddings`.
@@ -131,7 +141,7 @@ served separately. Everything talks over loopback.
 ```
 project_root/
 ├── .env                      # all secrets + URLs
-├── tokens/                   # per-user M365 tokens
+├── data_vault/provider_connections.json  # per-user OAuth tokens, Fernet-encrypted
 ├── memory/                   # gitignored — both the Qdrant volume AND the Python modules (see CURRENT_GAPS)
 ├── email_store/{user}/       # unread.json, triaged_ids.json, digest_disabled marker
 ├── logs/email_log.json       # capped 50, used for meeting-brief context

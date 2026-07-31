@@ -19,7 +19,6 @@ load_dotenv(BASE_DIR / ".env")
 
 # Memory
 MEMORY_DIR  = BASE_DIR / "memory"
-TOKENS_DIR  = BASE_DIR / "tokens"
 LOGS_DIR    = BASE_DIR / "logs"
 TEMP_DIR    = BASE_DIR / "temp"
 EMAIL_STORE = BASE_DIR / "email_store"
@@ -34,10 +33,18 @@ DB_PATH = str(BASE_DIR / "tasks" / "tasks.db")
 # the old cloud-VM path /home/my_vm_google/projects/...).
 DRAFTS_FILE = str(BASE_DIR / "frontend" / "email_drafts.json")
 
-# LLM Config
-LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://100.107.179.44:6333")
-LLM_SMART_URL = os.getenv("LLM_SMART_URL", "http://100.107.179.44:6333")
-LLM_FAST_URL  = os.getenv("LLM_FAST_URL",  "http://100.107.179.44:8081")
+# ── Inference: ONE gateway, one model ─────────────────────────────────────────
+# Everything goes through LiteLLM, which owns model routing, keys and fallbacks:
+#     app -> LiteLLM (:4000) -> qwen-fast -> vLLM (:9002)
+# The retired split (LLM_SMART_URL :8080 / LLM_FAST_URL :8081, llama.cpp) is gone;
+# so is the "local-model" placeholder, which vLLM rejects with a 404.
+# Call sites must use backend/services/llm.py rather than these values directly.
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:4000/v1")
+LLM_MODEL    = os.getenv("LLM_MODEL", "qwen-fast")
+LLM_API_KEY  = os.getenv("LLM_API_KEY", "")
+LLM_TIMEOUT  = float(os.getenv("LLM_TIMEOUT", "120"))
+# Vision (scanned-PDF OCR) — same gateway, a model_list entry that can see images.
+LLM_VISION_MODEL = os.getenv("LLM_VISION_MODEL", "qwen-vl")
 
 # Vector DB Config
 QDRANT_URL = os.getenv("QDRANT_URL", "http://100.107.179.44:6333")
@@ -57,9 +64,6 @@ IMAP_SERVER = os.getenv("IMAP_SERVER")
 # Used for routing Telegram chat events and enforcing authorized user access
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
-# Google Calendar Config
-CALENDAR_TOKEN_PATH = str(TOKENS_DIR / "calendar_token.json")
 
 # TTS Configuration
 TTS_ENABLED = os.getenv("TTS_ENABLED", "false").lower() == "true"
@@ -115,20 +119,17 @@ PROACTIVE_BRIEFINGS = os.getenv("PROACTIVE_BRIEFINGS", "true").lower() == "true"
 # How often the RAG ingestion job rescans data_vault/ (seconds).
 RAG_WATCH_INTERVAL = int(os.getenv("RAG_WATCH_INTERVAL", "300"))
 
-# Microsoft 365
-M365_CLIENT_ID  = os.getenv("M365_CLIENT_ID", "")
-M365_TENANT_ID  = os.getenv("M365_TENANT_ID", "common")
-M365_SCOPES     = os.getenv(
-    "M365_SCOPES",
-    "Mail.ReadWrite Mail.Send Calendars.ReadWrite offline_access User.Read"
-).split()
-M365_AUTHORITY  = f"https://login.microsoftonline.com/{M365_TENANT_ID}"
+# Microsoft 365 — confidential-client web OAuth (backend/routes/provider_auth.py).
+# The scope list lives in backend/services/provider_tokens.MS_SCOPES so the connect,
+# refresh and capability paths can never drift apart.
+M365_CLIENT_ID     = os.getenv("M365_CLIENT_ID", "")
+M365_CLIENT_SECRET = os.getenv("M365_CLIENT_SECRET", "")
+M365_TENANT_ID     = os.getenv("M365_TENANT_ID", "common")
 
-# Per-user M365 email addresses (used in Graph API /me calls scoped to user)
-USER_1_M365_EMAIL = os.getenv("USER_1_M365_EMAIL", "")
-USER_2_M365_EMAIL = os.getenv("USER_2_M365_EMAIL", "")
+# The connected mailbox address now comes from provider_connections.provider_email,
+# not from env — USER_*_M365_EMAIL is gone with the device flow.
 
 # Bootstrap directories
-for _dir in [MEMORY_DIR, TOKENS_DIR, LOGS_DIR, TEMP_DIR, EMAIL_STORE]:
+for _dir in [MEMORY_DIR, LOGS_DIR, TEMP_DIR, EMAIL_STORE]:
     _dir.mkdir(parents=True, exist_ok=True)
 

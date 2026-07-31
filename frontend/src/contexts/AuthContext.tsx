@@ -4,12 +4,41 @@ import {
 import type { Session, User } from '@supabase/supabase-js'
 import { supabase, REDIRECT_URL } from '../lib/supabase'
 
+// ── LOCAL DEV ONLY: skip the Supabase login screen ──────────────────────────
+// Supabase only redirects OAuth back to origins allow-listed in the project, so
+// logging in against http://localhost is awkward while testing provider linking.
+// With VITE_DEV_AUTH_BYPASS=true the app mounts straight into the shell using a
+// synthetic session. The backend needs the matching DEV_AUTH_BYPASS=true (see
+// scripts/dev_backend.sh) or every API call still 401s.
+//
+// This CANNOT reach production: the flag lives only in .env.development.local,
+// which is gitignored and read exclusively by `vite` in dev mode — `npm run
+// build` reads .env.production, so the constant folds to false in the bundle.
+const DEV_AUTH_BYPASS = import.meta.env.VITE_DEV_AUTH_BYPASS === 'true'
+// Must equal the backend's DEV_AUTH_USER, since that is the identity it enforces.
+const DEV_USER_ID = (import.meta.env.VITE_DEV_AUTH_USER as string) || 'user_1'
+
+/** Minimal stand-in that satisfies the `session` truthiness gate in ProtectedRoute. */
+function devSession(): Session {
+  const user = {
+    id: DEV_USER_ID,
+    email: 'dev@localhost',
+    user_metadata: { full_name: 'Dev User' },
+    app_metadata: {},
+    aud: 'authenticated',
+    created_at: new Date().toISOString(),
+  } as unknown as User
+  return { access_token: '', refresh_token: '', expires_in: 0,
+           token_type: 'bearer', user } as unknown as Session
+}
+
 interface AuthCtx {
   session: Session | null
   user: User | null
   userId: string   // real Supabase auth.users.id (UUID)
   loading: boolean
   signInWithGoogle: () => Promise<void>
+  signInWithMicrosoft: () => Promise<void>
   signOut: () => Promise<void>
 }
 
@@ -35,6 +64,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   useEffect(() => {
+    if (DEV_AUTH_BYPASS) {
+      // eslint-disable-next-line no-console
+      console.warn('[auth] DEV_AUTH_BYPASS is on — running without a real login')
+      applySession(devSession())
+      setLoading(false)
+      return
+    }
+
     let settled = false
     const finish = (s: Session | null) => {
       applySession(s)
@@ -127,6 +164,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })
   }
 
+  /**
+   * Sign in with a Microsoft work/school account (Supabase provider 'azure').
+   *
+   * This establishes IDENTITY only — who you are. It does NOT grant Aria access
+   * to your mailbox; that is a separate consent under Settings → Connected Apps
+   * (/auth/microsoft/connect), exactly as with Google. Keeping them apart means
+   * signing in never silently hands over Mail.Read, and a mailbox can be
+   * disconnected without logging out.
+   */
+  const signInWithMicrosoft = async () => {
+    await supabase.auth.signInWithOAuth({
+      provider: 'azure',
+      options: {
+        redirectTo: REDIRECT_URL,
+        // Identity scopes only — Mail/Calendar scopes belong to the connect flow.
+        // Supabase adds `openid` itself, so listing it here just duplicates it.
+        scopes: 'email profile',
+      },
+    })
+  }
+
   const signOut = async () => {
     await supabase.auth.signOut()
     localStorage.removeItem('aria_user_id')
@@ -136,7 +194,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ session, user, userId, loading, signInWithGoogle, signOut }}>
+    <AuthContext.Provider value={{ session, user, userId, loading, signInWithGoogle, signInWithMicrosoft, signOut }}>
       {children}
     </AuthContext.Provider>
   )

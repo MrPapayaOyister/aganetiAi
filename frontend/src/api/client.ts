@@ -204,6 +204,9 @@ export const ingestUpload = (file: File, user_id: UserID) => {
 // ── Provider connections ──────────────────────────────
 export interface ProviderInfo {
   connected: boolean
+  /** false when the server has no client id/secret for this provider — the
+   *  Connect button is disabled rather than sending the user to a 503. */
+  configured?: boolean
   email?: string
   scopes?: string[]
   connected_at?: string

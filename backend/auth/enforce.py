@@ -21,6 +21,7 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+import os
 from urllib.parse import parse_qs, urlencode
 
 from starlette.types import ASGIApp, Scope, Receive, Send, Message
@@ -32,10 +33,33 @@ from config.users import internal_user_for_sub, USERS
 
 log = logging.getLogger("aganeti.auth.enforce")
 
+# ── LOCAL DEV ONLY: skip the Supabase login ───────────────────────────────────
+# Testing the provider OAuth flows against a local frontend means round-tripping
+# Supabase social login, which only redirects to origins allow-listed in the
+# Supabase project. This flag lets a dev instance run without any login at all.
+#
+# It is gated THREE ways so it cannot be switched on by accident:
+#   1. DEV_AUTH_BYPASS must be explicitly truthy — it is NOT in .env/.env.example,
+#      only in scripts/dev_backend.sh, so the systemd unit can never inherit it;
+#   2. the request must arrive from loopback — the production DGX is fronted by a
+#      remote proxy over Tailscale, so real user traffic never looks local;
+#   3. a warning is logged on every startup where it is active.
+# Identity normalization still runs, so handlers cannot be tricked via user_id.
+DEV_AUTH_BYPASS = os.getenv("DEV_AUTH_BYPASS", "").strip().lower() in ("1", "true", "yes")
+DEV_AUTH_USER = os.getenv("DEV_AUTH_USER", "user_1")
+_LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+
+if DEV_AUTH_BYPASS:
+    log.warning("=" * 72)
+    log.warning("DEV_AUTH_BYPASS IS ON — loopback requests skip authentication entirely")
+    log.warning("and act as %r. Never set this on a production instance.", DEV_AUTH_USER)
+    log.warning("=" * 72)
+
 # Paths that must stay reachable without a token.
 _PUBLIC_PREFIXES = (
     "/health",
     "/auth/google",       # OAuth connect + callback (browser redirect, no bearer)
+    "/auth/microsoft",    # same, for the Microsoft Graph connect flow
     "/auth/provider",     # provider status/disconnect used during connect flow
     "/docs",
     "/redoc",
@@ -79,6 +103,11 @@ class AuthEnforceMiddleware:
         effective_user: str | None = None
         caller_sub: str = ""
 
+        # (c) local dev bypass — flag + loopback only (see DEV_AUTH_BYPASS above)
+        if DEV_AUTH_BYPASS and (scope.get("client") or ("",))[0] in _LOOPBACK:
+            effective_user = DEV_AUTH_USER if DEV_AUTH_USER in USERS else "user_1"
+            return await self._forward(scope, receive, send, effective_user, "")
+
         # (b) internal service token
         supplied = _header(scope, b"x-internal-token")
         expected = internal_token()
@@ -117,7 +146,15 @@ class AuthEnforceMiddleware:
                     log.exception("first-login provisioning failed for sub=%s", caller_sub)
                     return await JSONResponse({"detail": "onboarding failed"}, status_code=503)(scope, receive, send)
 
-        # ── normalize identity so handlers cannot be tricked by a supplied user_id ──
+        return await self._forward(scope, receive, send, effective_user, caller_sub)
+
+    async def _forward(self, scope: Scope, receive: Receive, send: Send,
+                       effective_user: str | None, caller_sub: str) -> None:
+        """Normalize the request to the resolved identity, then hand it to the app.
+
+        Shared by all three auth paths (JWT, internal token, dev bypass) so the IDOR
+        protection can never be skipped by whichever one authenticated the caller."""
+        path = scope.get("path", "") or ""
         scope = dict(scope)
 
         # Authoritative, non-forgeable identity: strip any client-supplied copy of the

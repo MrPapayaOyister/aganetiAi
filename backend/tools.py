@@ -267,49 +267,48 @@ _MAIN_LOOP: "_asyncio.AbstractEventLoop | None" = None
 
 
 def set_main_loop(loop) -> None:
-    """Register the primary event loop (call once from the FastAPI lifespan)."""
+    """Register the primary event loop (call once from the FastAPI lifespan).
+    Delegates to the shared bridge so every sync caller uses one implementation."""
     global _MAIN_LOOP
     _MAIN_LOOP = loop
+    from backend.services import async_bridge
+    async_bridge.set_main_loop(loop)
 
 
 def _run_async(coro):
-    """Run an async coroutine from the sync tool dispatcher.
-
-    Preferred path: schedule the coroutine on the registered main loop (which
-    owns the shared httpx client) and block this worker thread for the result.
-    Falls back to a private loop only if no main loop is available.
-    """
-    import asyncio
-    loop = _MAIN_LOOP
-    if loop is not None and loop.is_running():
-        try:
-            running = asyncio.get_running_loop()
-        except RuntimeError:
-            running = None
-        if running is not loop:
-            fut = asyncio.run_coroutine_threadsafe(coro, loop)
-            return fut.result(timeout=90)
-    # No usable main loop (e.g. a standalone script / test) — own loop is fine.
-    return asyncio.run(coro)
+    """Run an async coroutine from the sync tool dispatcher — see async_bridge."""
+    from backend.services.async_bridge import run_sync
+    return run_sync(coro, timeout=90)
 
 
-_GOOGLE_CTA = ("To use email, calendar, or contacts features, connect your Google "
-               "account in Settings → Connected Apps.")
+_CONNECT_CTA = ("To use email, calendar, or contacts features, connect your "
+                "Microsoft 365 or Google account in Settings → Connected Apps.")
+
+# Errors that mean "the user hasn't linked a mailbox yet", from either provider.
+_NOT_CONNECTED_ERRORS = (
+    "google_not_connected", "google_token_expired", "google_not_configured",
+    "microsoft_not_connected", "microsoft_token_expired", "microsoft_not_configured",
+    "no_provider_connected",
+)
 
 
-def _google_call(coro):
-    """Run a Google-service coroutine, mapping a not-connected error to a friendly
+def _provider_call(coro):
+    """Run a provider-service coroutine, mapping a not-connected error to a friendly
     string. Returns (result, error_message)."""
     from fastapi import HTTPException
     try:
         return _run_async(coro), None
     except HTTPException as he:
         detail = he.detail if isinstance(he.detail, dict) else {}
-        if str(detail.get("error", "")).startswith("google_"):
-            return None, _GOOGLE_CTA
+        if str(detail.get("error", "")) in _NOT_CONNECTED_ERRORS:
+            return None, _CONNECT_CTA
         return None, "That action isn't available right now."
     except Exception:
         return None, "That action failed — please try again."
+
+
+# Back-compat alias for the call sites written against the Google-only helper.
+_google_call = _provider_call
 
 
 def _lead_in(name: str, args: dict) -> str:
@@ -437,9 +436,9 @@ def dispatch_tool_call(name: str, raw_args, user_id: str) -> str:
         return result.get("human") or str(result)
 
     if name == "resolve_contact":
-        from backend.services import gcontacts
+        from backend.services import mailbox
         q = args.get("name", "")
-        res, err = _google_call(gcontacts.search_contacts(user_id, q))
+        res, err = _provider_call(mailbox.search_contacts(user_id, q))
         if err:
             return err
         if not res:
@@ -448,14 +447,14 @@ def dispatch_tool_call(name: str, raw_args, user_id: str) -> str:
         return (f"Contact: {c.get('name','')} | email: {c.get('email') or 'none on file'}"
                 f" | phone: {c.get('phone') or '-'} | company: {c.get('company') or '-'}")
 
-    # ── Real Google read tools ──
+    # ── Real mail/calendar/contact reads (Microsoft Graph or Google) ──
     if name == "get_emails":
-        from backend.services import gmail
+        from backend.services import mailbox
         try:
             n = int(args.get("max_results", 10))
         except (TypeError, ValueError):
             n = 10
-        res, err = _google_call(gmail.get_gmail_inbox(user_id, n))
+        res, err = _provider_call(mailbox.inbox(user_id, n))
         if err:
             return err
         if not res:
@@ -466,12 +465,12 @@ def dispatch_tool_call(name: str, raw_args, user_id: str) -> str:
         return f"{unread} unread of {len(res)} recent emails:\n" + "\n".join(lines)
 
     if name == "get_agenda":
-        from backend.services import gcalendar
+        from backend.services import mailbox
         try:
             days = int(args.get("days_ahead", 1))
         except (TypeError, ValueError):
             days = 1
-        res, err = _google_call(gcalendar.get_google_agenda(user_id, days))
+        res, err = _provider_call(mailbox.agenda(user_id, days))
         if err:
             return err
         if not res:
@@ -481,10 +480,10 @@ def dispatch_tool_call(name: str, raw_args, user_id: str) -> str:
             for e in res)
 
     if name == "get_contacts":
-        from backend.services import gcontacts
+        from backend.services import mailbox
         q = (args.get("query") or "").strip()
-        coro = gcontacts.search_contacts(user_id, q) if q else gcontacts.get_google_contacts(user_id)
-        res, err = _google_call(coro)
+        coro = mailbox.search_contacts(user_id, q) if q else mailbox.list_contacts(user_id)
+        res, err = _provider_call(coro)
         if err:
             return err
         if not res:
@@ -551,7 +550,7 @@ def dispatch_tool_call(name: str, raw_args, user_id: str) -> str:
         except Exception as e:
             return f"⚠️ Web search failed: {e}"
 
-    # Schedule a real Google Calendar event (replaces the M365 path).
+    # Schedule a real calendar event on whichever provider the user connected.
     if name == "schedule_meeting":
         who = (args.get("with") or "").strip()
         when = (args.get("time") or "").strip()
@@ -559,21 +558,20 @@ def dispatch_tool_call(name: str, raw_args, user_id: str) -> str:
         if not when:
             return "When should I schedule it?"
         try:
-            from integrations.m365_calendar import parse_meeting_time
+            from backend.services.timeparse import parse_meeting_time
             start, end = parse_meeting_time(when)
         except Exception:
             return "I couldn't understand that time — try e.g. 'tomorrow at 3pm'."
+        from backend.services import mailbox
         attendees = None
         if who:
             if "@" in who:
                 attendees = [who]
             else:
-                from backend.services import gcontacts
-                res, _ = _google_call(gcontacts.search_contacts(user_id, who))
+                res, _ = _provider_call(mailbox.search_contacts(user_id, who))
                 if res and res[0].get("email"):
                     attendees = [res[0]["email"]]
-        from backend.services import gcalendar
-        created, err = _google_call(gcalendar.create_google_event(
+        created, err = _provider_call(mailbox.create_event(
             user_id, title, start, end, attendees=attendees))
         if err:
             return err

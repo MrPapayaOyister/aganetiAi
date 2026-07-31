@@ -110,12 +110,8 @@ def collect_section_data(user_id: str, sections: list[str], query: str = "") -> 
     for sec in sections:
         if sec == "calendar":
             try:
-                from integrations.m365_calendar import format_agenda_for_prompt
-                # Handle potential parameter differences gracefully
-                try:
-                    agenda_str = format_agenda_for_prompt(user_id)
-                except TypeError:
-                    agenda_str = format_agenda_for_prompt()
+                from backend.services.mailbox import agenda_text_sync
+                agenda_str = agenda_text_sync(user_id)
                 
                 if not agenda_str or "No events scheduled" in agenda_str:
                     items = []
