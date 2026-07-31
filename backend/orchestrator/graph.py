@@ -57,8 +57,13 @@ async def _agent_node(state: AgentState) -> dict:
     # reproducible queries; the conversational Assistant stays at the 0.2 default.
     _temp = 0.0 if state.get("agent_id") in ("dashboard", "analytics") else 0.2
     _tc = "required" if (state.get("agent_id") == "dashboard" and state.get("step", 0) == 0 and not has_image) else "auto"
+    # The analytics agent answers breakdowns/rankings as markdown TABLES. The 1024-token
+    # default truncates a wide table mid-row (the row then renders as broken pipes), so
+    # give the data agents room. Same blast radius as the temperature rule above.
+    _maxtok = 4096 if state.get("agent_id") in ("dashboard", "analytics") else 1024
     msg = await llm.chat(state["messages"], tools=(None if has_image else schemas),
-                         agent=agent_cfg, ctx=ctx, need_vision=has_image, temperature=_temp, tool_choice=_tc)
+                         agent=agent_cfg, ctx=ctx, need_vision=has_image, temperature=_temp,
+                         tool_choice=_tc, max_tokens=_maxtok)
     return {"messages": [msg], "step": state["step"] + 1}
 
 
