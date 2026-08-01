@@ -13,7 +13,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import (BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, Text,
+from sqlalchemy import (BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, Text,
                         UniqueConstraint, text)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -427,4 +427,101 @@ class ChatSession(Base, TS):
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     archived: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     meta: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
-    __table_args__ = (Index("ix_chat_sessions_user_active", "user_id", "archived", "last_message_at"),)
+    # --- product-freeze additions -------------------------------------------------
+    # pinned/kind/board_id let the History page pin threads and tell an analytics
+    # thread (which owns a chart board) from a plain conversation. board_id mirrors
+    # the 32-hex id /dashboard/board-session mints, so save_chart needs no changes.
+    pinned: Mapped[bool] = mapped_column(Boolean, server_default=text("false"), nullable=False)
+    pinned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    kind: Mapped[str] = mapped_column(Text, server_default=text("'assistant'"), nullable=False)
+    board_id: Mapped[str | None] = mapped_column(Text)
+    last_message_preview: Mapped[str | None] = mapped_column(Text)
+    artifact_count: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)
+    __table_args__ = (
+        Index("ix_chat_sessions_user_active", "user_id", "archived", "last_message_at"),
+        Index("ix_chat_sessions_user_pinned", "user_id", "pinned", "last_message_at",
+              postgresql_where=text("deleted_at IS NULL")),
+    )
+
+
+# --- Chat messages (the durable thread) ---------------------------------------
+# One row per turn. Replaces the 24-turn flat-JSON store: nothing is ever silently
+# dropped, and `pipeline` keeps the per-stage trace of a multi-agent answer so a
+# reopened thread can show how it was produced.
+class ChatMessage(Base, TS):
+    __tablename__ = "chat_messages"
+    id = pk()
+    org_id = fk("organizations.id", ondelete="SET NULL", nullable=True, index=True)
+    user_id = fk("users.id", index=True)
+    session_id = fk("chat_sessions.id", index=True)
+    seq: Mapped[int] = mapped_column(BigInteger, nullable=False)      # 1-based, per session
+    role: Mapped[str] = mapped_column(Text, nullable=False)           # user|assistant|tool|system
+    content: Mapped[str | None] = mapped_column(Text)                 # markdown / plain text
+    status: Mapped[str] = mapped_column(Text, server_default=text("'complete'"), nullable=False)
+    agent: Mapped[str | None] = mapped_column(Text)                   # primary|analytics|planner|query|...
+    model_key: Mapped[str | None] = mapped_column(Text)
+    tool_calls: Mapped[dict] = mapped_column(JSONB, server_default=text("'[]'::jsonb"), nullable=False)
+    tool_name: Mapped[str | None] = mapped_column(Text)
+    pipeline: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"), nullable=False)
+    tokens_in: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)
+    tokens_out: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)
+    cost_micros: Mapped[int] = mapped_column(BigInteger, server_default=text("0"), nullable=False)
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    error: Mapped[str | None] = mapped_column(Text)
+    meta: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"), nullable=False)
+    __table_args__ = (
+        UniqueConstraint("session_id", "seq", name="uq_chat_messages_session_seq"),
+        Index("ix_chat_messages_session_seq", "session_id", "seq"),
+        Index("ix_chat_messages_user_created", "user_id", "created_at"),
+    )
+
+
+# --- Chat artifacts (charts / tables / PDFs rendered in a turn) ----------------
+# `spec` says how to reproduce it; `data` is a SNAPSHOT of what the user actually
+# saw. Both matter: re-querying live would show different numbers on reload, and
+# permanent history must not depend on the disposable dashboard_configs.db.
+class ChatArtifact(Base, TS):
+    __tablename__ = "chat_artifacts"
+    id = pk()
+    org_id = fk("organizations.id", ondelete="SET NULL", nullable=True, index=True)
+    user_id = fk("users.id", index=True)
+    session_id = fk("chat_sessions.id", index=True)
+    message_id = fk("chat_messages.id", nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)           # chart|table|pdf|card|image|sql
+    title: Mapped[str | None] = mapped_column(Text)
+    spec: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"), nullable=False)
+    data: Mapped[dict | None] = mapped_column(JSONB)
+    uri: Mapped[str | None] = mapped_column(Text)
+    byte_size: Mapped[int | None] = mapped_column(Integer)
+    meta: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"), nullable=False)
+    __table_args__ = (Index("ix_chat_artifacts_session", "session_id", "created_at"),)
+
+
+# --- Long-term memory (cross-thread facts) ------------------------------------
+# Postgres is the system of record (stable ordering, pagination, dedup constraint,
+# soft-delete, cascade with the user); Qdrant user_memory_{ext_uid} stays the
+# retrieval index. vector_id links them; meta.ext_uid carries the EXTERNAL identity
+# the Qdrant collection is named after, since user_id here is the internal uuid.
+class MemoryItem(Base, TS):
+    __tablename__ = "memory_items"
+    id = pk()
+    org_id = fk("organizations.id", ondelete="SET NULL", nullable=True, index=True)
+    user_id = fk("users.id", index=True)
+    fact: Mapped[str] = mapped_column(Text, nullable=False)
+    fact_norm: Mapped[str] = mapped_column(Text, nullable=False)      # lowercased/collapsed, for dedup
+    kind: Mapped[str] = mapped_column(Text, server_default=text("'fact'"), nullable=False)
+    source: Mapped[str] = mapped_column(Text, server_default=text("'auto'"), nullable=False)
+    source_session_id = fk("chat_sessions.id", ondelete="SET NULL", nullable=True)
+    confidence: Mapped[float] = mapped_column(Float, server_default=text("0.6"), nullable=False)
+    status: Mapped[str] = mapped_column(Text, server_default=text("'active'"), nullable=False)
+    superseded_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("memory_items.id", ondelete="SET NULL"), nullable=True)
+    vector_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    use_count: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    meta: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"), nullable=False)
+    __table_args__ = (
+        Index("uq_memory_user_factnorm", "user_id", "fact_norm", unique=True,
+              postgresql_where=text("status = 'active' AND deleted_at IS NULL")),
+        Index("ix_memory_user_status", "user_id", "status", "updated_at"),
+    )
