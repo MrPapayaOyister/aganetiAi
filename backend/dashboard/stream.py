@@ -99,7 +99,8 @@ def _init_state(user_id: str, message: str, board_id: str, history: list, model_
     }
 
 
-async def stream_dashboard(user_id: str, message: str, board_id: str = "", model_key=None):
+async def stream_dashboard(user_id: str, message: str, board_id: str = "", model_key=None,
+                           persist: bool = True):
     """Async generator of SSE 'data:' lines for POST /dashboard/chat."""
     # Best-effort per-board short-term memory (same store the Assistant uses).
     history = []
@@ -133,7 +134,8 @@ async def stream_dashboard(user_id: str, message: str, board_id: str = "", model
                             yield f'data: {json.dumps({"type": "chart_saved", "name": name})}\n\n'
         # Persist the turn so follow-ups ("now add another") have context.
         try:
-            if convo is not None:
+            # persist=False when the unified chat router owns persistence.
+            if convo is not None and persist:
                 convo.append(user_id, board_id or "dashboard", "user", message)
                 if final_text:
                     convo.append(user_id, board_id or "dashboard", "assistant", final_text)

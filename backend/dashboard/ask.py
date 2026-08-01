@@ -155,7 +155,7 @@ def _init_state(user_id: str, message: str, history: list, model_key, run_id: st
 
 
 async def ask_stream(user_id: str, message: str, history: list | None = None, model_key=None,
-                     session_id: str = "analytics"):
+                     session_id: str = "analytics", persist: bool = True):
     """Async generator of SSE 'data:' lines for POST /dashboard/ask.
 
     session_id keys the short-term memory: the frontend passes the board_id so /ask and
@@ -194,7 +194,9 @@ async def ask_stream(user_id: str, message: str, history: list | None = None, mo
                         yield _sse({"type": "tool_result", "name": name,
                                     "ok": not content.startswith("error")})
         try:
-            if convo is not None:
+            # persist=False when a caller (the unified chat router) owns persistence,
+            # so an analytics turn is not written to the thread twice.
+            if convo is not None and persist:
                 convo.append(user_id, session_id, "user", message)
                 if final_text:
                     convo.append(user_id, session_id, "assistant", final_text)

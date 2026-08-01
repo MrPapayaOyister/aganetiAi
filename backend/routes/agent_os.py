@@ -27,6 +27,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from backend.orchestrator import graph, registry, store
+from backend.orchestrator.router import dashboard_model
 from backend.orchestrator import templates
 
 router = APIRouter(prefix="/agent", tags=["agent-os"])
@@ -244,13 +245,26 @@ def _clean_images(raw) -> list:
 
 @router.post("/chat")
 async def agent_chat(request: Request):
+    """The single chat surface.
+
+    Routes the turn internally — conversation to the user's primary agent, exact-number
+    questions to the analytics agent, chart requests to the dashboard builder — and
+    emits one SSE frame vocabulary for all three (backend/chat/frames.py). Falls back
+    to the primary-agent-only generator if the router is unavailable, so a problem here
+    degrades the feature instead of taking chat down.
+    """
     user_id = _uid(request)
     body = await request.json()
     message = body.get("message", "")
     session_id = body.get("session_id", "sess")
     images = _clean_images(body.get("images"))
-    return StreamingResponse(_sse(user_id, message, session_id, images),
-                             media_type="text/event-stream")
+    try:
+        from backend.chat.unified import unified_stream
+        gen = unified_stream(user_id, message, session_id, images, dashboard_model())
+    except Exception:  # noqa: BLE001
+        log.exception("unified router unavailable — serving the primary agent only")
+        gen = _sse(user_id, message, session_id, images)
+    return StreamingResponse(gen, media_type="text/event-stream")
 
 
 @router.get("/approvals")
