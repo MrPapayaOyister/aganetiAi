@@ -12,6 +12,7 @@ running SQLite app. Cutover wires these into the executor + routes.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from datetime import datetime
 from typing import Any, Optional, Sequence
 
@@ -394,6 +395,41 @@ async def list_chat_sessions(s: AsyncSession, user_id: uuid.UUID, archived: bool
         M.ChatSession.user_id == user_id, M.ChatSession.archived == archived,
         M.ChatSession.deleted_at.is_(None))
         .order_by(M.ChatSession.last_message_at.desc()).limit(limit))).scalars().all()
+
+
+async def search_chat_sessions(s: AsyncSession, user_id: uuid.UUID, *, archived: bool = False,
+                               q: str | None = None, date_from=None, date_to=None,
+                               limit: int = 200):
+    """Sessions for the History page. Pinned first, then most-recent.
+
+    Title search is a plain ILIKE: at ~100 sessions per user it is instant, and a
+    pg_trgm index would need CREATE EXTENSION, which this role may not have — a
+    migration that fails halfway is a worse outcome than a sequential scan here.
+    """
+    stmt = select(M.ChatSession).where(
+        M.ChatSession.user_id == user_id,
+        M.ChatSession.archived.is_(archived),
+        M.ChatSession.deleted_at.is_(None),
+    )
+    if q:
+        stmt = stmt.where(M.ChatSession.title.ilike(f"%{q}%"))
+    if date_from is not None:
+        stmt = stmt.where(M.ChatSession.last_message_at >= date_from)
+    if date_to is not None:
+        stmt = stmt.where(M.ChatSession.last_message_at <= date_to)
+    stmt = stmt.order_by(M.ChatSession.pinned.desc(),
+                         M.ChatSession.last_message_at.desc().nullslast()).limit(limit)
+    return (await s.execute(stmt)).scalars().all()
+
+
+async def set_chat_session_pinned(s: AsyncSession, session_id, user_id, pinned: bool) -> bool:
+    row = (await s.execute(select(M.ChatSession).where(
+        M.ChatSession.id == session_id, M.ChatSession.user_id == user_id))).scalar_one_or_none()
+    if row is None:
+        return False
+    row.pinned = bool(pinned)
+    row.pinned_at = datetime.now(timezone.utc) if pinned else None
+    return True
 
 
 async def rename_chat_session(s: AsyncSession, session_id, user_id, title: str) -> bool:

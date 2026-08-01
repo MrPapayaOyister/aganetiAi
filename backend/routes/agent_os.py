@@ -96,6 +96,15 @@ async def _sse(user_id: str, message: str, session_id: str, images: list | None 
     from backend.orchestrator import conversation as convo
     agent, prompt = await _load_primary(user_id)
     history = convo.load(user_id, session_id)  # short-term memory of this thread
+    # Long-term memory: facts recalled ACROSS threads. Time-boxed and fail-soft —
+    # an empty string when unavailable, so a turn never waits on it.
+    try:
+        from backend.chat import memory as _mem
+        _recalled = await _mem.recall(user_id, message)
+        if _recalled:
+            prompt = f"{prompt}\n\n{_recalled}"
+    except Exception:  # noqa: BLE001
+        log.debug("memory recall skipped", exc_info=True)
     final: dict | None = None
     try:
         async for ev in graph.astream_turn(user_id=user_id, agent=agent,
@@ -122,6 +131,14 @@ async def _sse(user_id: str, message: str, session_id: str, images: list | None 
     except Exception as e:  # noqa: BLE001
         yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
     await _record_session(user_id, session_id, message)
+    # Capture durable facts AFTER the answer is out — never on the critical path.
+    try:
+        import asyncio as _aio
+        from backend.chat import memory as _mem
+        if _mem.worth_extracting(message, turn_index=len(history)):
+            _aio.create_task(_mem.capture_turn(user_id, message, session_id))
+    except Exception:  # noqa: BLE001
+        log.debug("memory capture skipped", exc_info=True)
     yield "data: [DONE]\n\n"
 
 
@@ -161,21 +178,109 @@ async def chat_history(request: Request, session_id: str = "sess"):
 
 
 @router.get("/sessions")
-async def list_sessions(request: Request, archived: bool = False):
-    """This user's chat sessions, newest-first, for the history dropdown."""
+async def list_sessions(request: Request, archived: bool = False, q: str | None = None,
+                        date_from: str | None = None, date_to: str | None = None,
+                        limit: int = 200):
+    """This user's chat threads — for the sidebar Recents and the History page.
+
+    Optional q (title search), date_from/date_to (ISO dates) and pinned-first
+    ordering. The response is a SUPERSET of the old shape, so the previously
+    deployed dropdown keeps working unchanged."""
+    from datetime import datetime as _dt
     from backend.db.base import SessionLocal
     from backend.db import repo
+
+    def _parse(v):
+        if not v:
+            return None
+        try:
+            return _dt.fromisoformat(v.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
     async with SessionLocal() as s:
         user = await repo.resolve_user(s, _uid(request))
         if not user:
             return {"sessions": []}
-        rows = await repo.list_chat_sessions(s, user.id, archived=archived)
+        rows = await repo.search_chat_sessions(
+            s, user.id, archived=archived, q=(q or "").strip() or None,
+            date_from=_parse(date_from), date_to=_parse(date_to), limit=max(1, min(limit, 500)))
         return {"sessions": [{
             "id": str(r.id), "title": r.title or "New chat",
             "message_count": r.message_count,
             "last_message_at": r.last_message_at.isoformat() if r.last_message_at else None,
             "created_at": r.created_at.isoformat() if r.created_at else None,
+            "pinned": bool(getattr(r, "pinned", False)),
+            "kind": getattr(r, "kind", "assistant"),
+            "preview": getattr(r, "last_message_preview", None),
+            "artifact_count": getattr(r, "artifact_count", 0) or 0,
         } for r in rows]}
+
+
+@router.post("/sessions/{session_id}/pin")
+async def pin_session(request: Request, session_id: str):
+    """Pin/unpin a thread so it stays at the top of History. Body: {pinned: bool}."""
+    import uuid as _uuid
+    from backend.db.base import SessionLocal
+    from backend.db import repo
+    body = await request.json()
+    try:
+        skey = _uuid.UUID(session_id)
+    except (ValueError, TypeError):
+        return JSONResponse({"error": "bad session id"}, status_code=400)
+    async with SessionLocal() as s:
+        user = await repo.resolve_user(s, _uid(request))
+        if not user:
+            return JSONResponse({"error": "unknown user"}, status_code=404)
+        ok = await repo.set_chat_session_pinned(s, skey, user.id, bool(body.get("pinned", True)))
+        await s.commit()
+        if not ok:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return {"ok": True, "pinned": bool(body.get("pinned", True))}
+
+
+# ── Long-term memory (cross-thread facts the agent recalls) ────────────────────
+@router.get("/memory")
+async def list_memory(request: Request, q: str | None = None, status: str = "active",
+                      limit: int = 100, offset: int = 0):
+    """Facts remembered about this user. Shown in Settings so nothing is stored
+    invisibly — the user can read, correct or delete every item."""
+    from backend.chat import memory
+    return await memory.list_items(_uid(request), q=q, status=status,
+                                   limit=max(1, min(limit, 200)), offset=max(0, offset))
+
+
+@router.post("/memory")
+async def create_memory(request: Request):
+    """Explicitly remember a fact. Body: {fact, kind?}."""
+    from backend.chat import memory
+    body = await request.json()
+    fact = (body.get("fact") or "").strip()
+    if not fact:
+        return JSONResponse({"error": "fact required"}, status_code=400)
+    item = await memory.add(_uid(request), fact, kind=body.get("kind") or "fact", source="user")
+    if item is None:
+        return JSONResponse({"error": "could not store"}, status_code=500)
+    return item
+
+
+@router.patch("/memory/{item_id}")
+async def update_memory(request: Request, item_id: str):
+    """Correct a fact, or archive it. Body: {fact?} | {status: 'archived'|'active'}."""
+    from backend.chat import memory
+    body = await request.json()
+    item = await memory.update(_uid(request), item_id, fact=body.get("fact"), status=body.get("status"))
+    if item is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return item
+
+
+@router.delete("/memory/{item_id}")
+async def delete_memory(request: Request, item_id: str):
+    """Forget a fact (soft-delete + drop its vector)."""
+    from backend.chat import memory
+    ok = await memory.delete(_uid(request), item_id)
+    return {"ok": bool(ok)}
 
 
 @router.patch("/sessions/{session_id}")

@@ -644,11 +644,18 @@ async def lifespan(app: FastAPI):
                 "cron", hour=8, minute=0,
                 id=f"due_tasks_{uid}", replace_existing=True
             )
-        scheduler.add_job(
-            lambda u=uid: extract_and_store(u),
-            "interval", hours=6,
-            id=f"memory_extract_{uid}", replace_existing=True
-        )
+        # Superseded by per-turn capture in backend/chat/memory.py. This job iterates
+        # the config aliases (user_1/user_2) rather than real user ids and reads a
+        # summaries.json only the retired /chat path wrote, so it is dead in effect —
+        # but running it alongside per-turn capture would mean two writers into the
+        # same Qdrant collection with different dedup rules. MEMORY_AUTO_EXTRACT_V2=0
+        # restores it.
+        if os.getenv("MEMORY_AUTO_EXTRACT_V2", "1") == "0":
+            scheduler.add_job(
+                lambda u=uid: extract_and_store(u),
+                "interval", hours=6,
+                id=f"memory_extract_{uid}", replace_existing=True
+            )
 
     from scheduler.schedule_manager import load_all_active_schedules
     for sched in load_all_active_schedules():
