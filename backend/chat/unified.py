@@ -58,8 +58,13 @@ _DOMAIN = re.compile(
 
 # The primary agent owns these even when phrased like a data question
 # ("how many emails do I have?" is an inbox question, not an analytics one).
+# NOUNS ONLY. A bare "me"/"my" used to live here, which meant the everyday phrasings
+# "give me the total", "show me the breakdown" and "tell me how many" were all read as
+# questions about the user's own mailbox and sent to the primary agent, which then
+# replied that it had no access to expenditure records. The pronoun says nothing about
+# whose data is wanted; the noun does.
 _PERSONAL = re.compile(
-    r"\b(my |me\b|inbox|email|e-mail|mail|calendar|meeting|schedule|task|todo|to-do|"
+    r"\b(inbox|email|e-mail|mail|calendar|meeting|schedule|task|todo|to-do|"
     r"reminder|draft|reply|document|upload|contact)\b", re.I)
 
 
@@ -146,8 +151,13 @@ async def unified_stream(user_id: str, message: str, session_id: str,
     board_id = _board_id_for(session_id)
     before = await _board_chart_ids(board_id) if lane == "chart" else set()
     stage_name = "query" if lane == "data" else "analyst"
-    yield F.sse(F.stage(stage_name, "running",
-                        label="Analysing your data" if lane == "data" else "Building the dashboard"))
+    # The data lane (ask.py) now emits its own per-stage frames with real per-call
+    # timings. Emitting generic ones here too would double up, and the terminal frame
+    # below timed the WHOLE TURN and labelled it "query" -- the live trace showed
+    # "query done ms=9987" for a query that took about a second.
+    _self_staged = (lane == "data")
+    if not _self_staged:
+        yield F.sse(F.stage(stage_name, "running", label="Building the dashboard"))
 
     final_text = ""
     artifact_ids: list[str] = []
@@ -169,10 +179,14 @@ async def unified_stream(user_id: str, message: str, session_id: str,
             if t == "tool_call":
                 name = ev.get("name", "")
                 yield F.sse(F.tool_call(name, stage_name=stage_name))
-                yield F.sse(F.stage(stage_name, "running", label=_STATUS_LABEL.get(name, "Working")))
+                if not _self_staged:
+                    yield F.sse(F.stage(stage_name, "running",
+                                        label=_STATUS_LABEL.get(name, "Working")))
             elif t == "tool_result":
+                # carry the agent's own row count and duration through
                 yield F.sse(F.tool_result(ev.get("name", ""), bool(ev.get("ok", True)),
-                                          stage_name=stage_name))
+                                          stage_name=stage_name,
+                                          rows=ev.get("rows"), ms=ev.get("ms")))
             elif t == "stage":
                 # The analytics agent emits its own stage frames, including the
                 # critic verdict. Forward them so the client can show verification
@@ -181,9 +195,15 @@ async def unified_stream(user_id: str, message: str, session_id: str,
             elif t == "chart_saved":
                 pass  # artifacts are emitted together once the turn settles
             elif t == "token":
-                # /dashboard/* tokens are DELTAS; accumulate then re-emit whole so the
-                # frame stays replace-semantics like every other surface.
-                final_text += ev.get("content", "")
+                # Per lane, because the two agents differ: ask.py (data) yields the
+                # COMPLETE message each time, so accumulating it would concatenate --
+                # and with Stage 2's retry that meant the corrected answer was appended
+                # to the wrong one instead of replacing it. stream.py (chart) yields
+                # deltas. Either way what leaves here is replace-semantics.
+                if _self_staged:
+                    final_text = ev.get("content", "") or final_text
+                else:
+                    final_text += ev.get("content", "")
                 yield F.sse(F.token(final_text))
             elif t == "done":
                 final_text = ev.get("final") or final_text
@@ -196,7 +216,8 @@ async def unified_stream(user_id: str, message: str, session_id: str,
         log.exception("unified stream failed")
         yield F.sse(F.error(str(e), stage_name=stage_name))
 
-    yield F.sse(F.stage(stage_name, "done", ms=int((time.time() - t0) * 1000)))
+    if not _self_staged:
+        yield F.sse(F.stage(stage_name, "done", ms=int((time.time() - t0) * 1000)))
 
     # Persist the turn, then attach any charts it produced.
     msg_id = None

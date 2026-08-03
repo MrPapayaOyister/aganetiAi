@@ -92,6 +92,7 @@ class EvidenceRecord:
                     vals.add(f)
         return vals
 
+    ms: int | None = None   # wall time of the query itself
     def summary(self) -> str:
         cols = ", ".join(self.columns) or "(no columns)"
         return f"{self.id}: {len(self.rows)} row(s); columns: {cols}"
@@ -102,8 +103,9 @@ class Ledger:
     """Per-turn record of every query the agent ran."""
     records: list[EvidenceRecord] = field(default_factory=list)
 
-    def record(self, sql: str, rows: list[dict]) -> EvidenceRecord:
-        rec = EvidenceRecord(id=f"q{len(self.records) + 1}", sql=sql, rows=rows or [])
+    def record(self, sql: str, rows: list[dict],
+               ms: int | None = None) -> EvidenceRecord:
+        rec = EvidenceRecord(id=f"q{len(self.records) + 1}", sql=sql, rows=rows or [], ms=ms)
         self.records.append(rec)
         return rec
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
 
 from backend.orchestrator import graph
@@ -162,6 +163,13 @@ def system_prompt_with_figures() -> str:
     return system_prompt() + FIGURES_CONTRACT
 
 
+_TOOL_LABEL = {
+    "query_data": "Querying the database",
+    "get_database_schema": "Reading the schema",
+    "run_query_cached": "Querying the database",
+}
+
+
 def _sse(obj: dict) -> str:
     return f"data: {json.dumps(obj)}\n\n"
 
@@ -216,10 +224,25 @@ async def ask_stream(user_id: str, message: str, history: list | None = None, mo
     state = _init_state(user_id, message, hist, model_key, run_id)
     cfg = {"recursion_limit": 4 * graph.STEP_BUDGET}
     final_text = ""
+    # Stage timing. Every frame below is derived from work this turn actually does;
+    # nothing here asks the model for anything extra.
+    _t_stage = time.monotonic()
+    _attempt = 1
+    _step = None
+
+    # _init_state has already run: it builds the system prompt via system_prompt(),
+    # which calls get_forecast_context() -- real Azure round-trips on a cache miss.
+    yield _sse({"type": "stage", "stage": "prepare", "status": "done",
+                "label": "Preparing", "ms": int((time.monotonic() - _t_stage) * 1000),
+                "detail": {"mode": _pmode}})
 
     async def _run_graph(st):
         """One full agent pass. Yields SSE frames; records the last assistant content."""
-        nonlocal final_text
+        nonlocal final_text, _t_stage
+        _t_tool = None
+        yield _sse({"type": "stage", "stage": "analyst", "status": "running",
+                    "label": "Reading the question"})
+        _t_stage = time.monotonic()
         async for _mode, chunk in graph.GRAPH.astream(st, cfg, stream_mode=["updates"]):
             for _node, upd in chunk.items():
                 if not upd:
@@ -228,7 +251,12 @@ async def ask_stream(user_id: str, message: str, history: list | None = None, mo
                     role = m.get("role")
                     if role == "assistant":
                         for tc in (m.get("tool_calls") or []):
-                            yield _sse({"type": "tool_call", "name": tc["function"]["name"]})
+                            _tname = tc["function"]["name"]
+                            yield _sse({"type": "tool_call", "name": _tname})
+                            _t_tool = time.monotonic()
+                            yield _sse({"type": "stage", "stage": "query",
+                                        "status": "running",
+                                        "label": _TOOL_LABEL.get(_tname, "Working")})
                         content = m.get("content")
                         if content:
                             final_text = content
@@ -240,11 +268,46 @@ async def ask_stream(user_id: str, message: str, history: list | None = None, mo
                                 except Exception:  # noqa: BLE001
                                     _shown = content
                             yield _sse({"type": "token", "content": _shown})
+                            yield _sse({"type": "stage", "stage": "analyst",
+                                        "status": "done", "label": "Writing the answer",
+                                        "ms": int((time.monotonic() - _t_stage) * 1000)})
                     elif role == "tool":
                         name = m.get("name", "")
                         content = str(m.get("content", ""))
-                        yield _sse({"type": "tool_result", "name": name,
-                                    "ok": not content.startswith("error")})
+                        _rows = None
+                        _tool_ms = None
+                        try:
+                            _j = json.loads(content)
+                            if isinstance(_j, dict):
+                                _rows = _j.get("row_count")
+                                # per-call truth, looked up by the id in the payload
+                                _eid = _j.get("evidence_id")
+                                if _eid and _led is not None:
+                                    _r = _led.get(_eid)
+                                    _tool_ms = getattr(_r, "ms", None) if _r else None
+                            elif isinstance(_j, list):
+                                _rows = len(_j)   # capped at 50 when no ledger: a floor
+                        except Exception:  # noqa: BLE001 — a count is not worth a failure
+                            pass
+                        # The tool times itself; parallel calls arrive in one update, so
+                        # a timer out here would report the batch for each of them.
+                        _ms = _tool_ms if _tool_ms is not None else (
+                            int((time.monotonic() - _t_tool) * 1000)
+                            if _t_tool is not None else None)
+                        _ok = not content.startswith("error")
+                        _res = {"type": "tool_result", "name": name, "ok": _ok}
+                        if _rows is not None:
+                            _res["rows"] = _rows
+                        if _ms is not None:
+                            _res["ms"] = _ms
+                        yield _sse(_res)
+                        yield _sse({"type": "stage", "stage": "query",
+                                    "status": "done" if _ok else "failed",
+                                    "ms": _ms,
+                                    "summary": (f"{_rows} row(s)" if _rows is not None
+                                                else None),
+                                    "detail": {"tool": name}})
+                        _t_stage = time.monotonic()
 
     try:
         async for _frame in _run_graph(state):
@@ -260,8 +323,10 @@ async def ask_stream(user_id: str, message: str, history: list | None = None, mo
                 _p0, _ = _ev.extract_figures(final_text)
                 if _ev._prose_numbers(_p0):
                     log.info("insight.retry: figures stated with no query; re-asking")
+                    _attempt = 2
                     yield _sse({"type": "stage", "stage": "critic", "status": "retry",
-                                "summary": "answer stated figures without querying"})
+                                "summary": "answer stated figures without querying",
+                                "detail": {"attempt": _attempt}})
                     _retry_state = _init_state(user_id, message, hist, model_key, run_id)
                     _retry_state["messages"].append({
                         "role": "system",
@@ -278,6 +343,9 @@ async def ask_stream(user_id: str, message: str, history: list | None = None, mo
         # ── deterministic verification ────────────────────────────────────────
         _verdict = None
         if _led is not None and final_text:
+            yield _sse({"type": "stage", "stage": "critic", "status": "running",
+                        "label": "Verifying the figures"})
+            _t_crit = time.monotonic()
             try:
                 from backend.insight import evidence as _ev
                 _prose, _figs = _ev.extract_figures(final_text)
@@ -297,6 +365,7 @@ async def ask_stream(user_id: str, message: str, history: list | None = None, mo
                 }.get(_st, f"{len(_res.issues)} issue(s)")
                 yield _sse({"type": "stage", "stage": "critic",
                             "status": _frame_status, "summary": _summary,
+                            "ms": int((time.monotonic() - _t_crit) * 1000),
                             "detail": _verdict})
                 if _pmode == "on" and not _res.ok:
                     kinds = {i.kind for i in _res.issues}

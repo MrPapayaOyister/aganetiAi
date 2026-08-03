@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import re
 import uuid
 
@@ -211,7 +212,11 @@ async def _get_database_schema(ctx) -> str:
 
 async def _query_data(ctx, sql: str) -> str:
     def _run():
+        # Measured here, not by the caller: LangGraph batches parallel tool results
+        # into one update, so an observer upstream cannot tell the two apart.
+        _t0 = time.monotonic()
         rows = coreshare_db.run_query(sql)
+        _ms = int((time.monotonic() - _t0) * 1000)
         # When an evidence ledger is active (analytics pipeline), record the FULL
         # typed rows in Python and hand the model an id it can cite. The rows are
         # still returned so the answer quality is unchanged — the ledger is what
@@ -220,7 +225,10 @@ async def _query_data(ctx, sql: str) -> str:
             from backend.insight import evidence as _ev
             _led = _ev.current_ledger()
             if _led is not None:
-                _rec = _led.record(sql, rows)
+                # The duration goes into the LEDGER, not into the payload: this JSON
+                # is the model's observation and adding a field to it changes the
+                # model's input. The UI reads the time back via the evidence_id.
+                _rec = _led.record(sql, rows, ms=_ms)
                 return json.dumps(
                     {"evidence_id": _rec.id, "row_count": len(rows), "rows": rows[:50]},
                     default=str)
