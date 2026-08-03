@@ -137,12 +137,46 @@ def system_prompt() -> str:
     )
 
 
+# ── Analytics pipeline (Stage 1): declared figures ────────────────────────────
+# Asking for the figures in the SAME response avoids a second LLM call. The block is
+# stripped before the user sees the answer; it exists purely so every number can be
+# recomputed from the recorded rows.
+FIGURES_CONTRACT = (
+    "\n\nEVIDENCE AND FIGURES (required):\n"
+    "Each query_data result includes an \"evidence_id\" (q1, q2, ...). After your "
+    "answer, append a fenced block listing EVERY number you stated:\n"
+    "```figures\n"
+    "[{\"label\": \"Treatment Fees\", \"value\": 45974876, \"unit\": \"AED\", "
+    "\"evidence_id\": \"q1\", \"derivation\": \"cell\", \"column\": \"TotalExpenditure\"}]\n"
+    "```\n"
+    "- value MUST be a plain number: no commas, no currency symbol, no thousands words.\n"
+    "- derivation is how the number came from that query: cell | sum | count | avg | "
+    "max | min | ratio | delta | pct_change.\n"
+    "- column is the source column when you know it.\n"
+    "- Include every figure in your prose AND in any table. If a number is not in this "
+    "block it will be flagged as unsourced.\n"
+    "- The block is removed before the user sees your reply, so never refer to it."
+)
+
+
+def system_prompt_with_figures() -> str:
+    return system_prompt() + FIGURES_CONTRACT
+
+
 def _sse(obj: dict) -> str:
     return f"data: {json.dumps(obj)}\n\n"
 
 
+def _pipeline_mode() -> str:
+    """off | shadow | on — see backend/insight/evidence.py."""
+    import os
+    m = (os.getenv("INSIGHT_PIPELINE") or "off").strip().lower()
+    return m if m in ("off", "shadow", "on") else "off"
+
+
 def _init_state(user_id: str, message: str, history: list, model_key, run_id: str) -> dict:
-    msgs: list[dict] = [{"role": "system", "content": system_prompt()}]
+    _prompt = system_prompt_with_figures() if _pipeline_mode() != "off" else system_prompt()
+    msgs: list[dict] = [{"role": "system", "content": _prompt}]
     if history:
         msgs.extend(history)
     msgs.append({"role": "user", "content": message})
@@ -171,6 +205,14 @@ async def ask_stream(user_id: str, message: str, history: list | None = None, mo
             convo = None
 
     run_id = uuid.uuid4().hex
+    _mode = _pipeline_mode()
+    _led = None
+    if _mode != "off":
+        try:
+            from backend.insight import evidence as _ev
+            _led = _ev.start_ledger()
+        except Exception:  # noqa: BLE001
+            _led = None
     state = _init_state(user_id, message, hist, model_key, run_id)
     cfg = {"recursion_limit": 4 * graph.STEP_BUDGET}
     final_text = ""
@@ -187,12 +229,58 @@ async def ask_stream(user_id: str, message: str, history: list | None = None, mo
                         content = m.get("content")
                         if content:
                             final_text = content
-                            yield _sse({"type": "token", "content": content})
+                            _shown = content
+                            if _led is not None:
+                                try:
+                                    from backend.insight import evidence as _ev
+                                    _shown, _ = _ev.extract_figures(content)
+                                except Exception:  # noqa: BLE001
+                                    _shown = content
+                            yield _sse({"type": "token", "content": _shown})
                     elif role == "tool":
                         name = m.get("name", "")
                         content = str(m.get("content", ""))
                         yield _sse({"type": "tool_result", "name": name,
                                     "ok": not content.startswith("error")})
+        # ── deterministic verification ────────────────────────────────────────
+        _verdict = None
+        if _led is not None and final_text:
+            try:
+                from backend.insight import evidence as _ev
+                _prose, _figs = _ev.extract_figures(final_text)
+                _res = _ev.verify(_prose, _figs, _led)
+                _verdict = _res.as_dict()
+                final_text = _prose
+                log.info("insight.verify mode=%s ok=%s checked=%d issues=%s",
+                         _mode, _res.ok, _res.checked,
+                         [i.kind for i in _res.issues])
+                _st = _res.status
+                _frame_status = {"verified": "done", "traced": "done",
+                                 "unverified": "skipped"}.get(_st, "failed")
+                _summary = {
+                    "verified": f"{_res.checked} figure(s) recomputed",
+                    "traced": f"{_res.traced} figure(s) traced to query results",
+                    "unverified": "no figures to check",
+                }.get(_st, f"{len(_res.issues)} issue(s)")
+                yield _sse({"type": "stage", "stage": "critic",
+                            "status": _frame_status, "summary": _summary,
+                            "detail": _verdict})
+                if _mode == "on" and not _res.ok:
+                    kinds = {i.kind for i in _res.issues}
+                    if kinds & {"numeric_mismatch", "hallucinated_source",
+                                "internal_inconsistency"}:
+                        final_text += ("\n\n_Some figures above could not be reconciled "
+                                       "against the query results — please treat them as "
+                                       "provisional._")
+            except Exception:  # noqa: BLE001 — verification must never break a turn
+                log.exception("insight: verification failed")
+            finally:
+                try:
+                    from backend.insight import evidence as _ev
+                    _ev.clear_ledger()
+                except Exception:  # noqa: BLE001
+                    pass
+
         try:
             # persist=False when a caller (the unified chat router) owns persistence,
             # so an analytics turn is not written to the thread twice.
@@ -202,7 +290,17 @@ async def ask_stream(user_id: str, message: str, history: list | None = None, mo
                     convo.append(user_id, session_id, "assistant", final_text)
         except Exception:
             pass
-        yield _sse({"type": "done", "final": final_text})
+        _done = {"type": "done", "final": final_text}
+        if _verdict is not None:
+            _st = _verdict.get("status")
+            # True   every figure reconciled — recomputed ("verified") or traced back
+            #        to a recorded value ("traced")
+            # None   nothing numeric to check. NOT an assurance.
+            # False  something did not reconcile.
+            _done["verified"] = (True if _st in ("verified", "traced")
+                                 else None if _st == "unverified" else False)
+            _done["verification"] = _verdict
+        yield _sse(_done)
     except Exception as e:  # noqa: BLE001
         log.exception("analytics ask stream failed")
         yield _sse({"type": "error", "message": str(e)})

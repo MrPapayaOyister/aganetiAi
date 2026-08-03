@@ -212,6 +212,20 @@ async def _get_database_schema(ctx) -> str:
 async def _query_data(ctx, sql: str) -> str:
     def _run():
         rows = coreshare_db.run_query(sql)
+        # When an evidence ledger is active (analytics pipeline), record the FULL
+        # typed rows in Python and hand the model an id it can cite. The rows are
+        # still returned so the answer quality is unchanged — the ledger is what
+        # lets us later recompute every figure the model claims.
+        try:
+            from backend.insight import evidence as _ev
+            _led = _ev.current_ledger()
+            if _led is not None:
+                _rec = _led.record(sql, rows)
+                return json.dumps(
+                    {"evidence_id": _rec.id, "row_count": len(rows), "rows": rows[:50]},
+                    default=str)
+        except Exception:  # noqa: BLE001 — never break the tool over bookkeeping
+            pass
         return json.dumps(rows[:50], default=str)
     try:
         return await asyncio.to_thread(_run)

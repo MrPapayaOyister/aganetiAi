@@ -151,6 +151,8 @@ async def unified_stream(user_id: str, message: str, session_id: str,
 
     final_text = ""
     artifact_ids: list[str] = []
+    _verified = None
+    _verification = None
     try:
         if lane == "chart":
             from backend.dashboard import stream as dash_stream
@@ -171,6 +173,11 @@ async def unified_stream(user_id: str, message: str, session_id: str,
             elif t == "tool_result":
                 yield F.sse(F.tool_result(ev.get("name", ""), bool(ev.get("ok", True)),
                                           stage_name=stage_name))
+            elif t == "stage":
+                # The analytics agent emits its own stage frames, including the
+                # critic verdict. Forward them so the client can show verification
+                # progress and distinguish verified from unverified answers.
+                yield F.sse(ev)
             elif t == "chart_saved":
                 pass  # artifacts are emitted together once the turn settles
             elif t == "token":
@@ -180,6 +187,9 @@ async def unified_stream(user_id: str, message: str, session_id: str,
                 yield F.sse(F.token(final_text))
             elif t == "done":
                 final_text = ev.get("final") or final_text
+                # True / False / None(unverified) -- see backend/insight/evidence.py
+                _verified = ev.get("verified", _verified)
+                _verification = ev.get("verification") or _verification
             elif t == "error":
                 yield F.sse(F.error(ev.get("message", "error"), stage_name=stage_name))
     except Exception as e:  # noqa: BLE001
@@ -213,7 +223,11 @@ async def unified_stream(user_id: str, message: str, session_id: str,
                                    data=ch.get("data"),
                                    meta={"error": ch.get("error")} if ch.get("error") else {}))
 
-    yield F.sse(F.done(final_text, message_id=msg_id, artifacts=artifact_ids))
+    _done = F.done(final_text, message_id=msg_id, artifacts=artifact_ids)
+    if _verification is not None:
+        _done["verified"] = _verified
+        _done["verification"] = _verification
+    yield F.sse(_done)
 
     # Long-term memory capture. The primary lane does this in routes/agent_os._sse,
     # but the analytics lanes return before that runs — which meant data questions
