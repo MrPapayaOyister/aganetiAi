@@ -1,0 +1,210 @@
+{
+ "total": {
+  "question": "What is the total approved expenditure?",
+  "round_trips": 1,
+  "wall_ms": 2624,
+  "ttft_ms": 2607,
+  "verdict": "traced",
+  "answer_chars": 49,
+  "numbers": [
+   95649002.0
+  ],
+  "tool_calls": [
+   {
+    "name": "query_data"
+   }
+  ],
+  "tool_results": [
+   {
+    "name": "query_data",
+    "ok": true
+   }
+  ]
+ },
+ "breakdown": {
+  "question": "Break down total approved expenditure by category.",
+  "round_trips": 1,
+  "wall_ms": 3283,
+  "ttft_ms": 3264,
+  "verdict": "traced",
+  "answer_chars": 525,
+  "numbers": [
+   45974876.0,
+   23838756.0,
+   18566850.0,
+   6380910.0,
+   522874.0,
+   281736.0,
+   83000.0
+  ],
+  "tool_calls": [
+   {
+    "name": "query_data"
+   }
+  ],
+  "tool_results": [
+   {
+    "name": "query_data",
+    "ok": true
+   }
+  ]
+ },
+ "topn": {
+  "question": "What are the top 5 categories by approved expenditure?",
+  "round_trips": 1,
+  "wall_ms": 3783,
+  "ttft_ms": 3772,
+  "verdict": "traced",
+  "answer_chars": 402,
+  "numbers": [
+   45974876.0,
+   23838756.0,
+   18566850.0,
+   6380910.0,
+   522874.0
+  ],
+  "tool_calls": [
+   {
+    "name": "query_data"
+   }
+  ],
+  "tool_results": [
+   {
+    "name": "query_data",
+    "ok": true
+   }
+  ]
+ },
+ "byemirate": {
+  "question": "Break down approved expenditure by emirate.",
+  "round_trips": 1,
+  "wall_ms": 4163,
+  "ttft_ms": 4150,
+  "verdict": "traced",
+  "answer_chars": 416,
+  "numbers": [
+   49163165.0,
+   23703370.0,
+   12267538.0,
+   9689265.0,
+   825664.0
+  ],
+  "tool_calls": [
+   {
+    "name": "query_data"
+   }
+  ],
+  "tool_results": [
+   {
+    "name": "query_data",
+    "ok": true
+   }
+  ]
+ },
+ "trend": {
+  "question": "Show approved expenditure by month over the last 12 months.",
+  "round_trips": 1,
+  "wall_ms": 5327,
+  "ttft_ms": 5312,
+  "verdict": "traced",
+  "answer_chars": 624,
+  "numbers": [
+   9998465.0,
+   8280010.0,
+   7516191.0,
+   7399676.0,
+   6301368.0,
+   5906038.0,
+   5715197.0,
+   5230777.0,
+   4354945.0,
+   4149971.0,
+   3935838.0,
+   3299178.0
+  ],
+  "tool_calls": [
+   {
+    "name": "query_data"
+   }
+  ],
+  "tool_results": [
+   {
+    "name": "query_data",
+    "ok": true
+   }
+  ]
+ },
+ "ratio": {
+  "question": "What is the average approved grant size?",
+  "round_trips": 1,
+  "wall_ms": 4251,
+  "ttft_ms": 4236,
+  "verdict": "verified",
+  "answer_chars": 46,
+  "numbers": [
+   14962.0
+  ],
+  "tool_calls": [
+   {
+    "name": "query_data"
+   }
+  ],
+  "tool_results": [
+   {
+    "name": "query_data",
+    "ok": true
+   }
+  ]
+ },
+ "count": {
+  "question": "How many aid requests were approved?",
+  "round_trips": 0,
+  "wall_ms": 879,
+  "ttft_ms": 864,
+  "verdict": "unverified",
+  "answer_chars": 44,
+  "numbers": [
+   6200.0
+  ],
+  "tool_calls": [],
+  "tool_results": []
+ },
+ "multipart": {
+  "question": "Break down approved expenditure by category, and also give me the overall total and the average grant size.",
+  "round_trips": 2,
+  "wall_ms": 7677,
+  "ttft_ms": 7661,
+  "verdict": "verified",
+  "answer_chars": 736,
+  "numbers": [
+   95649002.0,
+   45974876.0,
+   23838756.0,
+   18566850.0,
+   6380910.0,
+   522874.0,
+   281736.0,
+   83000.0,
+   15000.0,
+   14943.0
+  ],
+  "tool_calls": [
+   {
+    "name": "query_data"
+   },
+   {
+    "name": "query_data"
+   }
+  ],
+  "tool_results": [
+   {
+    "name": "query_data",
+    "ok": true
+   },
+   {
+    "name": "query_data",
+    "ok": true
+   }
+  ]
+ }
+}
