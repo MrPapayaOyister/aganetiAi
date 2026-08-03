@@ -36,19 +36,24 @@ _CHART = re.compile(
     re.I)
 
 _DATA = re.compile(
-    r"\b(how many|how much|total|sum|average|median|count|breakdown|compare|comparison|"
-    r"trend|forecast|predict|projection|top \d+|ranking|rank|per cent|percentage|share of|"
-    r"by (category|emirate|status|month|year|nationality|type|region|gender))\b"
+    r"\b(how many|how much|total|sum|average|median|count|breakdown|distribution|"
+    r"compare|comparison|versus|vs\b|trend|forecast|predict|projection|"
+    r"top \d+|ranking|rank|per cent|percentage|share of|proportion|"
+    r"list|enumerate|which \w+ (has|have|received|got)|"
+    # grouping phrases — stems so plurals ("by emirates") match too
+    r"(by|per|across) \w{0,6}(categor|emirate|status|month|year|nationalit|type|region|gender|quarter))\w*"
     # Arabic equivalents — one live thread is titled "معلومات عن معملات الزكاة"
-    r"|(كم|إجمالي|متوسط|عدد|مقارنة|نسبة|توقع)",
+    r"|(كم|إجمالي|متوسط|عدد|مقارنة|نسبة|توقع|قائمة|حسب)",
     re.I)
 
 # Domain nouns that make a data question about THIS database rather than the
 # user's own mailbox/calendar (which the primary agent owns).
+# STEMS, not whole words: a trailing \b made "donation" match but "donations" miss,
+# so plural/inflected forms silently fell through to the primary agent.
 _DOMAIN = re.compile(
-    r"\b(request|requests|applicant|applicants|aid|grant|grants|expenditure|spend|spending|"
-    r"beneficiar|approval|approved|rejected|emirate|category|zakat|donation|case|cases)\b"
-    r"|(طلب|مساعدة|إنفاق|زكاة|تبرع)",
+    r"\b(request|applicant|aid|grant|expenditur|spend|spent|beneficiar|approv|reject|"
+    r"emirate|categor|zakat|donation|donor|case|charit|disburse|allocat)\w*"
+    r"|(طلب|مساعدة|إنفاق|زكاة|تبرع|منح|مستفيد)",
     re.I)
 
 # The primary agent owns these even when phrased like a data question
@@ -209,6 +214,18 @@ async def unified_stream(user_id: str, message: str, session_id: str,
                                    meta={"error": ch.get("error")} if ch.get("error") else {}))
 
     yield F.sse(F.done(final_text, message_id=msg_id, artifacts=artifact_ids))
+
+    # Long-term memory capture. The primary lane does this in routes/agent_os._sse,
+    # but the analytics lanes return before that runs — which meant data questions
+    # (most real usage) never contributed a fact. Fire-and-forget AFTER `done`.
+    try:
+        import asyncio as _aio
+        from backend.chat import memory as _mem
+        if _mem.worth_extracting(message):
+            _aio.create_task(_mem.capture_turn(user_id, message, session_id))
+    except Exception:  # noqa: BLE001
+        log.debug("memory capture skipped", exc_info=True)
+
     yield F.DONE_SENTINEL
 
 

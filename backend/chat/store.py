@@ -132,6 +132,32 @@ def append(uid: str, session_key: str, role: str, content: str,
         return None
 
 
+def _jsonable(v):
+    """Coerce a DB value into something JSONB can hold.
+
+    CORE-SHARE is SQL Server: SUM(money) comes back as Decimal and period columns as
+    date/datetime, neither of which json.dumps handles. Without this, every money
+    chart silently failed to persist (the exception was swallowed by add_artifact)
+    while count charts saved fine.
+    """
+    from datetime import date, datetime, time
+    from decimal import Decimal
+    if v is None or isinstance(v, (str, int, bool)):
+        return v
+    if isinstance(v, float):
+        return v if v == v and v not in (float("inf"), float("-inf")) else None
+    if isinstance(v, Decimal):
+        f = float(v)
+        return int(f) if f.is_integer() else f
+    if isinstance(v, (datetime, date, time)):
+        return v.isoformat()
+    if isinstance(v, dict):
+        return {str(k): _jsonable(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_jsonable(x) for x in v]
+    return str(v)
+
+
 def add_artifact(uid: str, session_key: str, *, kind: str, title: str | None = None,
                  spec: dict | None = None, data: list | dict | None = None,
                  uri: str | None = None, message_id: str | None = None,
@@ -141,12 +167,16 @@ def add_artifact(uid: str, session_key: str, *, kind: str, title: str | None = N
     if not enabled():
         return None
     try:
-        snapshot = data
         m = dict(meta or {})
         if isinstance(data, list) and len(data) > 200:
             snapshot = data[:200]
             m["truncated"] = True
             m["row_count"] = len(data)
+        else:
+            snapshot = data
+        # Decimal/date values from SQL Server are not JSON-serializable.
+        snapshot = _jsonable(snapshot)
+        spec = _jsonable(spec or {})
         with dbsync.session() as s:
             user = dbsync.resolve_user(s, uid)
             if user is None:
@@ -155,7 +185,7 @@ def add_artifact(uid: str, session_key: str, *, kind: str, title: str | None = N
             art = M.ChatArtifact(
                 org_id=user.org_id, user_id=user.id, session_id=sess.id,
                 message_id=uuid.UUID(message_id) if message_id else None,
-                kind=kind, title=title, spec=spec or {}, data=snapshot, uri=uri, meta=m,
+                kind=kind, title=title, spec=spec, data=snapshot, uri=uri, meta=_jsonable(m),
             )
             s.add(art)
             sess.artifact_count = (sess.artifact_count or 0) + 1

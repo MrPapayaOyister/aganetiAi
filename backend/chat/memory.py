@@ -324,8 +324,14 @@ def _recall_sync(identity, query, k) -> str:
 # A first-person declarative is the cheap signal that a turn contains something
 # durable. Gating on this avoids an LLM call on every message.
 _WORTH_REMEMBERING = re.compile(
-    r"\b(i (prefer|like|want|need|always|never|usually|am|work|use)|my |we (always|usually|prefer)|"
-    r"call me|remember (that|this)|from now on|our (fiscal|policy|process|team))\b", re.I)
+    r"\b(i (prefer|like|want|need|always|never|usually|am|work|use|report|present)"
+    r"|my \w+"
+    r"|we (always|usually|prefer|report|need|track)"
+    r"|call me|refer to me"
+    r"|remember (that|this)"
+    r"|from now on|going forward|in future"
+    r"|(please )?always \w+"
+    r"|our (fiscal|policy|process|team|board|reporting|currency|format))\b", re.I)
 
 
 def worth_extracting(message: str, turn_index: int = 0) -> bool:
