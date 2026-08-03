@@ -33,6 +33,10 @@ register_compare_tools()
 ASK_TOOL_NAMES = ["get_database_schema", "query_data", "forecast_metric", "compare_periods", "current_time"]
 
 
+from backend.dashboard.metric_contract import (  # noqa: E402
+    metric_contract, no_frozen_numbers)
+
+
 def system_prompt() -> str:
     try:
         from backend.dashboard import coreshare_db
@@ -70,7 +74,7 @@ def system_prompt() -> str:
         "2. For a complex question, run SEVERAL queries and combine them — e.g. compare two periods, compute a "
         "rate as approved/total, or pull a breakdown then summarise the top items.\n"
         "3. Report the figure with its context. Money is AED with thousands separators "
-        "(e.g. 'AED 92,139,691').\n\n"
+        "(e.g. 'AED 1,234,567').\n\n"
         "FORMATTING - match the SHAPE of the answer to the SHAPE of the data:\n"
         "- ONE number -> a single sentence with the figure and its context.\n"
         "- A comparison of 2-4 items -> one or two sentences.\n"
@@ -81,8 +85,8 @@ def system_prompt() -> str:
         "and ONE sentence below it with the single most important takeaway.\n"
         "- Cap a table at 25 rows; if you truncate, say how many rows were omitted.\n\n"
         "DATA CAVEATS (know these):\n"
-        "- Approval rate is ~14% (about 6,200 approved of ~44,000). 'Expenditure' = SUM of "
-        "SuggestedAssistanceAmount, usually for approved requests.\n"
+        "- Roughly one aid request in seven is approved. That ratio is orientation only: "
+        "if the user asks how many were approved, or for the approval rate, COUNT it.\n"
         "- SuggestedAssistanceAmount lives ONLY in DataShare.VRequestAttributes (VRequests and "
         "VRequestsApproved do NOT have an amount column), and it is 0 for many non-approved requests. "
         "For a total/average/median grant, JOIN VRequestAttributes to VRequestsApproved (approved only) "
@@ -94,20 +98,15 @@ def system_prompt() -> str:
         "'Pakistan', 'Bangladesh', ...). If the user names a nationality loosely ('Syrian', 'Sudanese'), "
         "match with LIKE '%Syria%' (the country STEM) — NEVER exact-equality a shortened form, or you will "
         "wrongly get 0. If unsure of the exact stored value, run a quick SELECT DISTINCT ... LIKE probe first.\n"
-        "- Each row is an aid REQUEST, not a unique person (one applicant may file several requests). If the "
-        "user says 'beneficiaries', you may treat it as requests, but note that distinction when it matters.\n"
-        "- NetMonthlyIncome / CurrentSalary contain corrupt values (huge and negative) — do NOT report income "
-        "statistics; if asked, say the income data is unreliable in this system.\n"
-        "- Filter State to the real emirates above when breaking down by emirate (a few junk rows exist).\n"
         "- This system has ONLY aid-request (expenditure) data — NO donations, collections, or fundraising. If "
         "asked about money received/donated, say plainly it is not available here; never substitute "
         "expenditure for it.\n\n"
         "CANONICAL DEFINITIONS (compute ONCE with exactly these sources; do not re-run against another "
         "table to 'double-check' — it causes inconsistent answers):\n"
-        "- Total (approved) expenditure = SUM(a.SuggestedAssistanceAmount) FROM DataShare.VRequestAttributes a "
-        "JOIN DataShare.VRequestsApproved r ON r.RequestID = a.RequestId  (about AED 92.1M).\n"
-        "- A category's expenditure = that same JOIN plus WHERE r.Category = '<name>'.\n"
+        + metric_contract() +
+        "- A category's expenditure = the same approved join plus WHERE r.Category = '<name>'.\n"
         "- Approval rate = COUNT(*) of DataShare.VRequestsApproved / COUNT(*) of DataShare.VRequests.\n\n"
+        + no_frozen_numbers() + "\n"
         f"FORECASTING RULES (this data spans about {span} months; current approval rate {rate}%; average "
         f"approved grant AED {avg:,}):\n"
         "- TIME-SERIES FORECAST: for 'next N months' / projections of expenditure, requests, or approved "
@@ -205,9 +204,10 @@ async def ask_stream(user_id: str, message: str, history: list | None = None, mo
             convo = None
 
     run_id = uuid.uuid4().hex
-    _mode = _pipeline_mode()
+    # NOT _mode: the astream loop below binds _mode to the LangGraph stream mode.
+    _pmode = _pipeline_mode()
     _led = None
-    if _mode != "off":
+    if _pmode != "off":
         try:
             from backend.insight import evidence as _ev
             _led = _ev.start_ledger()
@@ -216,8 +216,11 @@ async def ask_stream(user_id: str, message: str, history: list | None = None, mo
     state = _init_state(user_id, message, hist, model_key, run_id)
     cfg = {"recursion_limit": 4 * graph.STEP_BUDGET}
     final_text = ""
-    try:
-        async for _mode, chunk in graph.GRAPH.astream(state, cfg, stream_mode=["updates"]):
+
+    async def _run_graph(st):
+        """One full agent pass. Yields SSE frames; records the last assistant content."""
+        nonlocal final_text
+        async for _mode, chunk in graph.GRAPH.astream(st, cfg, stream_mode=["updates"]):
             for _node, upd in chunk.items():
                 if not upd:
                     continue
@@ -242,6 +245,36 @@ async def ask_stream(user_id: str, message: str, history: list | None = None, mo
                         content = str(m.get("content", ""))
                         yield _sse({"type": "tool_result", "name": name,
                                     "ok": not content.startswith("error")})
+
+    try:
+        async for _frame in _run_graph(state):
+            yield _frame
+
+        # ── retry: a figure was stated but nothing was queried ────────────────
+        # The ledger is empty only if query_data never ran. If the answer nonetheless
+        # contains substantial numbers, they came from the prompt or from an earlier
+        # turn, and neither is a measurement. Re-ask once, insisting on a query.
+        if _led is not None and final_text and _led.is_empty():
+            try:
+                from backend.insight import evidence as _ev
+                _p0, _ = _ev.extract_figures(final_text)
+                if _ev._prose_numbers(_p0):
+                    log.info("insight.retry: figures stated with no query; re-asking")
+                    yield _sse({"type": "stage", "stage": "critic", "status": "retry",
+                                "summary": "answer stated figures without querying"})
+                    _retry_state = _init_state(user_id, message, hist, model_key, run_id)
+                    _retry_state["messages"].append({
+                        "role": "system",
+                        "content": ("Your previous answer stated a figure without running "
+                                    "a query. Figures from earlier in the conversation or "
+                                    "from your instructions are NOT measurements and may "
+                                    "be stale. Call query_data now and answer only from "
+                                    "its result."),
+                    })
+                    async for _frame in _run_graph(_retry_state):
+                        yield _frame
+            except Exception:  # noqa: BLE001 — a retry must never break the turn
+                log.exception("insight: retry pass failed")
         # ── deterministic verification ────────────────────────────────────────
         _verdict = None
         if _led is not None and final_text:
@@ -252,7 +285,7 @@ async def ask_stream(user_id: str, message: str, history: list | None = None, mo
                 _verdict = _res.as_dict()
                 final_text = _prose
                 log.info("insight.verify mode=%s ok=%s checked=%d issues=%s",
-                         _mode, _res.ok, _res.checked,
+                         _pmode, _res.ok, _res.checked,
                          [i.kind for i in _res.issues])
                 _st = _res.status
                 _frame_status = {"verified": "done", "traced": "done",
@@ -265,7 +298,7 @@ async def ask_stream(user_id: str, message: str, history: list | None = None, mo
                 yield _sse({"type": "stage", "stage": "critic",
                             "status": _frame_status, "summary": _summary,
                             "detail": _verdict})
-                if _mode == "on" and not _res.ok:
+                if _pmode == "on" and not _res.ok:
                     kinds = {i.kind for i in _res.issues}
                     if kinds & {"numeric_mismatch", "hallucinated_source",
                                 "internal_inconsistency"}:

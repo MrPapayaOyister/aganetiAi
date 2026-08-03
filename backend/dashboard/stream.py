@@ -26,6 +26,9 @@ log = logging.getLogger("aganeti.dashboard")
 _RECONCILE_TOOLS = {"save_chart", "delete_chart"}
 
 
+from backend.dashboard.metric_contract import metric_contract  # noqa: E402
+
+
 def system_prompt(board_id: str) -> str:
     board_line = (
         f'This dashboard board has id "{board_id}". Pass it verbatim as the board_id argument '
@@ -59,17 +62,10 @@ def system_prompt(board_id: str) -> str:
         "- DataShare.VRequestAttributes: applicant attributes. Good columns: State (this is the "
         "EMIRATE — Dubai, Ajman, RAK, Sharjah, UAQ), Gender, MaritalStatus, Nationality, Religion, "
         "and amounts RequiredAmountForAssistance / SuggestedAssistanceAmount.\n"
-        "- EMIRATE hygiene: State has a few junk rows (blank, and stray numeric ids like "
-        "1740993718). Whenever you GROUP BY State, add WHERE State IN ('Ajman', 'Dubai', "
-        "'Ras Al-Khaimah', 'Sharjah', 'Umm Al Quwain') so only the five real emirates chart.\n"
-        "- EXPENDITURE = granted aid = SuggestedAssistanceAmount (RequiredAmountForAssistance is "
-        "the amount REQUESTED, not granted). Do NOT chart NetMonthlyIncome / CurrentSalary / "
-        "TotalSourcesOfIncome — they hold corrupt values (huge and negative).\n"
+        + metric_contract() +
         "- PERFORMANCE (important): NEVER select or reference the DurationInDays / DurationInHours / "
         "DurationInMinutes columns — they make the query scan a huge table and time out. For counts "
         "and sums, GROUP BY a category column and COUNT(*) or SUM(amount).\n"
-        "- AMOUNTS are messy: when summing/averaging RequiredAmountForAssistance or "
-        "SuggestedAssistanceAmount, filter to sensible values (> 0 AND <= 1000000).\n"
         "- Country is a single value (UAE) — do NOT chart by country; use Category, status, or "
         "State (emirate) instead. There is no year column beyond SubmitDate.\n\n"
         "WRITING CHART SQL:\n"
@@ -77,6 +73,9 @@ def system_prompt(board_id: str) -> str:
         "SELECT Category AS x, COUNT(*) AS y FROM DataShare.VRequests {where} GROUP BY Category.\n"
         "- For kpi (a single big number): alias it AS value, e.g. "
         "SELECT COUNT(*) AS value FROM DataShare.VRequests {where}.\n"
+        "- The TITLE must match the SQL. If the title says Expenditure, Granted or "
+        "Approved, the SQL must sum SuggestedAssistanceAmount over the approved join. "
+        "If it sums RequiredAmountForAssistance, the title must say Requested.\n"
         "- Always include the literal {where} right before any GROUP BY (or at the end). SELECT "
         "only — never write to the database.\n\n"
         + board_line +

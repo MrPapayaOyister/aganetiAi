@@ -2,8 +2,9 @@
 
 The problem this solves: the analytics agent writes SQL, reads the rows, and then
 writes prose about them. Nothing checks that the numbers in the prose are the numbers
-in the rows. A live example: a category breakdown summed to AED 95.6M while the
-canonical total for the same measure is AED 92.1M — plausible-looking, and wrong.
+in the rows. A live example: asked how many aid requests were approved, the agent
+answered "A total of 6,200" in 879ms having run no query at all — it was quoting a
+rounded orientation figure out of its own prompt. The true count is 6,411.
 
 Approach — deterministic FIRST, LLM only as a fallback:
 
