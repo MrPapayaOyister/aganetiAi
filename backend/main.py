@@ -1646,6 +1646,7 @@ THINKING_MESSAGES = {
     # spec-provided mapping
     "get_agenda":       "Checking your calendar...",
     "get_emails":       "Reading your inbox...",
+    "read_email":       "Opening that email...",
     "get_unread_count": "Checking unread emails...",
     "create_task":      "Creating that task...",
     "update_task":      "Updating task...",
@@ -1724,7 +1725,7 @@ Current date and time: {day_time}
 User: {user_id}
 
 Your capabilities (call the named tool when the user asks):
-- Email: READ the inbox (get_emails), draft (draft_email), send. Works with Gmail (or Microsoft 365 if connected).
+- Email: LIST the inbox (get_emails), READ one message in full (read_email), draft (draft_email), send. Works with Gmail (or Microsoft 365 if connected).
 - Calendar: VIEW the agenda (get_agenda), create events (schedule_meeting). Works with Google Calendar (or M365 if connected).
 - Contacts: READ/SEARCH the address book (get_contacts), resolve a name to an email (resolve_contact). Works with Google Contacts.
 - Tasks: create_task, complete_task, update, prioritize.
@@ -1973,8 +1974,9 @@ async def chat_endpoint(request: ChatRequest, http_request: Request):
             f"[TOOLS]\n"
             f"Tools: create_task, complete_task, draft_email, schedule_meeting, get_analytics, "
             f"resolve_contact, search_knowledge, recall_memory, remember_fact, set_reminder, web_search, "
-            f"get_emails, get_agenda, get_contacts.\n"
-            f"- get_emails: read the user's recent Gmail inbox. CALL THIS whenever the user asks about their email, unread messages, or what's in their inbox. Never say 'I don't have access' — call this tool.\n"
+            f"get_emails, read_email, get_agenda, get_contacts.\n"
+            f"- get_emails: LIST the user's recent inbox (subject, sender, time, short preview). CALL THIS whenever the user asks about their email, unread messages, or what's in their inbox. Never say 'I don't have access' — call this tool.\n"
+            f"- read_email: read ONE email's full body. CALL THIS whenever the user wants the CONTENTS — 'read/open my latest email', 'what does it say', 'summarise the email from X'. Pass `query` with subject or sender keywords, or omit it for the most recent. The get_emails preview is a snippet only — never answer questions about an email's contents from it, and never claim no preview is available.\n"
             f"- get_agenda: read upcoming Google Calendar events. CALL THIS for 'what's on my calendar', 'my agenda', 'next meeting', 'free this afternoon'.\n"
             f"- get_contacts: list or search the user's real Google contacts. CALL THIS when the user asks for contacts, or when they want to email someone you don't have an address for.\n"
             f"- get_analytics: quantitative questions about the user's tasks/email ('how many tasks did I finish last week').\n"
@@ -2837,7 +2839,8 @@ async def schedule_meeting_endpoint(payload: dict):
 
     # Parse time → ISO strings (naive; the zone is passed separately to the provider)
     try:
-        start_iso, end_iso = parse_meeting_time(time_str)
+        from backend.services import user_tz
+        start_iso, end_iso = parse_meeting_time(time_str, tz=user_tz.tz())
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Could not parse time '{time_str}': {e}")
 
@@ -2905,9 +2908,10 @@ async def set_reminder_endpoint(payload: dict):
         for k in stale:
             del _reminder_idem[k]
 
-    # Parse remind_at → local ISO datetime string (Asia/Dubai)
+    # Parse remind_at → naive ISO datetime string in the app's configured wall clock
     try:
-        start_iso, _ = parse_meeting_time(remind_at)
+        from backend.services import user_tz
+        start_iso, _ = parse_meeting_time(remind_at, tz=user_tz.tz())
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Could not parse time: {e}")
 
