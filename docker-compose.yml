@@ -1,44 +1,4 @@
 services:
-  # ── Smart inference engine (GPU) ───────────────────────────
-  # Qwen 2.5 14B Instruct Q4_K_M, fully GPU-offloaded on the DGX Spark GB10.
-  llama_server:
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda
-    container_name: local_llm_core
-    runtime: nvidia
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./models:/models
-    command: >
-      -m /models/${LLM_MODEL_PATH}
-      --host 0.0.0.0
-      --port 8080
-      -c 8192
-      --n-gpu-layers 999
-      -fa on
-      --jinja
-      --embeddings
-      --pooling last
-      --cache-reuse 256
-      --cont-batching
-      --parallel 2
-    restart: unless-stopped
-    # --cache-reuse 256: reuse KV cache for matching prompt prefixes. Aria's
-    #   system prompt is a large stable prefix sent on every turn — this skips
-    #   re-prefilling it, cutting first-token latency dramatically on turn 2+.
-    # --cont-batching + --parallel 2: overlap the tool-detection call and the
-    #   token stream / concurrent users instead of serializing them.
-
   # ── Corporate second-brain vector memory ──────────────────
   qdrant:
     image: qdrant/qdrant:latest
@@ -51,35 +11,6 @@ services:
       - ./qdrant_data:/qdrant/storage
     restart: unless-stopped
 
-  # ── Fast inference engine (GPU) ────────────────────────────
-  # Qwen 2.5 1.5B Instruct Q4_K_M for low-latency, non-"smart" routes.
-  llama_fast:
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda
-    container_name: llama_fast
-    runtime: nvidia
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    ports:
-      - "8081:8080"
-    volumes:
-      - ./models:/models
-    command: >
-      -m /models/qwen2.5-1.5b-instruct-q4_k_m.gguf
-      --host 0.0.0.0
-      --port 8080
-      --ctx-size 4096
-      --n-gpu-layers 999
-      --n-predict 512
-      --no-mmap
-    restart: unless-stopped
   whisper_stt:
     image: onerahmet/openai-whisper-asr-webservice:latest
     container_name: whisper_stt
@@ -95,3 +26,24 @@ services:
     volumes: ["./tts_models:/models"]
     command: --model /models/en_US-lessac-medium.onnx --port 5002
     restart: unless-stopped
+
+  # ── Neo4j graph database for knowledge graph ───────────────
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: neo4j
+
+    restart: unless-stopped
+
+    ports:
+      - "7474:7474"   # Browser
+      - "7687:7687"   # Bolt
+
+    environment:
+      NEO4J_AUTH: neo4j/YourStrongPassword
+      NEO4J_dbms_security_auth__enabled: "true"
+
+    volumes:
+      - ./neo4j/data:/data
+      - ./neo4j/logs:/logs
+      - ./neo4j/plugins:/plugins
+      - ./neo4j/import:/import

@@ -18,7 +18,7 @@ import httpx
 from jinja2 import Environment, FileSystemLoader
 from weasyprint import HTML
 
-from config.settings import LLM_SMART_URL
+from backend.services import llm as _llm
 from reports.pdf_generator import get_user_report_style
 
 try:
@@ -71,8 +71,8 @@ def _assemble_context(user_id: str, includes: list[str], topic: str) -> str:
 
     if "calendar" in inc:
         try:
-            from integrations.m365_calendar import format_agenda_for_prompt
-            agenda = format_agenda_for_prompt(user_id)
+            from backend.services.mailbox import agenda_text_sync
+            agenda = agenda_text_sync(user_id)
             if agenda and agenda.strip():
                 blocks.append(f"TODAY'S CALENDAR:\n{agenda.strip()}")
         except Exception:
@@ -184,17 +184,10 @@ def _llm_markdown(doc_type: str, topic: str, context: str, structure: str) -> st
     if context:
         user_prompt += (f"\nUse the following live context where relevant "
                         f"(do not invent facts beyond it):\n{context}\n")
-    payload = {
-        "messages": [
-            {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "temperature": 0.4,
-        "max_tokens": 1400,
-    }
-    resp = httpx.post(f"{LLM_SMART_URL}/v1/chat/completions", json=payload, timeout=180.0)
-    resp.raise_for_status()
-    md = resp.json()["choices"][0]["message"]["content"].strip()
+    md = _llm.complete(
+        [{"role": "system", "content": sys_prompt},
+         {"role": "user", "content": user_prompt}],
+        temperature=0.4, max_tokens=1400, timeout=180.0).strip()
     # strip accidental code fences
     md = re.sub(r"^```(?:markdown)?\s*|\s*```$", "", md).strip()
     return md

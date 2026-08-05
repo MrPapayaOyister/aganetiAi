@@ -29,8 +29,8 @@ def _ev(kind: str, user_id: str, name: str | None = None) -> None:
 # ── Email ─────────────────────────────────────────────────────────────────────
 async def _read_email(ctx, message_id: str) -> str:
     try:
-        from backend.services.gmail import get_gmail_message_body
-        body = await get_gmail_message_body(ctx["user_id"], message_id)
+        from backend.services.mailbox import message_body
+        body = await message_body(ctx["user_id"], message_id)
     except Exception as e:  # noqa: BLE001
         return f"Couldn't read that email ({e})."
     body = (body or "").strip()
@@ -39,10 +39,10 @@ async def _read_email(ctx, message_id: str) -> str:
 
 async def _email_digest(ctx) -> str:
     try:
-        from backend.services.gmail import get_gmail_email_digest
-        d = await get_gmail_email_digest(ctx["user_id"])
+        from backend.services.mailbox import email_digest
+        d = await email_digest(ctx["user_id"])
     except Exception as e:  # noqa: BLE001
-        return f"Email digest unavailable ({e}). The user may need to connect Google in Settings."
+        return f"Email digest unavailable ({e}). The user may need to connect Microsoft 365 or Google in Settings."
     if isinstance(d, dict):
         summary = d.get("digest") or d.get("summary") or ""
         items = d.get("items") or d.get("emails") or []
@@ -101,7 +101,7 @@ async def _remember_fact(ctx, fact: str) -> str:
 # ── Contacts / calendar ───────────────────────────────────────────────────────
 async def _resolve_contact(ctx, name_or_email: str) -> str:
     try:
-        from backend.services.gcontacts import search_contacts
+        from backend.services.mailbox import search_contacts
         hits = await search_contacts(ctx["user_id"], name_or_email)
     except Exception as e:  # noqa: BLE001
         return f"Contact lookup unavailable ({e})."
@@ -116,8 +116,8 @@ async def _resolve_contact(ctx, name_or_email: str) -> str:
 
 async def _next_event(ctx) -> str:
     try:
-        from backend.services.gcalendar import get_next_event
-        e = await get_next_event(ctx["user_id"])
+        from backend.services.mailbox import next_event
+        e = await next_event(ctx["user_id"])
     except Exception as ex:  # noqa: BLE001
         return f"Calendar unavailable ({ex})."
     if not e:
@@ -226,8 +226,8 @@ async def _predict_task_slippage(ctx) -> str:
     due_soon = [t for t in tasks if _due(t) and tstr <= _due(t) <= horizon]
     urgent = [t for t in tasks if (t.get("priority") or "").lower() in ("urgent", "high")]
     try:
-        from backend.services import gcalendar
-        events = await gcalendar.get_google_agenda(ctx["user_id"], days_ahead=7)
+        from backend.services import mailbox
+        events = await mailbox.agenda(ctx["user_id"], days_ahead=7)
     except Exception:  # noqa: BLE001
         events = []
     n_meet = len(events or [])
@@ -250,8 +250,8 @@ async def _predict_task_slippage(ctx) -> str:
 
 async def _predict_followups(ctx) -> str:
     try:
-        from backend.services.gmail import get_gmail_inbox
-        inbox = await get_gmail_inbox(ctx["user_id"], max_results=30)
+        from backend.services.mailbox import inbox as read_inbox
+        inbox = await read_inbox(ctx["user_id"], max_results=30)
     except Exception as e:  # noqa: BLE001
         return f"Follow-up detection unavailable ({e})."
     open_loops = [m for m in (inbox or []) if not m.get("is_read")]
@@ -271,15 +271,15 @@ async def _predict_relationship_value(ctx, person: str) -> str:
     uid = ctx["user_id"]
     contact = None
     try:
-        from backend.services.gcontacts import search_contacts
+        from backend.services.mailbox import search_contacts
         hits = await search_contacts(uid, person)
         contact = hits[0] if hits else None
     except Exception:  # noqa: BLE001
         contact = None
     inter, last = 0, None
     try:
-        from backend.services.gmail import get_gmail_inbox
-        inbox = await get_gmail_inbox(uid, max_results=50)
+        from backend.services.mailbox import inbox as read_inbox
+        inbox = await read_inbox(uid, max_results=50)
         email = ((contact or {}).get("email") or "").lower()
         needle = person.lower()
         for m in (inbox or []):

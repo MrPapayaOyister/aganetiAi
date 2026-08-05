@@ -16,28 +16,17 @@ import json
 import hashlib
 import httpx
 import time
-from integrations.model_router import route_model
-from integrations.m365_mail import (
-    fetch_unread_emails,
-    send_email,
-    mark_as_read,
-    get_inbox_count,
-)
-from integrations.m365_calendar import (
-    get_todays_agenda,
-    get_upcoming_events,
-    format_meeting_brief,
-    format_agenda_for_prompt,
-    invalidate_agenda_cache,
-    create_calendar_event,
-)
+# Mail + calendar are provider-agnostic: `mailbox` dispatches per user to
+# Microsoft Graph or Google depending on what they connected in Settings.
+from backend.services import mailbox
 
 BASE_URL = "http://127.0.0.1:8000"
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from memory.store import load_history, save_message, load_session_state, save_session_state, append_message
-from config.settings import LLM_BASE_URL, QDRANT_URL, EMAIL_ACCOUNT, USER_1_M365_EMAIL, USER_2_M365_EMAIL
-from config.settings import LLM_SMART_URL, NATIVE_TOOLS, PASSIVE_TASK_DETECT
+from config.settings import LLM_BASE_URL, LLM_MODEL, QDRANT_URL, EMAIL_ACCOUNT
+from config.settings import NATIVE_TOOLS, PASSIVE_TASK_DETECT
+from backend.services import llm as _llm
 from backend.service_auth import internal_headers  # Phase 0: auth for internal self-calls
 from config.settings import TTS_URL, STT_URL
 from integrations.telegram_bot import start_bot, bot
@@ -123,7 +112,7 @@ def build_morning_brief(user_id: str) -> str:
     can back both the scheduled push and an on-demand endpoint / web dashboard."""
     from integrations.telegram_bot import _task_id_cache
     try:
-        agenda = format_agenda_for_prompt(user_id)
+        agenda = mailbox.agenda_text_sync(user_id)
     except Exception:
         agenda = ""
     agenda = agenda.strip() if agenda and agenda.strip() else "No events scheduled today."
@@ -150,7 +139,9 @@ async def send_morning_brief(user_id: str):
         return
     try:
         from integrations.telegram_bot import send_message_to_user
-        await send_message_to_user(user_id, build_morning_brief(user_id))
+        # build_morning_brief is sync and hits the provider API — keep it off the loop.
+        text = await asyncio.to_thread(build_morning_brief, user_id)
+        await send_message_to_user(user_id, text)
     except Exception as e:
         print(f"[MorningBrief] {user_id}: {e}")
 
@@ -277,25 +268,31 @@ def find_related_task_for_attendees(user_id: str, attendees: list[str]) -> dict 
                 return task
     return None
 
-def _user_m365_email(user_id: str) -> str:
-    """The user's own M365 address — used to exclude self from a meeting's attendees."""
-    return {"user_1": USER_1_M365_EMAIL, "user_2": USER_2_M365_EMAIL}.get(user_id, "")
+async def _own_mailbox_address(user_id: str) -> str:
+    """The address of the mailbox this user connected — used to exclude themselves
+    from a meeting's attendee list. Sourced from the OAuth connection, so it stays
+    correct whichever provider they linked."""
+    try:
+        from backend.services.provider_tokens import _fetch_connection, which_provider
+        p = await which_provider(user_id)
+        if not p:
+            return ""
+        row = await _fetch_connection(user_id, p)
+        return (row or {}).get("provider_email") or ""
+    except Exception:  # noqa: BLE001
+        return ""
 
 async def send_meeting_brief(event: dict, user_id: str):
     """
-    Builds the Graph-based meeting brief (format_meeting_brief) and enriches it with the
-    'last email from attendees' and 'related pending task' context, then sends it to the
-    correct user's Telegram chat.
+    Builds the meeting brief and enriches it with the 'last email from attendees'
+    and 'related pending task' context, then sends it to the correct user's
+    Telegram chat. `event` is the provider-agnostic structured shape.
     """
-    # Attendee addresses (Graph shape), excluding the user themselves.
-    own = _user_m365_email(user_id).lower()
-    attendees = [
-        a.get("emailAddress", {}).get("address", "")
-        for a in event.get("attendees", [])
-    ]
+    own = (await _own_mailbox_address(user_id)).lower()
+    attendees = [a.get("email", "") for a in event.get("attendees", [])]
     attendees = [e for e in attendees if e and e.lower() != own]
 
-    message = format_meeting_brief(event, user_id)
+    message = mailbox.format_meeting_brief(event)
 
     if attendees:
         last_email = find_last_email_from_attendees(attendees)
@@ -319,19 +316,19 @@ _briefed_events: set = set()
 async def check_upcoming_meetings():
     """
     APScheduler job — for each user, finds meetings starting in 25-35 min and sends a brief
-    to their Telegram. Dedup via _briefed_events on the Graph event id.
+    to their Telegram. Dedup via _briefed_events on the provider event id.
     """
     from datetime import timezone
     now = datetime.now(timezone.utc)
     for uid in ["user_1", "user_2"]:
         try:
-            events = await asyncio.to_thread(get_upcoming_events, uid, 60)
+            events = await mailbox.upcoming_events(uid, 60)
             for event in events:
                 event_id = event.get("id", "")
                 if event_id in _briefed_events:
                     continue
 
-                start_str = event.get("start", {}).get("dateTime", "")
+                start_str = event.get("start", "")
                 if not start_str:
                     continue
                 try:
@@ -550,13 +547,16 @@ async def lifespan(app: FastAPI):
     Coalesces missed runs and restricts concurrent runs to 1 to prevent CPU overload.
     Also starts the Telegram bot polling loop concurrently in a background task.
     """
-    # Register the primary event loop so the sync tool dispatcher (which runs in
-    # asyncio.to_thread worker threads) can marshal Google coroutines back onto
-    # the loop that owns the shared httpx client. Without this, agent tools like
-    # get_emails fail cross-loop even though the REST routes work.
+    # Register the primary event loop so every synchronous caller that runs in an
+    # asyncio.to_thread worker (the tool dispatcher, the inbox poll, the digest and
+    # PDF builders) can marshal provider coroutines back onto the loop that owns the
+    # shared httpx client. Without this they fail cross-loop even though routes work.
     import asyncio as _aio
     from backend import tools as _tools
-    _tools.set_main_loop(_aio.get_running_loop())
+    from backend.services import async_bridge as _bridge
+    _loop = _aio.get_running_loop()
+    _bridge.set_main_loop(_loop)
+    _tools.set_main_loop(_loop)
 
     from config.settings import RUN_BACKGROUND, RAG_WATCH_INTERVAL, PREWARM_MODELS, TTS_ENABLED
     if not RUN_BACKGROUND:
@@ -575,12 +575,11 @@ async def lifespan(app: FastAPI):
     # Google Calendar and enqueue a one-shot prep initiative (deduped per event).
     async def _premeeting_sweep():
         from backend import initiatives
-        from backend.services import gcalendar
         from datetime import datetime as _dt, timezone as _tz, timedelta as _td
         now = _dt.now(_tz.utc)
         for uid in get_all_user_ids():
             try:
-                events = await gcalendar.get_google_agenda(uid, days_ahead=1)
+                events = await mailbox.agenda(uid, days_ahead=1)
             except Exception:
                 continue
             for ev in (events or []):
@@ -715,16 +714,6 @@ app.include_router(provider_router, tags=["provider-auth"])
 from backend.routes.agent_os import router as agent_os_router
 app.include_router(agent_os_router)
 
-# Prompt-to-chart Dashboard — SSE chart builder over the read-only Dar Al Ber Azure DB.
-# Purely additive; registers its own tools (kept out of the primary agent's allow-list).
-# Guarded so a missing Azure driver degrades only the dashboard, never the whole app.
-try:
-    from backend.routes.dashboard import router as dashboard_router
-    app.include_router(dashboard_router)
-except Exception as _e:  # noqa: BLE001
-    import logging as _logging
-    _logging.getLogger("aganeti").warning("dashboard router not mounted: %s", _e)
-
 # Voice WebSocket (STT -> executor -> TTS) — WS /ws/voice
 # NOTE: app.include_router does NOT attach APIWebSocketRoute in this FastAPI version,
 # so register the websocket handler directly on the app.
@@ -753,12 +742,12 @@ setup_logging()
 log = get_logger("aganeti.api")
 
 
-# ── Helper: turn a Google "not connected" 403 into a soft 200 ──────────────
+# ── Helper: turn a provider "not connected" 403 into a soft 200 ────────────
 def _not_connected_payload(user_id: str, extra: dict | None = None) -> dict:
     base = {
         "connected": False,
-        "message": "Connect your Google account to see this data",
-        "connect_url": f"/auth/google/connect?user_id={user_id}",
+        "message": "Connect Microsoft 365 or Google in Settings to see this data",
+        "connect_url": f"/auth/microsoft/connect?user_id={user_id}",
     }
     if extra:
         base.update(extra)
@@ -1009,8 +998,10 @@ async def list_user_files(user_id: str):
 # ==========================================
 # 1. Initialize Clients & Credentials
 # ==========================================
-client = OpenAI(base_url=LLM_BASE_URL, api_key="local-dev")
-async_client = AsyncOpenAI(base_url=LLM_BASE_URL, api_key="local-dev")
+# Both point at the LiteLLM gateway; the key is its master_key, not a placeholder.
+from config.settings import LLM_API_KEY as _LLM_KEY
+client = OpenAI(base_url=LLM_BASE_URL, api_key=_LLM_KEY or "unset")
+async_client = AsyncOpenAI(base_url=LLM_BASE_URL, api_key=_LLM_KEY or "unset")
 qdrant = QdrantClient(url=QDRANT_URL)
 
 # Email Credentials (imported from config.settings)
@@ -1077,48 +1068,34 @@ def _might_need_tools(message: str) -> bool:
 
 
 def query_local_llm(sys_prompt: str, user_prompt: str) -> str:
-    response = client.chat.completions.create(
-        model="local-model",
-        messages=[
-            {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        temperature=0.3
-    )
-    return response.choices[0].message.content
+    """Blocking helper kept for the legacy call sites; routes through the gateway."""
+    return _llm.complete(
+        [{"role": "system", "content": sys_prompt},
+         {"role": "user", "content": user_prompt}],
+        temperature=0.3)
 
 async def call_llm(messages: list, user_message: str = "", stream: bool = True):
     """
     Async generator. Yields raw SSE line strings when stream=True.
     Yields single full response string when stream=False.
-    Routes to 7B (smart) or 1.5B (fast) based on user_message content.
-    # Task 19: route_model will return (url, mode) — update call here
+    Single gateway now — the old smart/fast URL split is gone, LiteLLM routes.
     """
-    base_url = route_model(user_message)
-    url = f"{base_url}/v1/chat/completions"
-    payload = {
-        "messages": messages,
-        "stream": stream,
-        "temperature": 0.7,
-        "max_tokens": 512,
-    }
-    async with httpx.AsyncClient(timeout=90.0) as client_http:
-        if stream:
-            async with client_http.stream("POST", url, json=payload) as resp:
-                async for line in resp.aiter_lines():
-                    if line.strip():
-                        yield line
-        else:
-            resp = await client_http.post(url, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-            yield data["choices"][0]["message"]["content"]
+    payload = _llm.build_payload(messages, stream=stream, temperature=0.7, max_tokens=512)
+    if stream:
+        async with _llm.get_client().stream("POST", _llm.CHAT_URL,
+                                            headers=_llm.headers(), json=payload) as resp:
+            async for line in resp.aiter_lines():
+                if line.strip():
+                    yield line
+    else:
+        resp = await _llm.get_client().post(_llm.CHAT_URL, headers=_llm.headers(), json=payload)
+        resp.raise_for_status()
+        yield _llm.strip_think(resp.json()["choices"][0]["message"]["content"])
 
 async def call_llm_tools(messages: list, allow_text_recovery: bool = True) -> dict:
     """
-    Single non-streaming call to the SMART model with the native tool schema.
-    Returns the assistant message dict: {"content": str, "tool_calls": [...]}.
-    Tool calling needs the 14B + --jinja, so this always targets LLM_SMART_URL.
+    Single non-streaming call through the LiteLLM gateway with the native tool
+    schema. Returns the assistant message dict: {"content": str, "tool_calls": [...]}.
 
     allow_text_recovery: when False, the <tool_call> extraction fallback is
     suppressed.  Set to False in follow-up rounds after an action tool has
@@ -1126,20 +1103,12 @@ async def call_llm_tools(messages: list, allow_text_recovery: bool = True) -> di
     prior tool-call JSON, and re-extracting it causes duplicate execution.
     """
     from backend.tools import TOOL_SCHEMAS
-    url = f"{LLM_SMART_URL}/v1/chat/completions"
-    payload = {
-        "messages": messages,
-        "tools": TOOL_SCHEMAS,
-        "tool_choice": "auto",
-        "temperature": 0.2,
-        # Tool-call JSON is short; the model emits it early. 256 halves the
-        # worst-case tool-detection time vs the old 512 with no quality loss.
-        "max_tokens": 256,
-        "stream": False,
-    }
-    resp = await get_llm_http().post(url, json=payload)
-    resp.raise_for_status()
-    msg = resp.json()["choices"][0]["message"]
+    # Tool-call JSON is short; the model emits it early. 256 halves the
+    # worst-case tool-detection time vs the old 512 with no quality loss.
+    data = await _llm.acomplete_raw(messages, tools=TOOL_SCHEMAS, tool_choice="auto",
+                                    temperature=0.2, max_tokens=256)
+    msg = data["choices"][0]["message"]
+    msg["content"] = _llm.strip_think(msg.get("content") or "")
     # Fallback: this build sometimes emits tool calls as raw content instead of
     # structured tool_calls — recover them so actions aren't silently dropped.
     # DISABLED in follow-up rounds (allow_text_recovery=False) to prevent the
@@ -1160,57 +1129,49 @@ async def call_llm_tools_stream(messages: list):
     token-by-token while still supporting the agentic tool loop.
     """
     from backend.tools import TOOL_SCHEMAS
-    url = f"{LLM_SMART_URL}/v1/chat/completions"
-    payload = {"messages": messages, "tools": TOOL_SCHEMAS, "tool_choice": "auto",
-               "temperature": 0.2, "max_tokens": 700, "stream": True}
+    payload = _llm.build_payload(messages, tools=TOOL_SCHEMAS, tool_choice="auto",
+                                 temperature=0.2, max_tokens=700, stream=True)
     acc: dict = {}
-    async with httpx.AsyncClient(timeout=120.0) as client_http:
-        async with client_http.stream("POST", url, json=payload) as resp:
-            async for line in resp.aiter_lines():
-                if not line or not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    delta = json.loads(data)["choices"][0].get("delta", {})
-                except Exception:
-                    continue
-                if delta.get("content"):
-                    yield ("content", delta["content"])
-                for tc in (delta.get("tool_calls") or []):
-                    slot = acc.setdefault(tc.get("index", 0), {"id": "", "name": "", "arguments": ""})
-                    if tc.get("id"):
-                        slot["id"] = tc["id"]
-                    fn = tc.get("function") or {}
-                    if fn.get("name"):
-                        slot["name"] = fn["name"]
-                    if fn.get("arguments"):
-                        slot["arguments"] += fn["arguments"]
+    think = _llm.ThinkFilter()
+    async with _llm.get_client().stream("POST", _llm.CHAT_URL,
+                                        headers=_llm.headers(), json=payload) as resp:
+        async for line in resp.aiter_lines():
+            if not line or not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                delta = json.loads(data)["choices"][0].get("delta", {})
+            except Exception:
+                continue
+            if delta.get("content"):
+                visible = think.feed(delta["content"])
+                if visible:
+                    yield ("content", visible)
+            for tc in (delta.get("tool_calls") or []):
+                slot = acc.setdefault(tc.get("index", 0), {"id": "", "name": "", "arguments": ""})
+                if tc.get("id"):
+                    slot["id"] = tc["id"]
+                fn = tc.get("function") or {}
+                if fn.get("name"):
+                    slot["name"] = fn["name"]
+                if fn.get("arguments"):
+                    slot["arguments"] += fn["arguments"]
+    tail = think.flush()
+    if tail:
+        yield ("content", tail)
     calls = [{"id": s["id"], "function": {"name": s["name"], "arguments": s["arguments"]}}
              for s in acc.values() if s["name"]]
     if calls:
         yield ("tool_calls", calls)
 
 async def stream_plain_answer(messages: list):
-    """Stream a plain answer token-by-token from the smart model with NO tools. Used
-    once a turn is known to be pure chat (no tools), so the model can't leak tool-call
-    markup into the content (which this llama.cpp build does when streaming with tools)."""
-    url = f"{LLM_SMART_URL}/v1/chat/completions"
-    payload = {"messages": messages, "temperature": 0.4, "max_tokens": 700, "stream": True}
-    async with get_llm_http().stream("POST", url, json=payload) as resp:
-        async for line in resp.aiter_lines():
-            if not line or not line.startswith("data:"):
-                continue
-            d = line[5:].strip()
-            if d == "[DONE]":
-                break
-            try:
-                tok = json.loads(d)["choices"][0].get("delta", {}).get("content", "")
-            except Exception:
-                continue
-            if tok:
-                yield tok
+    """Stream a plain answer token-by-token with NO tools. Used once a turn is known
+    to be pure chat, so tool-call markup can't leak into the content. Reasoning
+    (<think>) is disabled at the gateway and filtered here as a backstop."""
+    async for tok in _llm.astream(messages, temperature=0.4, max_tokens=700):
+        yield tok
 
 def retrieve_corporate_context(query: str, owner: str | None = None) -> str:
     # ACL-SAFE: delegate to the per-user-scoped search_corporate instead of an
@@ -1304,11 +1265,10 @@ async def get_tasks_endpoint(user_id: str = "user_1", status: str | None = None)
 
 @app.get("/digest/email/{user_id}")
 async def email_digest_endpoint(user_id: str):
-    """Gmail-based unread digest. `digest` stays a string (the summary) for the
-    existing panel; `data` carries the structured breakdown."""
-    from backend.services import gmail
+    """Unread digest from the connected provider. `digest` stays a string (the
+    summary) for the existing panel; `data` carries the structured breakdown."""
     try:
-        d = await gmail.get_gmail_email_digest(user_id)
+        d = await mailbox.email_digest(user_id)
         return {"digest": d.get("summary", ""), "data": d, "connected": True}
     except HTTPException:
         return {"digest": "", "data": None, **_not_connected_payload(user_id)}
@@ -1366,7 +1326,7 @@ async def health_check_endpoint():
 async def health_services_endpoint():
     """Check individual service health for the dashboard SystemStatus panel."""
     import time, asyncio
-    from config.settings import LLM_SMART_URL, QDRANT_URL
+    from config.settings import QDRANT_URL
 
     services: dict = {}
 
@@ -1405,17 +1365,13 @@ async def health_services_endpoint():
     services["tts"] = probe_local_tts()
     services["stt"] = probe_local_stt()
 
-    # Parse ports from configured LLM URL (e.g. http://localhost:8080)
-    import urllib.parse
-    llm_parsed = urllib.parse.urlparse(LLM_SMART_URL)
-    llm_host = llm_parsed.hostname or "localhost"
-    llm_smart_port = llm_parsed.port or 8080
-    llm_fast_port = llm_smart_port + 1  # convention: smart=8080, fast=8081
+    # One inference gateway now (LiteLLM). Its /health needs no key, unlike /v1/*.
+    from config.settings import LLM_BASE_URL as _BASE
+    _gateway = _BASE.rstrip("/")[:-3].rstrip("/") if _BASE.rstrip("/").endswith("/v1") else _BASE.rstrip("/")
 
     probes = [
-        ("llm_smart", f"http://{llm_host}:{llm_smart_port}/health"),
-        ("llm_fast",  f"http://{llm_host}:{llm_fast_port}/health"),
-        ("vector_db", f"{QDRANT_URL}/healthz"),
+        ("llm_gateway", f"{_gateway}/health/liveliness"),
+        ("vector_db",   f"{QDRANT_URL}/healthz"),
     ]
 
     # All probes run in parallel; a crashed probe never propagates.
@@ -1499,10 +1455,9 @@ async def get_contacts(user_id: str = "user_1", q: str = None, is_agent: int = N
     inter-agent messaging keeps working. Never 500s."""
     if is_agent is not None:
         return {"contacts": list_contacts(is_agent=is_agent)}
-    from backend.services import gcontacts
     try:
-        contacts = (await gcontacts.search_contacts(user_id, q)) if q \
-            else (await gcontacts.get_google_contacts(user_id))
+        contacts = (await mailbox.search_contacts(user_id, q)) if q \
+            else (await mailbox.list_contacts(user_id))
         return {"contacts": contacts, "connected": True}
     except HTTPException:
         return {"contacts": [], **_not_connected_payload(user_id)}
@@ -1904,27 +1859,17 @@ async def chat_endpoint(request: ChatRequest, http_request: Request):
         else:  # unrelated
             should_append_reminder = True
 
-    # Mode A - Normal chat flow. Each context source is best-effort: a missing M365
-    # token, an empty Qdrant collection, or a cold user must NOT 500 the whole chat.
+    # Mode A - Normal chat flow. Each context source is best-effort: a missing
+    # provider token, an empty Qdrant collection, or a cold user must NOT 500 the chat.
     context = retrieve_corporate_context(request.message, owner=user_id)
-    # Calendar context: prefer M365 (legacy), fall back to Google. Either
-    # provider gives the LLM the user's schedule at the top of the prompt;
-    # if neither is connected, the get_agenda tool path still works.
+    # Calendar context from whichever provider the user connected; if neither is
+    # connected, the get_agenda tool path still works.
     calendar_context = ""
     try:
-        calendar_context = format_agenda_for_prompt(user_id)
-    except Exception:
-        pass
-    if not calendar_context or not calendar_context.strip():
-        try:
-            from backend.services import gcalendar
-            events = await gcalendar.get_google_agenda(user_id, days_ahead=1)
-            if events:
-                lines = [f"- {e['title']} at {e['start']}" for e in events[:5]]
-                calendar_context = "\n".join(lines)
-        except Exception as e:
-            print(f"[chat] calendar context unavailable for {user_id}: {e}")
-            calendar_context = ""
+        calendar_context = await mailbox.agenda_text(user_id)
+    except Exception as e:
+        print(f"[chat] calendar context unavailable for {user_id}: {e}")
+        calendar_context = ""
     try:
         tasks_context = get_pending_summary(user_id)
     except Exception as e:
@@ -2515,20 +2460,19 @@ async def chat_history_endpoint(session_id: str, limit: int = 20):
 
 @app.get("/chat/suggestions")
 async def chat_suggestions_endpoint(user_id: str = "user_1"):
-    """Three contextual prompt suggestions from real Gmail + Calendar + tasks.
+    """Three contextual prompt suggestions from real mail + calendar + tasks.
     Never errors — always returns exactly 3."""
-    from backend.services import gmail, gcalendar
     suggestions: list[str] = []
 
     try:
-        unread = await gmail.get_gmail_unread_count(user_id)
+        unread = await mailbox.unread_count(user_id)
         if unread > 0:
             suggestions.append(f"Summarize my {unread} unread emails")
     except Exception:
         pass
 
     try:
-        ev = await gcalendar.get_next_event(user_id)
+        ev = await mailbox.next_event(user_id)
         if ev and ev.get("title"):
             suggestions.append(f"Brief me on my {ev['title']} meeting")
     except Exception:
@@ -2652,22 +2596,19 @@ class SendEmailRequest(BaseModel):
 
 @app.post("/send_email")
 async def send_email_outbox(request: SendEmailRequest):
-    """Send an email as the user via Gmail. Same URL/shape as before."""
-    from backend.services import gmail
+    """Send an email as the user via their connected provider. Same URL/shape as before."""
     try:
         _, clean_recipient = parseaddr(request.to_email)
         subject = request.subject if request.subject.lower().startswith("re:") else f"Re: {request.subject}"
-        await gmail.send_gmail_message(request.user_id, clean_recipient, subject, request.body)
+        await mailbox.send(request.user_id, clean_recipient, subject, request.body)
         try:
             from backend.writing_style import record_sent_draft
             record_sent_draft(request.user_id, subject, request.body, clean_recipient)
         except Exception:
             pass
         return {"status": "success", "message": "Dispatched successfully"}
-    except HTTPException as he:
-        if isinstance(he.detail, dict) and he.detail.get("error", "").startswith("google_"):
-            return {"status": "error", **_not_connected_payload(request.user_id)}
-        return {"status": "error", "message": "Failed to send"}
+    except HTTPException:
+        return {"status": "error", **_not_connected_payload(request.user_id)}
     except Exception as e:
         log.warning("send_email failed for %s: %s", request.user_id, e)
         return {"status": "error", "message": "Failed to send"}
@@ -2706,17 +2647,12 @@ async def documents_summarize(request: Request, file: UploadFile = File(...)):
     snippet = text[:8000]
 
     def _summ() -> str:
-        import httpx as _httpx, os as _os
-        _url = _os.getenv("VLLM_TOOL_URL", "http://localhost:9000/v1").rstrip("/")
-        _model = _os.getenv("VLLM_TOOL_MODEL", "qwen2.5-32b")
         _sys = ("You are an executive assistant. In 2-3 sentences summarize the document, "
                 "then list 3-5 key points, each on its own line starting with '- '. Be concise and factual.")
-        _r = _httpx.post(f"{_url}/chat/completions", timeout=90.0, json={
-            "model": _model, "temperature": 0.2, "max_tokens": 400,
-            "messages": [{"role": "system", "content": _sys},
-                         {"role": "user", "content": f"Document '{file.filename}':\n\n{snippet}"}]})
-        _r.raise_for_status()
-        return _r.json()["choices"][0]["message"]["content"] or ""
+        return _llm.complete(
+            [{"role": "system", "content": _sys},
+             {"role": "user", "content": f"Document '{file.filename}':\n\n{snippet}"}],
+            temperature=0.2, max_tokens=400, timeout=90.0)
 
     try:
         raw = await asyncio.to_thread(_summ)
@@ -2734,15 +2670,14 @@ async def documents_summarize(request: Request, file: UploadFile = File(...)):
 
 @app.get("/mail/inbox")
 async def get_inbox(user_id: str = "user_1"):
-    """Returns the user's Gmail inbox. Soft-fails to {connected:false} if Google
-    isn't connected; never 500s."""
-    from backend.services import gmail
+    """Returns the user's inbox from whichever provider they connected. Soft-fails
+    to {connected:false} when nothing is connected; never 500s."""
     try:
-        emails = await gmail.get_gmail_inbox(user_id, 20)
-        return {"user_id": user_id, "count": len(emails), "emails": emails, "connected": True}
-    except HTTPException as he:
-        if isinstance(he.detail, dict) and he.detail.get("error", "").startswith("google_"):
+        emails = await mailbox.inbox(user_id, 20)
+        if not emails and not await mailbox.provider_for(user_id):
             return _not_connected_payload(user_id, {"emails": [], "count": 0})
+        return {"user_id": user_id, "count": len(emails), "emails": emails, "connected": True}
+    except HTTPException:
         return _not_connected_payload(user_id, {"emails": [], "count": 0})
     except Exception as e:
         log.warning("inbox failed for %s: %s", user_id, e)
@@ -2750,10 +2685,9 @@ async def get_inbox(user_id: str = "user_1"):
 
 @app.get("/mail/inbox/count")
 async def get_inbox_count_endpoint(user_id: str = "user_1"):
-    """Cheap Gmail unread count."""
-    from backend.services import gmail
+    """Cheap unread count from the connected provider."""
     try:
-        return {"unread": await gmail.get_gmail_unread_count(user_id)}
+        return {"unread": await mailbox.unread_count(user_id)}
     except HTTPException:
         return {"unread": 0, "connected": False}
     except Exception as e:
@@ -2762,11 +2696,10 @@ async def get_inbox_count_endpoint(user_id: str = "user_1"):
 
 @app.get("/calendar/agenda")
 async def get_calendar_agenda(user_id: str = "user_1", days: int = 7):
-    """Returns the dashboard agenda as a STRUCTURED list of events (Google Calendar).
-    Must be an array (frontend maps over it). Never 500s."""
-    from backend.services import gcalendar
+    """Returns the dashboard agenda as a STRUCTURED list of events from the connected
+    provider. Must be an array (frontend maps over it). Never 500s."""
     try:
-        events = await gcalendar.get_google_agenda(user_id, days_ahead=days)
+        events = await mailbox.agenda(user_id, days_ahead=days)
         return {"user_id": user_id, "agenda": events if isinstance(events, list) else []}
     except HTTPException:
         return {"user_id": user_id, "agenda": [], **_not_connected_payload(user_id)}
@@ -2777,7 +2710,7 @@ async def get_calendar_agenda(user_id: str = "user_1", days: int = 7):
 @app.post("/calendar/invalidate")
 async def invalidate_calendar_cache(user_id: str = None):
     """Force-clears agenda cache. Pass user_id to clear one user, omit to clear all."""
-    invalidate_agenda_cache(user_id)
+    mailbox.invalidate_agenda_cache(user_id)
     return {"status": "ok", "cleared": user_id or "all"}
 
 @app.post("/draft_email")
@@ -2864,7 +2797,7 @@ async def delete_draft(user_id: str, draft_index: int):
 
 @app.post("/schedule_meeting")
 async def schedule_meeting_endpoint(payload: dict):
-    from integrations.m365_calendar import create_calendar_event, parse_meeting_time, find_free_slots
+    from backend.services.timeparse import parse_meeting_time
     user_id     = payload.get("user_id", "user_1")
     title       = payload.get("title") or ""
     with_person = payload.get("with", "").strip()
@@ -2896,24 +2829,24 @@ async def schedule_meeting_endpoint(payload: dict):
         try:
             date_part = time_str[:10] if len(time_str) >= 10 else ""
             if date_part:
-                slots = await asyncio.to_thread(find_free_slots, user_id, date_part)
+                slots = await mailbox.free_slots(user_id, date_part)
                 if slots:
                     free_note = f" Free slots on {date_part}: {', '.join(slots[:5])}."
         except Exception:
             pass
 
-    # Parse time → ISO strings (naive, timezone passed separately to Graph)
+    # Parse time → ISO strings (naive; the zone is passed separately to the provider)
     try:
-        start_iso, end_iso = await asyncio.to_thread(parse_meeting_time, time_str)
+        start_iso, end_iso = parse_meeting_time(time_str)
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Could not parse time '{time_str}': {e}")
 
     try:
-        event = await asyncio.to_thread(
-            create_calendar_event,
-            user_id, title, start_iso, end_iso, attendee_emails, "", "Asia/Dubai"
+        event = await mailbox.create_event(
+            user_id, title, start_iso, end_iso,
+            description="", attendees=attendee_emails,
         )
-        join_url = (event.get("onlineMeeting") or {}).get("joinUrl", "")
+        join_url = event.get("hangoutLink") or ""
         return {
             "status":    "created",
             "event_id":  event.get("id", ""),
@@ -2924,8 +2857,10 @@ async def schedule_meeting_endpoint(payload: dict):
             "join_url":  join_url,
             "note":      free_note.strip(),
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Graph API error: {e}")
+        raise HTTPException(status_code=502, detail=f"Calendar API error: {e}")
 
 
 # Idempotency store for /set_reminder — maps content-hash → (schedule_id, expires_at).
@@ -2945,7 +2880,7 @@ def _reminder_idem_key(user_id: str, message: str, remind_at: str) -> str:
 async def set_reminder_endpoint(payload: dict):
     """Create a one-shot Telegram reminder at a specific future time."""
     from scheduler.schedule_manager import create_schedule
-    from integrations.m365_calendar import parse_meeting_time
+    from backend.services.timeparse import parse_meeting_time
 
     user_id  = payload.get("user_id", "user_1")
     message  = payload.get("message", "").strip()
@@ -2972,7 +2907,7 @@ async def set_reminder_endpoint(payload: dict):
 
     # Parse remind_at → local ISO datetime string (Asia/Dubai)
     try:
-        start_iso, _ = await asyncio.to_thread(parse_meeting_time, remind_at)
+        start_iso, _ = parse_meeting_time(remind_at)
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Could not parse time: {e}")
 
@@ -3203,18 +3138,10 @@ async def meeting_transcribe(
     )
     llm_result: dict = {}
     try:
-        async with httpx.AsyncClient() as client:
-            r = await client.post(
-                f"{LLM_SMART_URL}/v1/chat/completions",
-                json={
-                    "model": "local-model",
-                    "messages": [{"role": "user", "content": extract_prompt}],
-                    "max_tokens": 600,
-                    "temperature": 0.1,
-                },
-                timeout=60.0,
-            )
-            text = r.json()["choices"][0]["message"]["content"].strip()
+        text = (await _llm.acomplete(
+            [{"role": "user", "content": extract_prompt}],
+            max_tokens=600, temperature=0.1)).strip()
+        if True:
             # Extract JSON from response
             m = re.search(r"\{.*\}", text, re.DOTALL)
             if m:
@@ -3324,18 +3251,10 @@ async def meeting_transcribe_path(payload: dict):
     )
     llm_result: dict = {}
     try:
-        async with httpx.AsyncClient() as client:
-            r = await client.post(
-                f"{LLM_SMART_URL}/v1/chat/completions",
-                json={
-                    "model": "local-model",
-                    "messages": [{"role": "user", "content": extract_prompt}],
-                    "max_tokens": 600,
-                    "temperature": 0.1,
-                },
-                timeout=60.0,
-            )
-            text = r.json()["choices"][0]["message"]["content"].strip()
+        text = (await _llm.acomplete(
+            [{"role": "user", "content": extract_prompt}],
+            max_tokens=600, temperature=0.1)).strip()
+        if True:
             m = re.search(r"\{.*\}", text, re.DOTALL)
             if m:
                 llm_result = json.loads(m.group())
@@ -3464,14 +3383,15 @@ def _save_processed_ids(user_id: str, ids) -> None:
 
 def poll_mail_for_user(user_id: str):
     """
-    Synchronous per-user Graph poll (run off-thread). Refreshes unread.json for the digest,
-    then triages NEW unread emails (deduped via triaged_ids.json, capped at _TRIAGE_CAP).
-    Emails are left UNREAD so the digest / show-email / PDF / count keep showing real mail;
-    triage de-dup is via the processed-IDs set, not read-state.
+    Synchronous per-user mail poll (run off-thread; bridges into the app loop).
+    Refreshes unread.json for the digest, then triages NEW unread emails (deduped via
+    triaged_ids.json, capped at _TRIAGE_CAP). Emails are left UNREAD so the digest /
+    show-email / PDF / count keep showing real mail; triage de-dup is via the
+    processed-IDs set, not read-state. Provider-agnostic.
     """
     try:
-        count = get_inbox_count(user_id)
-        emails = fetch_unread_emails(user_id, top=20) if count.get("unread", 0) else []
+        count = mailbox.inbox_count_sync(user_id)
+        emails = mailbox.unread_sync(user_id, max_results=20) if count.get("unread", 0) else []
         _write_unread_store(user_id, emails)   # snapshot for digest/PDF/count (even if empty)
         if not emails:
             return

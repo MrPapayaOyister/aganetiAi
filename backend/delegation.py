@@ -100,8 +100,8 @@ def _run_async(coro):
 
 
 def _calendar_agent(user_id: str, task: str) -> str:
-    from backend.services import gcalendar
-    events = _run_async(gcalendar.get_google_agenda(user_id, days_ahead=2))
+    from backend.services import mailbox
+    events = _run_async(mailbox.agenda(user_id, days_ahead=2))
     if not events:
         return "No upcoming events found."
     return "Upcoming events:\n" + "\n".join(
@@ -109,8 +109,8 @@ def _calendar_agent(user_id: str, task: str) -> str:
 
 
 def _email_agent(user_id: str, task: str) -> str:
-    from backend.services import gmail
-    msgs = _run_async(gmail.get_gmail_inbox(user_id, 10))
+    from backend.services import mailbox
+    msgs = _run_async(mailbox.inbox(user_id, 10))
     if not msgs:
         return "Inbox is empty."
     unread = sum(1 for m in msgs if not m.get("is_read"))

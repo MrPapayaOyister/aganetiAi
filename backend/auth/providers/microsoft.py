@@ -1,12 +1,17 @@
 """
 Microsoft provider — Outlook, Calendar, Contacts.
 
-Replaces the current MSAL device-flow approach with a proper web OAuth flow
-via Supabase. The existing m365_auth.py device flow is preserved for
-backward compatibility during migration but new users go through Supabase.
+Capability → scope map for the UserContext capability checks. The live OAuth
+flow (connect/callback) is in backend/routes/provider_auth.py and the token
+refresh in backend/services/provider_tokens.py; this class is the declarative
+half that decides which tools a granted scope set unlocks.
 
-Key change: tokens now live in provider_connections table (encrypted),
-not in tokens/{user_id}_m365_token.json files.
+Scope names here are BARE Graph permissions ("Mail.Read"). Graph hands back
+fully-qualified ones ("https://graph.microsoft.com/Mail.Read"), which is why
+every stored scope list is passed through provider_tokens.normalize_scopes()
+first — without that, every capability check below silently returns False.
+offline_access is deliberately absent: it is requested at consent time but is
+never echoed in the granted-scope list, so requiring it here would also fail.
 """
 from __future__ import annotations
 import os
@@ -17,7 +22,6 @@ M365_CLIENT_ID     = os.getenv("M365_CLIENT_ID", "")
 M365_CLIENT_SECRET = os.getenv("M365_CLIENT_SECRET", "")
 M365_TENANT        = os.getenv("M365_TENANT_ID", "common")
 M365_TOKEN_URL     = f"https://login.microsoftonline.com/{M365_TENANT}/oauth2/v2.0/token"
-M365_REVOKE_URL    = f"https://login.microsoftonline.com/{M365_TENANT}/oauth2/v2.0/logout"
 
 
 class MicrosoftProvider(BaseProvider):
@@ -25,36 +29,24 @@ class MicrosoftProvider(BaseProvider):
     display_name = "Microsoft 365"
 
     capability_scopes = {
-        ProviderCapability.EMAIL_READ: [
-            "Mail.Read",
-            "offline_access",
-        ],
-        ProviderCapability.EMAIL_SEND: [
-            "Mail.Send",
-            "offline_access",
-        ],
-        ProviderCapability.CALENDAR_READ: [
-            "Calendars.Read",
-            "offline_access",
-        ],
-        ProviderCapability.CALENDAR_WRITE: [
-            "Calendars.ReadWrite",
-            "offline_access",
-        ],
-        ProviderCapability.CONTACTS_READ: [
-            "Contacts.Read",
-            "offline_access",
-        ],
+        # Mail.ReadWrite implies Mail.Read; either alone unlocks reading, so the
+        # check in UserContext accepts the granted set containing any of them.
+        ProviderCapability.EMAIL_READ:     ["Mail.ReadWrite"],
+        ProviderCapability.EMAIL_SEND:     ["Mail.Send"],
+        ProviderCapability.CALENDAR_READ:  ["Calendars.ReadWrite"],
+        ProviderCapability.CALENDAR_WRITE: ["Calendars.ReadWrite"],
+        # ProviderCapability.CONTACTS_READ:  ["Contacts.Read"],
     }
 
     async def refresh_access_token(self, refresh_token: str) -> TokenData:
+        from backend.services.provider_tokens import MS_SCOPES, normalize_scopes
         async with httpx.AsyncClient() as client:
             r = await client.post(M365_TOKEN_URL, data={
                 "client_id":     M365_CLIENT_ID,
                 "client_secret": M365_CLIENT_SECRET,
                 "refresh_token": refresh_token,
                 "grant_type":    "refresh_token",
-                "scope":         "offline_access Mail.Read Mail.Send Calendars.ReadWrite Contacts.Read",
+                "scope":         " ".join(MS_SCOPES),
             })
         r.raise_for_status()
         data = r.json()
@@ -62,10 +54,12 @@ class MicrosoftProvider(BaseProvider):
             access_token=data["access_token"],
             refresh_token=data.get("refresh_token", refresh_token),
             expires_in=data.get("expires_in", 3600),
-            scopes=data.get("scope", "").split(),
+            scopes=normalize_scopes(data.get("scope", "")),
         )
 
     async def revoke_token(self, token: str) -> None:
-        # Microsoft doesn't have a simple revoke endpoint; token expiry is relied upon.
-        # For a real implementation, delete from provider_connections and let tokens expire.
-        pass
+        # Graph has no per-application token-revoke endpoint. Disconnecting deletes
+        # our stored credentials; an already-issued access token stays valid until
+        # it expires (≤1h). Revoking the whole session needs
+        # POST /users/{id}/revokeSignInSessions, which requires admin consent.
+        return None

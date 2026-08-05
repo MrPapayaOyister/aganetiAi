@@ -1,9 +1,10 @@
 """
 User registry for multi-user support (2-user POC).
 
-Single source of truth mapping user_id <-> telegram_chat_id <-> M365 identity. Every entry
+Single source of truth mapping user_id <-> telegram_chat_id <-> Supabase uid. Every entry
 point (Telegram handlers, scheduler jobs, backend endpoints) resolves a stable user_id
-string from here, which then flows through tasks, memory, mail and calendar.
+string from here, which then flows through tasks, memory, mail and calendar. The
+connected mailbox address lives in provider_connections, not here.
 """
 
 import sys, os
@@ -18,7 +19,6 @@ USERS: dict[str, dict] = {
     "user_1": {
         "telegram_chat_id":  int(os.getenv("USER_1_TELEGRAM_ID", "0")),
         "name":              os.getenv("USER_1_NAME", "User One"),
-        "m365_email":        os.getenv("USER_1_M365_EMAIL", ""),
         "is_agent":          True,
         "agent_id":          "agent_1",
         "qdrant_collection": "memory_user_1",
@@ -28,7 +28,6 @@ USERS: dict[str, dict] = {
     "user_2": {
         "telegram_chat_id":  int(os.getenv("USER_2_TELEGRAM_ID", "0")),
         "name":              os.getenv("USER_2_NAME", "User Two"),
-        "m365_email":        os.getenv("USER_2_M365_EMAIL", ""),
         "is_agent":          True,
         "agent_id":          "agent_2",
         "qdrant_collection": "memory_user_2",

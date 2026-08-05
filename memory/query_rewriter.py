@@ -14,32 +14,17 @@ def rewrite_query(recent_history: list[dict], current_message: str) -> str:
     if not recent_history:
         return current_message
     context = "\n".join([f"{m['role']}: {m['content'][:100]}" for m in recent_history[-3:]])
-    url = "http://localhost:8080/v1/chat/completions"
     system_prompt = (
         "You are a search query optimizer. Rewrite vague follow-up questions into \n"
         "standalone keyword-rich search queries. Output ONLY the rewritten query. \n"
         "No punctuation at the end. No quotes. No explanation."
     )
     user_prompt = f"Conversation context:\n{context}\n\nFollow-up question: {current_message}\nRewritten standalone query:"
-    payload = {
-        "model": "local-model",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "max_tokens": 60,
-        "temperature": 0.1
-    }
-    try:
-        with httpx.Client(timeout=10.0) as client:
-            response = client.post(url, json=payload)
-            if response.status_code == 200:
-                data = response.json()
-                rewritten = data["choices"][0]["message"]["content"]
-                rewritten = rewritten.strip().strip("'\"")
-                if rewritten == "" or len(rewritten) > 100:
-                    return current_message
-                return rewritten
-    except Exception as e:
-        print(f"Error in query rewriter: {e}")
-    return current_message
+    from backend.services import llm as _llm
+    rewritten = _llm.complete([
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ], max_tokens=60, temperature=0.1, timeout=15.0).strip().strip("'\"")
+    if not rewritten or len(rewritten) > 100:
+        return current_message
+    return rewritten

@@ -36,10 +36,17 @@ class UserContext:
     def has_provider(self, name: str) -> bool:
         return any(p.provider == name for p in self.providers)
 
-    def has_scope(self, provider: str, scope: str) -> bool:
+    def has_scope(self, provider: str, *scopes: str) -> bool:
+        """True when the provider granted ANY of the listed scopes. Graph returns
+        scopes fully qualified ("https://graph.microsoft.com/Mail.Read"), so compare
+        against the bare suffix too rather than requiring callers to normalize."""
+        wanted = set(scopes)
         for p in self.providers:
-            if p.provider == provider and scope in p.scopes:
-                return True
+            if p.provider != provider:
+                continue
+            for granted in p.scopes:
+                if granted in wanted or granted.rsplit("/", 1)[-1] in wanted:
+                    return True
         return False
 
     def available_tools(self) -> list[str]:
@@ -63,18 +70,19 @@ class UserContext:
             if self.has_scope("google", "https://www.googleapis.com/auth/calendar.events"):
                 tools.append("gcal_write")
 
-        # Microsoft tools
+        # Microsoft tools. Mail.ReadWrite and Calendars.ReadWrite each imply their
+        # read-only counterpart, so accept either form of the grant.
         if self.has_provider("microsoft"):
-            if self.has_scope("microsoft", "Mail.Read"):
+            if self.has_scope("microsoft", "Mail.ReadWrite"):
                 tools.append("m365_mail_read")
             if self.has_scope("microsoft", "Mail.Send"):
                 tools.append("m365_mail_send")
-            if self.has_scope("microsoft", "Calendars.Read"):
+            if self.has_scope("microsoft", "Calendars.ReadWrite"):
                 tools.append("m365_cal_read")
             if self.has_scope("microsoft", "Calendars.ReadWrite"):
                 tools.append("m365_cal_write")
-            if self.has_scope("microsoft", "Contacts.Read"):
-                tools.append("m365_contacts_read")
+            # if self.has_scope("microsoft", "Contacts.Read"):
+            #     tools.append("m365_contacts_read")
 
         if self.has_feature("agent_inbox") or self.plan in ("team", "enterprise"):
             tools.append("agent_messaging")

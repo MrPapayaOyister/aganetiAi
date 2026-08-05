@@ -150,8 +150,8 @@ def _ocr_pdf_via_vision(path: Path, max_pages: int = 6) -> str:
     except ImportError as e:
         print(f"[ocr] deps missing ({e}); cannot OCR {path.name}")
         return ""
-    vl_url = _os.getenv("VLLM_VL_URL", "http://localhost:9001/v1").rstrip("/")
-    vl_model = _os.getenv("VLLM_VL_MODEL", "qwen2.5-vl-32b")
+    from backend.services import llm as _llm
+    from config.settings import LLM_VISION_MODEL as vl_model
     prompt = ("Transcribe ALL text in this document image verbatim (OCR), preserving "
               "line order. Output ONLY the transcribed text — no commentary, no translation.")
     out: list[str] = []
@@ -166,13 +166,11 @@ def _ocr_pdf_via_vision(path: Path, max_pages: int = 6) -> str:
         try:
             png = page.get_pixmap(dpi=150).tobytes("png")
             data_url = "data:image/png;base64," + base64.b64encode(png).decode()
-            r = httpx.post(f"{vl_url}/chat/completions", timeout=120.0, json={
-                "model": vl_model, "temperature": 0, "max_tokens": 2048,
-                "messages": [{"role": "user", "content": [
+            txt = _llm.complete(
+                [{"role": "user", "content": [
                     {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": data_url}}]}]})
-            r.raise_for_status()
-            txt = (r.json()["choices"][0]["message"]["content"] or "").strip()
+                    {"type": "image_url", "image_url": {"url": data_url}}]}],
+                model=vl_model, temperature=0, max_tokens=2048, timeout=120.0).strip()
             if txt:
                 out.append(txt)
         except Exception as e:  # noqa: BLE001

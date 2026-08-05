@@ -4,7 +4,8 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from integrations.m365_mail import fetch_unread_emails
+from backend.services.mailbox import unread_sync, conversation_sync
+from backend.services import llm as _llm
 
 # Keywords that raise an email's importance score
 _URGENT_WORDS = re.compile(
@@ -60,26 +61,15 @@ def _known_sender_emails() -> set[str]:
 
 def summarise_email(subject: str, body: str) -> str:
     """Summarise the email body in one sentence (≤15 words) via the fast local LLM."""
-    payload = {
-        "model": "local-model",
-        "messages": [{
-            "role": "user",
-            "content": (
-                "Summarise this email in ONE sentence. Maximum 15 words. "
-                "No preamble. Output only the summary sentence.\n\n"
-                f"Subject: {subject}\nBody (first 300 chars): {body[:300]}"
-            ),
-        }],
-        "max_tokens": 40,
-        "temperature": 0.1,
-    }
-    try:
-        r = httpx.post("http://localhost:8081/v1/chat/completions", json=payload, timeout=12.0)
-        if r.status_code == 200:
-            return r.json()["choices"][0]["message"]["content"].strip()
-    except Exception:
-        pass
-    return subject
+    out = _llm.complete([{
+        "role": "user",
+        "content": (
+            "Summarise this email in ONE sentence. Maximum 15 words. "
+            "No preamble. Output only the summary sentence.\n\n"
+            f"Subject: {subject}\nBody (first 300 chars): {body[:300]}"
+        ),
+    }], max_tokens=40, temperature=0.1, timeout=20.0)
+    return out.strip() or subject
 
 
 def summarise_thread(user_id: str, conversation_id: str) -> str:
@@ -87,9 +77,8 @@ def summarise_thread(user_id: str, conversation_id: str) -> str:
     Fetch all messages in a conversation thread and return a concise LLM summary.
     Returns a plain-text paragraph the agent can relay to the user.
     """
-    from integrations.m365_mail import fetch_conversation
     try:
-        msgs = fetch_conversation(user_id, conversation_id)
+        msgs = conversation_sync(user_id, conversation_id)
     except Exception as e:
         return f"Could not fetch thread: {e}"
     if not msgs:
@@ -99,26 +88,15 @@ def summarise_thread(user_id: str, conversation_id: str) -> str:
     for m in msgs:
         thread_text += f"\n---\nFrom: {m['from']}\nDate: {m['date']}\n{m['body']}\n"
 
-    payload = {
-        "model": "local-model",
-        "messages": [{
-            "role": "user",
-            "content": (
-                "Summarise this email thread in 3-5 bullet points. "
-                "Focus on decisions made, action items, and open questions. "
-                "Be concise.\n\n" + thread_text[:3000]
-            ),
-        }],
-        "max_tokens": 200,
-        "temperature": 0.2,
-    }
-    try:
-        r = httpx.post("http://localhost:8080/v1/chat/completions", json=payload, timeout=30.0)
-        if r.status_code == 200:
-            return r.json()["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        return f"Summary failed: {e}"
-    return "Could not summarise thread."
+    out = _llm.complete([{
+        "role": "user",
+        "content": (
+            "Summarise this email thread in 3-5 bullet points. "
+            "Focus on decisions made, action items, and open questions. "
+            "Be concise.\n\n" + thread_text[:3000]
+        ),
+    }], max_tokens=200, temperature=0.2, timeout=40.0)
+    return out.strip() or "Could not summarise thread."
 
 
 def build_digest(user_id: str, emails: list[dict]) -> str:
@@ -180,7 +158,7 @@ def build_digest(user_id: str, emails: list[dict]) -> str:
 
 def get_top_emails_for_digest(user_id: str, top: int = 3) -> list[dict]:
     """Returns the top N unread emails in a compact shape for dashboards."""
-    emails = fetch_unread_emails(user_id, top=top)
+    emails = unread_sync(user_id, max_results=top)
     return [
         {
             "from":    f"{e['from_name']} <{e['from_email']}>" if e.get("from_name") else e.get("from_email", ""),
@@ -203,13 +181,14 @@ def _emails_for_build_digest(emails: list[dict]) -> list[dict]:
 def get_digest_for_user(user_id: str, bypass_disable_check: bool = False) -> str:
     """
     Generates a formatted digest of unread emails, ranked by priority.
-    Live from Microsoft Graph; falls back to last snapshot in email_store/{user_id}/unread.json.
+    Live from the user's connected provider; falls back to the last snapshot in
+    email_store/{user_id}/unread.json.
     """
     if not bypass_disable_check and Path(f"email_store/{user_id}/digest_disabled").exists():
         return "📬 Scheduled email digest is currently disabled. ✅"
 
     try:
-        emails = fetch_unread_emails(user_id, top=20)
+        emails = unread_sync(user_id, max_results=20)
         return build_digest(user_id, _emails_for_build_digest(emails))
     except Exception:
         pass

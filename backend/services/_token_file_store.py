@@ -94,6 +94,13 @@ def fetch_all(user_id: str) -> list[dict]:
         return [row for k, row in data.items() if k.startswith(f"{user_id}::")]
 
 
+def fetch_all_for_provider(provider: str) -> list[dict]:
+    """Every stored row for a provider, across all user ids."""
+    with _LOCK:
+        data = _load()
+        return [row for k, row in data.items() if k.endswith(f"::{provider}")]
+
+
 def update(row_id: str, patch: dict[str, Any]) -> None:
     with _LOCK:
         data = _load()

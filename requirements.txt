@@ -10,7 +10,6 @@ qdrant-client
 fastembed
 
 # ── Microsoft 365 ──────────────────────────────────────────
-msal
 httpx
 
 # ── Telegram bot ───────────────────────────────────────────
@@ -36,11 +35,6 @@ pandas
 # ── Frontend ───────────────────────────────────────────────
 streamlit
 requests
-
-# ── Legacy Google (kept for older scripts in scripts/) ─────
-google-api-python-client
-google-auth-httplib2
-google-auth-oauthlib
 
 # ── Misc ───────────────────────────────────────────────────
 python-dotenv

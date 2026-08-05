@@ -1,12 +1,12 @@
-import httpx
 import json
 import asyncio
 import re
 from pathlib import Path
 from datetime import datetime, timezone
 
+from backend.services import llm as _llm
+
 TEMP_DIR = Path("temp/uploads")
-LLM_URL = "http://localhost:8080/v1/chat/completions"
 SUPPORTED_EXTENSIONS = {
     ".pdf", ".docx", ".xlsx", ".csv", ".txt", ".md",
     ".doc", ".xls", ".ppt", ".rtf", ".odt", ".ods", ".odp"
@@ -93,25 +93,11 @@ def analyse_document(text: str, filename: str, user_prompt: str = "") -> str:
         )
         user_content = f"Document: {filename}\nContent:\n{text}"
 
-    payload = {
-        "model": "local-model",
-        "messages": [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_content}
-        ],
-        "max_tokens": 400,
-        "temperature": 0.2
-    }
-
-    try:
-        # Increased timeout to 90.0s since LLM can be slow
-        response = httpx.post(LLM_URL, json=payload, timeout=90.0)
-        if response.status_code == 200:
-            return response.json()["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        print(f"Error calling LLM: {e}")
-        
-    return "⚠️ Could not analyse this document. Try asking a specific question about it."
+    out = _llm.complete(
+        [{"role": "system", "content": system_content},
+         {"role": "user", "content": user_content}],
+        max_tokens=400, temperature=0.2, timeout=90.0).strip()
+    return out or "⚠️ Could not analyse this document. Try asking a specific question about it."
 
 async def analyse_document_stream(text: str, filename: str, user_prompt: str = ""):
     """
@@ -130,40 +116,18 @@ async def analyse_document_stream(text: str, filename: str, user_prompt: str = "
         )
         user_content = f"Document: {filename}\nContent:\n{text}"
 
-    from integrations.model_router import route_model
-    base_url = route_model(user_prompt or "analyse document")
-    url = f"{base_url}/v1/chat/completions"
-
-    payload = {
-        "model": "local-model",
-        "messages": [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_content}
-        ],
-        "max_tokens": 400,
-        "temperature": 0.2,
-        "stream": True
-    }
-
+    emitted = False
     try:
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            async with client.stream("POST", url, json=payload) as resp:
-                if resp.status_code != 200:
-                    yield f"Error: Backend returned status code {resp.status_code}."
-                    return
-                async for raw_line in resp.aiter_lines():
-                    if not raw_line or raw_line.strip() == "data: [DONE]":
-                        continue
-                    try:
-                        line = raw_line.removeprefix("data: ").strip()
-                        data = json.loads(line)
-                        token = data["choices"][0]["delta"].get("content", "")
-                        if token:
-                            yield token
-                    except Exception:
-                        continue
+        async for token in _llm.astream(
+            [{"role": "system", "content": system_content},
+             {"role": "user", "content": user_content}],
+            max_tokens=400, temperature=0.2,
+        ):
+            emitted = True
+            yield token
     except Exception as e:
         print(f"Error calling LLM in stream mode: {e}")
+    if not emitted:
         yield "⚠️ Could not analyse this document. Try asking a specific question about it."
 
 def build_followup_prompt(filename: str) -> str:

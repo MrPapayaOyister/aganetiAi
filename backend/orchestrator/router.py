@@ -26,24 +26,28 @@ try:
 except Exception:
     _DB = "tasks/tasks.db"
 
-# Local vLLM registry on the DGX. cost_* are micro-USD per 1k tokens (local≈0;
-# non-zero once external providers are added as gated integrations).
+# Local model registry. Every entry addresses the LiteLLM gateway — never a vLLM
+# port — so the gateway owns keys, routing and its own fallbacks. The names here
+# are LiteLLM `model_list` entries, not served-model names.
+# cost_* are micro-USD per 1k tokens (local≈0).
+from config.settings import LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, LLM_VISION_MODEL
+
 MODELS: dict[str, dict] = {
-    "tool-32b": {"base_url": os.getenv("VLLM_TOOL_URL", "http://localhost:9000/v1"),
-                 "model": os.getenv("VLLM_TOOL_MODEL", "qwen2.5-32b"),
-                 "caps": {"tool_call": True, "vision": False, "ctx": 65536},
-                 "tier": "interactive", "cost_in": 0, "cost_out": 0},
-    "fast-7b": {"base_url": os.getenv("VLLM_FAST_URL", "http://localhost:9002/v1"),
-                "model": os.getenv("VLLM_FAST_MODEL", "qwen2.5-7b"),
+    "gateway": {"base_url": LLM_BASE_URL, "api_key": LLM_API_KEY,
+                "model": LLM_MODEL,
                 "caps": {"tool_call": True, "vision": False, "ctx": 32768},
-                "tier": "fast", "cost_in": 0, "cost_out": 0},
-    "vision-vl": {"base_url": os.getenv("VLLM_VL_URL", "http://localhost:9001/v1"),
-                  "model": os.getenv("VLLM_VL_MODEL", "qwen2.5-vl-32b"),
+                "tier": "interactive", "cost_in": 0, "cost_out": 0},
+    "gateway-fast": {"base_url": LLM_BASE_URL, "api_key": LLM_API_KEY,
+                     "model": os.getenv("LLM_FAST_MODEL", LLM_MODEL),
+                     "caps": {"tool_call": True, "vision": False, "ctx": 32768},
+                     "tier": "fast", "cost_in": 0, "cost_out": 0},
+    "vision-vl": {"base_url": LLM_BASE_URL, "api_key": LLM_API_KEY,
+                  "model": LLM_VISION_MODEL,
                   "caps": {"tool_call": True, "vision": True, "ctx": 32768},
                   "tier": "interactive", "cost_in": 0, "cost_out": 0},
 }
 
-DEFAULT_CHAIN = ["tool-32b", "fast-7b"]
+DEFAULT_CHAIN = ["gateway", "gateway-fast"]
 
 # ── External provider: Azure OpenAI (dashboard builder only) ──────────────────
 # Enabled only when AZURE_OPENAI_API_KEY is set. The dashboard agents select it
@@ -84,7 +88,7 @@ def _client(key: str) -> AsyncOpenAI:
                 api_version=m.get("api_version", "2025-01-01-preview"),
             )
         else:
-            _clients[key] = AsyncOpenAI(base_url=m["base_url"], api_key=m.get("api_key") or "local")
+            _clients[key] = AsyncOpenAI(base_url=m["base_url"], api_key=m.get("api_key") or "unset")
     return _clients[key]
 
 
@@ -109,13 +113,13 @@ def plan(agent: dict | None = None, *, need_tools: bool = False,
             if k not in chain:
                 chain.append(k)
     elif tier == "fast" and not need_tools:
-        for k in ("fast-7b", "tool-32b"):
+        for k in ("gateway-fast", "gateway"):
             if k not in chain:
                 chain.append(k)
     for k in DEFAULT_CHAIN:
         if k not in chain and _capable(k, need_tools, need_vision):
             chain.append(k)
-    return chain or ["tool-32b"]
+    return chain or ["gateway"]
 
 
 def _normalise(msg) -> dict:
@@ -154,6 +158,9 @@ async def complete(messages: list[dict], tools: list[dict] | None = None, *,
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice
+        if m.get("provider") != "azure":
+            # Qwen3 reasoning off at source (see backend/services/llm.py).
+            kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
         t0 = time.monotonic()
         try:
             resp = await _client(mk).chat.completions.create(timeout=90, **kwargs)

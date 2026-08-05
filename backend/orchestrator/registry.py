@@ -108,8 +108,8 @@ async def _list_tasks(ctx, status: str | None = None) -> str:
 
 async def _get_agenda(ctx, days_ahead: int = 2) -> str:
     try:
-        from backend.services import gcalendar
-        events = await gcalendar.get_google_agenda(ctx["user_id"], days_ahead=days_ahead)
+        from backend.services import mailbox
+        events = await mailbox.agenda(ctx["user_id"], days_ahead=days_ahead)
     except Exception as e:
         return f"Calendar unavailable ({e}). The user may need to connect Google in Settings."
     if not events:
@@ -120,8 +120,8 @@ async def _get_agenda(ctx, days_ahead: int = 2) -> str:
 
 async def _list_emails(ctx, max_results: int = 10) -> str:
     try:
-        from backend.services.gmail import get_gmail_inbox
-        emails = await get_gmail_inbox(ctx["user_id"], max_results=max_results)
+        from backend.services.mailbox import inbox as read_inbox
+        emails = await read_inbox(ctx["user_id"], max_results=max_results)
     except Exception as e:
         return f"Email unavailable ({e}). The user may need to connect Google in Settings."
     if not emails:
