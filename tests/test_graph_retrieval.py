@@ -6,8 +6,9 @@ Phase 3 retrieval tests.
   * graph  — registry resolution, expansion, evidence, ranking order.
              Skipped automatically when Neo4j is unreachable.
 
-Graph tests build a small fixture under source="pytest-retrieval" and delete
-exactly that, so they are safe against a populated database.
+Graph tests build a small fixture whose entity names are all prefixed "KGTest ",
+so their ids land under `kgtest-` — an id space production never uses — and the
+teardown deletes exactly that prefix.
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from backend.knowledge_graph.normalizer import Normalizer
 from backend.knowledge_graph import (
     BatchKnowledgeGraphBuilder,
     ExtractedEntity,
@@ -39,6 +41,9 @@ from backend.knowledge_graph.retrieval import (
 from backend.knowledge_graph.retrieval import ranking
 
 TEST_SOURCE = "pytest-retrieval"
+# See tests/test_knowledge_graph.py: isolation comes from the NAME prefix, which
+# keeps every fixture id under kgtest- and away from every production entity.
+TEST_ID_PREFIX = "kgtest-"
 
 
 def _graph_available() -> bool:
@@ -64,43 +69,34 @@ def graph():
     one, so ranking order is predictable rather than incidental.
     """
     svc = get_graph_service()
-    # Snapshot every id that exists BEFORE the fixture writes anything, and never
-    # delete those. Entity ids are `slugify(canonical_name)` and label-free, so
-    # the "Agentic AI" this fixture builds IS the production `agentic-ai` node —
-    # the MERGE stamps source='pytest-retrieval' onto it, and an unguarded
-    # teardown then DETACH DELETEs live data. That is not hypothetical: it removed
-    # 6 real entities and silently disabled graph retrieval until they were
-    # re-seeded. Same guard as tests/test_knowledge_graph.py::svc.
-    _protected = [r["id"] for r in svc.run_query(
-        "MATCH (n:Entity) RETURN n.id AS id", op="pytest_snapshot")]
 
     def _clean() -> None:
         svc.run_query(
-            "MATCH (n) WHERE n.source=$s AND NOT n.id IN $keep DETACH DELETE n",
-            {"s": TEST_SOURCE, "keep": _protected}, op="pytest_clean")
+            "MATCH (n:Entity) WHERE n.id STARTS WITH $prefix DETACH DELETE n",
+            {"prefix": TEST_ID_PREFIX}, op="pytest_clean")
 
     _clean()
     b = BatchKnowledgeGraphBuilder(service=svc, source=TEST_SOURCE)
 
     entities = [
-        ExtractedEntity(name="Akshay", type="Person"),
-        ExtractedEntity(name="Agentic AI", type="Project"),
-        ExtractedEntity(name="LiteLLM", type="Technology"),
-        ExtractedEntity(name="Microsoft Graph", type="Technology",
-                        secondary_labels=["API"], aliases=["MS Graph"]),
-        ExtractedEntity(name="qwen-fast", type="Model"),
+        ExtractedEntity(name="KGTest Akshay", type="Person"),
+        ExtractedEntity(name="KGTest AgenticAI", type="Project"),
+        ExtractedEntity(name="KGTest LiteLLM", type="Technology"),
+        ExtractedEntity(name="KGTest MicrosoftGraph", type="Technology",
+                        secondary_labels=["API"], aliases=["KGTest MSGraph"]),
+        ExtractedEntity(name="KGTest QwenFast", type="Model"),
     ]
     rels = [
-        ExtractedRelationship(source="Akshay", type="WORKS_ON", target="Agentic AI"),
-        ExtractedRelationship(source="Agentic AI", type="USES", target="LiteLLM"),
-        ExtractedRelationship(source="Agentic AI", type="USES", target="Microsoft Graph"),
-        ExtractedRelationship(source="LiteLLM", type="ROUTES_TO", target="qwen-fast"),
+        ExtractedRelationship(source="KGTest Akshay", type="WORKS_ON", target="KGTest AgenticAI"),
+        ExtractedRelationship(source="KGTest AgenticAI", type="USES", target="KGTest LiteLLM"),
+        ExtractedRelationship(source="KGTest AgenticAI", type="USES", target="KGTest MicrosoftGraph"),
+        ExtractedRelationship(source="KGTest LiteLLM", type="ROUTES_TO", target="KGTest QwenFast"),
     ]
     b.build(entities, rels, provenance=Provenance(source_id="conv-a",
                                                   source_type="conversation",
-                                                  confidence=0.9, model="qwen-fast"))
+                                                  confidence=0.9, model="KGTest QwenFast"))
     # Second source mentions only LiteLLM → it becomes the corroborated one.
-    b.build([ExtractedEntity(name="LiteLLM", type="Technology")], [],
+    b.build([ExtractedEntity(name="KGTest LiteLLM", type="Technology")], [],
             provenance=Provenance(source_id="doc-b", source_type="document",
                                   confidence=0.8, model="gpt-4.1"))
     yield svc
@@ -189,7 +185,7 @@ def test_lucene_special_characters_are_escaped():
 
 
 def test_similarity_is_bounded():
-    assert similarity("Microsoft Graph", "Microsoft Graph") == 1.0
+    assert similarity("KGTest MicrosoftGraph", "KGTest MicrosoftGraph") == 1.0
     assert 0.0 <= similarity("abc", "xyz") <= 1.0
 
 
@@ -204,13 +200,13 @@ class _FakeLLM:
 
 
 def test_mention_extraction_is_one_call_and_deduplicates(monkeypatch):
-    fake = _FakeLLM('{"mentions": ["Agentic AI", "LiteLLM", "agentic ai"]}')
+    fake = _FakeLLM('{"mentions": ["KGTest AgenticAI", "KGTest LiteLLM", "kgtest agenticai"]}')
     monkeypatch.setattr("backend.knowledge_graph.retrieval.resolver._llm.complete",
                         fake.complete)
     resolver = EntityResolver(registry=CanonicalEntityRegistry(alias_file=None))
     mentions, _ = resolver.extract_mentions("How does Agentic AI use LiteLLM?")
     assert fake.calls == 1
-    assert mentions == ["Agentic AI", "LiteLLM"], "case-duplicate must be dropped"
+    assert mentions == ["KGTest AgenticAI", "KGTest LiteLLM"], "case-duplicate must be dropped"
 
 
 def test_mention_extraction_survives_bad_json(monkeypatch):
@@ -225,23 +221,33 @@ def test_mention_extraction_survives_bad_json(monkeypatch):
 
 @needs_graph
 def test_exact_and_alias_resolution(registry):
-    assert registry.resolve("Agentic AI").entity_id == "agentic-ai"
-    assert registry.resolve("agentic ai").entity_id == "agentic-ai"
-    ms = registry.resolve("MS Graph")
-    assert ms.entity_id == "microsoft-graph", "stored alias must resolve"
+    assert registry.resolve("KGTest AgenticAI").entity_id == "kgtest-agenticai"
+    assert registry.resolve("kgtest agenticai").entity_id == "kgtest-agenticai"
+    ms = registry.resolve("KGTest MSGraph")
+    assert ms.entity_id == "kgtest-microsoftgraph", "stored alias must resolve"
     assert ms.resolved and ms.match_type in ("registry", "alias", "exact")
 
 
 @needs_graph
-def test_static_alias_map_feeds_resolution(registry):
-    """Normalizer aliases (M365 → Microsoft 365) apply before any lookup."""
-    assert registry.resolve("msgraph").entity_id == "microsoft-graph"
+def test_static_alias_map_feeds_resolution(graph):
+    """The normalizer's alias map applies BEFORE any database lookup.
+
+    Production ships "MS Graph" → "Microsoft Graph" statically. Asserting on that
+    pair would resolve to the real `microsoft-graph` node, so the same behaviour
+    is exercised with a registered namespaced alias instead: the variant is not a
+    stored alias on the node and does not slugify to its id, so resolution can
+    only succeed if the normalizer rewrote the name first."""
+    n = Normalizer()
+    n.register_alias("KGTest MSGraphVariant", "KGTest MicrosoftGraph")
+    reg = CanonicalEntityRegistry(service=graph, normalizer=n, alias_file=None)
+    reg.warm(force=True)
+    assert reg.resolve("KGTest MSGraphVariant").entity_id == "kgtest-microsoftgraph"
 
 
 @needs_graph
 def test_fuzzy_resolves_typos_but_not_nonsense(registry):
-    typo = registry.resolve("Microsft Graph")
-    assert typo.entity_id == "microsoft-graph"
+    typo = registry.resolve("KGTest MicrosftGraph")
+    assert typo.entity_id == "kgtest-microsoftgraph"
     assert typo.match_type == "fuzzy"
     assert typo.score >= registry.fuzzy_threshold
 
@@ -260,12 +266,12 @@ def test_unresolved_still_reports_candidates(registry):
 
 @needs_graph
 def test_register_alias_persists_to_the_node(registry, graph):
-    assert registry.register_alias("The Graph API", "microsoft-graph")
-    node = graph.find_entity("microsoft-graph")
-    assert "The Graph API" in node[0].properties["aliases"]
+    assert registry.register_alias("The KGTest GraphAPI", "kgtest-microsoftgraph")
+    node = graph.find_entity("kgtest-microsoftgraph")
+    assert "The KGTest GraphAPI" in node[0].properties["aliases"]
     registry.invalidate()
     registry.warm(force=True)
-    assert registry.resolve("The Graph API").entity_id == "microsoft-graph"
+    assert registry.resolve("The KGTest GraphAPI").entity_id == "kgtest-microsoftgraph"
 
 
 @needs_graph
@@ -286,9 +292,9 @@ def test_historical_alias_merge_is_dry_run_by_default(registry):
 @needs_graph
 def test_depth_controls_expansion(graph):
     r = GraphRetriever(service=graph)
-    assert len(r.expand(["agentic-ai"], depth=0).nodes) == 1
-    one = r.expand(["agentic-ai"], depth=1)
-    two = r.expand(["agentic-ai"], depth=2)
+    assert len(r.expand(["kgtest-agenticai"], depth=0).nodes) == 1
+    one = r.expand(["kgtest-agenticai"], depth=1)
+    two = r.expand(["kgtest-agenticai"], depth=2)
     assert len(one.nodes) == 4, "Akshay, LiteLLM, Microsoft Graph + the seed"
     assert len(two.nodes) > len(one.nodes), "qwen-fast is two hops out"
 
@@ -296,15 +302,15 @@ def test_depth_controls_expansion(graph):
 @needs_graph
 def test_expansion_cost_is_one_query_per_hop(graph):
     r = GraphRetriever(service=graph)
-    r.expand(["agentic-ai"], depth=1)
+    r.expand(["kgtest-agenticai"], depth=1)
     one_hop = r.queries
-    r.expand(["agentic-ai"], depth=2)
+    r.expand(["kgtest-agenticai"], depth=2)
     assert r.queries == one_hop + 1, "each extra hop costs exactly one more query"
 
 
 @needs_graph
 def test_every_returned_edge_carries_evidence(graph):
-    sg = GraphRetriever(service=graph).expand(["agentic-ai"], depth=2)
+    sg = GraphRetriever(service=graph).expand(["kgtest-agenticai"], depth=2)
     assert sg.edges
     for edge in sg.edges:
         assert edge.evidence.is_supported, "unsupported facts must never be returned"
@@ -317,27 +323,27 @@ def test_every_returned_edge_carries_evidence(graph):
 def test_unsupported_edges_are_dropped_and_counted(graph):
     """An edge written without provenance must not surface."""
     graph.run_query(
-        "MATCH (a:Entity {id:'agentic-ai'}), (b:Entity {id:'qwen-fast'}) "
+        "MATCH (a:Entity {id:'kgtest-agenticai'}), (b:Entity {id:'kgtest-qwenfast'}) "
         "MERGE (a)-[r:RELATED_TO]->(b) SET r.note = 'no provenance'", op="pytest")
-    sg = GraphRetriever(service=graph).expand(["agentic-ai"], depth=1)
+    sg = GraphRetriever(service=graph).expand(["kgtest-agenticai"], depth=1)
     assert sg.dropped_unsupported >= 1
-    assert not any(e.rel_type == "RELATED_TO" and e.end_id == "qwen-fast"
+    assert not any(e.rel_type == "RELATED_TO" and e.end_id == "KGTest QwenFast"
                    for e in sg.edges)
 
 
 @needs_graph
 def test_require_evidence_can_be_disabled_for_inspection(graph):
     graph.run_query(
-        "MATCH (a:Entity {id:'agentic-ai'}), (b:Entity {id:'qwen-fast'}) "
+        "MATCH (a:Entity {id:'kgtest-agenticai'}), (b:Entity {id:'kgtest-qwenfast'}) "
         "MERGE (a)-[r:RELATED_TO]->(b) SET r.note='x'", op="pytest")
-    sg = GraphRetriever(service=graph, require_evidence=False).expand(["agentic-ai"], depth=1)
+    sg = GraphRetriever(service=graph, require_evidence=False).expand(["kgtest-agenticai"], depth=1)
     assert any(e.rel_type == "RELATED_TO" for e in sg.edges)
 
 
 @needs_graph
 def test_seeds_outrank_their_neighbours(graph):
-    sg = GraphRetriever(service=graph).expand(["agentic-ai"], depth=2)
-    assert sg.nodes[0].entity_id == "agentic-ai", "the seed must rank first"
+    sg = GraphRetriever(service=graph).expand(["kgtest-agenticai"], depth=2)
+    assert sg.nodes[0].entity_id == "kgtest-agenticai", "the seed must rank first"
     assert sg.nodes[0].hop == 0
     hops = [n.hop for n in sg.nodes]
     assert hops == sorted(hops) or sg.nodes[-1].hop >= sg.nodes[0].hop
@@ -346,23 +352,23 @@ def test_seeds_outrank_their_neighbours(graph):
 @needs_graph
 def test_corroborated_node_outranks_an_equal_uncorroborated_one(graph):
     """LiteLLM has two sources; Microsoft Graph has one, at the same hop."""
-    sg = GraphRetriever(service=graph).expand(["agentic-ai"], depth=1)
+    sg = GraphRetriever(service=graph).expand(["kgtest-agenticai"], depth=1)
     by_id = {n.entity_id: n for n in sg.nodes}
-    lite, msg = by_id["litellm"], by_id["microsoft-graph"]
+    lite, msg = by_id["kgtest-litellm"], by_id["kgtest-microsoftgraph"]
     assert lite.hop == msg.hop == 1
     assert lite.signals["corroboration"] > msg.signals["corroboration"]
 
 
 @needs_graph
 def test_max_nodes_truncates_and_reports_it(graph):
-    sg = GraphRetriever(service=graph, max_nodes=2).expand(["agentic-ai"], depth=2)
+    sg = GraphRetriever(service=graph, max_nodes=2).expand(["kgtest-agenticai"], depth=2)
     assert len(sg.nodes) <= 2
     assert sg.truncated
 
 
 @needs_graph
 def test_rel_type_filter(graph):
-    sg = GraphRetriever(service=graph).expand(["agentic-ai"], depth=1,
+    sg = GraphRetriever(service=graph).expand(["kgtest-agenticai"], depth=1,
                                               rel_types={"USES"})
     assert {e.rel_type for e in sg.edges} == {"USES"}
 
@@ -372,24 +378,24 @@ def test_rel_type_filter(graph):
 @needs_graph
 def test_api_neighbourhood_needs_no_llm(graph):
     api = GraphRetrievalAPI(service=graph)
-    sg = api.neighbourhood("agentic-ai", depth=1)
+    sg = api.neighbourhood("kgtest-agenticai", depth=1)
     assert len(sg.nodes) > 1
 
 
 @needs_graph
 def test_api_lookup_needs_no_llm(graph):
     api = GraphRetrievalAPI(service=graph)
-    assert api.lookup("MS Graph").entity_id == "microsoft-graph"
+    assert api.lookup("KGTest MSGraph").entity_id == "kgtest-microsoftgraph"
 
 
 @needs_graph
 def test_api_splits_resolved_from_related(graph, monkeypatch):
     monkeypatch.setattr("backend.knowledge_graph.retrieval.resolver._llm.complete",
-                        _FakeLLM('{"mentions": ["Agentic AI"]}').complete)
+                        _FakeLLM('{"mentions": ["KGTest AgenticAI"]}').complete)
     api = GraphRetrievalAPI(service=graph)
     ctx = api.retrieve("What does Agentic AI use?", depth=1)
-    assert [e.entity_id for e in ctx.resolved] == ["agentic-ai"]
-    assert "agentic-ai" not in [n.entity_id for n in ctx.related], \
+    assert [e.entity_id for e in ctx.resolved] == ["kgtest-agenticai"]
+    assert "kgtest-agenticai" not in [n.entity_id for n in ctx.related], \
         "a seed is never also 'related'"
     assert ctx.related, "one hop from the seed must find something"
     assert ctx.stats.total_ms > 0
@@ -410,7 +416,7 @@ def test_api_reports_unresolved_without_failing(graph, monkeypatch):
 @needs_graph
 def test_api_top_k_prunes_both_nodes_and_edges(graph, monkeypatch):
     monkeypatch.setattr("backend.knowledge_graph.retrieval.resolver._llm.complete",
-                        _FakeLLM('{"mentions": ["Agentic AI"]}').complete)
+                        _FakeLLM('{"mentions": ["KGTest AgenticAI"]}').complete)
     ctx = GraphRetrievalAPI(service=graph).retrieve("x", depth=2, top_k=2)
     keep = {n.entity_id for n in ctx.subgraph.nodes}
     assert len(keep) <= 2

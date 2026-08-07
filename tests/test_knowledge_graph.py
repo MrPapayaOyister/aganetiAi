@@ -7,8 +7,9 @@ Split by what they need, so most of the suite runs anywhere:
   * graph      — batch merge, multi-label, provenance accumulation, idempotency.
                  Skipped automatically when Neo4j is unreachable.
 
-Graph tests write under source="pytest-kg" and delete exactly that on teardown,
-so running them against a populated database is safe.
+Graph tests build entities named "KGTest <Thing>" so their ids land under the
+`kgtest-` prefix, which production can never occupy, and delete exactly that
+prefix on teardown. Running them against a populated database is safe.
 """
 from __future__ import annotations
 
@@ -34,6 +35,10 @@ from backend.knowledge_graph import (
 )
 
 TEST_SOURCE = "pytest-kg"
+# Every fixture entity is named "KGTest <Thing>", so entity_id_for() lands it
+# under this id prefix. Production has no such id, which is what guarantees the
+# fixtures can never MERGE onto — or delete — a real entity.
+TEST_ID_PREFIX = "kgtest-"
 
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
@@ -51,43 +56,38 @@ needs_graph = pytest.mark.skipif(not _graph_available(),
 
 @pytest.fixture()
 def svc():
-    """Live GraphService, with teardown that CANNOT delete pre-existing data.
+    """Live GraphService against an ISOLATED corner of the graph.
 
-    The old teardown was `DELETE n WHERE n.source = 'pytest-kg'`, on the
-    assumption that tests only ever touch nodes they created. That assumption is
-    void, and the mechanism is the builder working correctly:
+    Isolation comes from the NAMES, not from the teardown filter. Every fixture
+    entity is prefixed `KGTest `, so `entity_id_for()` — which is
+    `slugify(canonical_name)` and deliberately label-free — yields ids under
+    `kgtest-…` that no production entity can ever occupy.
 
-      * `entity_id_for()` is `slugify(canonical_name)` and deliberately
-        LABEL-FREE, so a test entity named "LiteLLM" has id `litellm` — the
-        SAME NODE as the production entity, by design.
-      * `_entity_row` writes `props["source"] = self._source`, so the MERGE
-        stamps `source='pytest-kg'` onto that production node.
-      * Teardown then DETACH DELETEs it.
+    That prefix is what makes this safe, and it is the only thing that can be.
+    Previously the fixtures used real names: a test entity called "LiteLLM" has
+    id `litellm`, which IS the production node. The MERGE stamped
+    `source='pytest-kg'` onto it and the teardown then DETACH DELETEd it. A
+    `pytest tests/` run destroyed 6 live entities that way (agentic-ai, litellm,
+    neo4j, akshay, …), after which the resolver silently resolved nothing and
+    GraphProvider contributed no context at all.
 
-    That is exactly what happened: a `pytest tests/` run removed 6 real entities
-    (agentic-ai, litellm, neo4j, akshay, …), the resolver stopped resolving them,
-    and GraphProvider silently contributed nothing to fused context.
+    Filtering the delete by source could not fix that, because by the time the
+    filter runs the production node already carries the test's source. Only
+    never colliding in the first place does.
 
-    The fix is to snapshot every id that exists BEFORE the test and exclude those
-    from the delete. Anything the test genuinely created is still cleaned up;
-    anything that was already there survives regardless of what the test stamped
-    on it.
+    Teardown deletes by id prefix as well as source: belt and braces, and it
+    means a crashed test cannot strand rows that the next run would inherit.
     """
     service = get_graph_service()
 
-    def _preexisting() -> list[str]:
-        return [r["id"] for r in service.run_query(
-            "MATCH (n:Entity) RETURN n.id AS id", op="pytest_snapshot")]
-
-    def _clean(protected: list[str]) -> None:
+    def _clean() -> None:
         service.run_query(
-            "MATCH (n) WHERE n.source = $s AND NOT n.id IN $keep DETACH DELETE n",
-            {"s": TEST_SOURCE, "keep": protected}, op="pytest_clean")
+            "MATCH (n:Entity) WHERE n.id STARTS WITH $prefix DETACH DELETE n",
+            {"prefix": TEST_ID_PREFIX}, op="pytest_clean")
 
-    protected = _preexisting()
-    _clean(protected)
+    _clean()
     yield service
-    _clean(protected)
+    _clean()
 
 
 @pytest.fixture()
@@ -96,7 +96,7 @@ def builder(svc):
 
 
 def prov(source_id: str = "src-1", source_type: str = "conversation",
-         confidence: float = 0.9, model: str = "qwen-fast", **kw) -> Provenance:
+         confidence: float = 0.9, model: str = "KGTest QwenFast", **kw) -> Provenance:
     return Provenance(source_id=source_id, source_type=source_type,
                       confidence=confidence, model=model, **kw)
 
@@ -117,11 +117,11 @@ class _FakeLLM:
 
 UNIFIED_JSON = """
 {"entities": [
-   {"name": "Microsoft Graph", "type": "Technology", "also": ["API", "Service"],
-    "aliases": ["MS Graph"], "confidence": 0.95},
-   {"name": "Agentic AI", "type": "Project", "also": [], "aliases": [], "confidence": 0.9}],
+   {"name": "KGTest MicrosoftGraph", "type": "Technology", "also": ["API", "Service"],
+    "aliases": ["KGTest MSGraph"], "confidence": 0.95},
+   {"name": "KGTest AgenticAI", "type": "Project", "also": [], "aliases": [], "confidence": 0.9}],
  "relationships": [
-   {"source": "Agentic AI", "type": "USES", "target": "MS Graph", "confidence": 0.8}],
+   {"source": "KGTest AgenticAI", "type": "USES", "target": "KGTest MSGraph", "confidence": 0.8}],
  "summary": "Agentic AI uses Microsoft Graph.",
  "keywords": ["graph", "integration"],
  "confidence": 0.9}
@@ -148,16 +148,16 @@ def test_extraction_parses_multilabel_aliases_and_confidence(monkeypatch):
     monkeypatch.setattr("backend.knowledge_graph.extractor._llm.complete", fake.complete)
     result = KnowledgeExtractor().extract("x")
 
-    graph = next(e for e in result.entities if e.name == "Microsoft Graph")
+    graph = next(e for e in result.entities if e.name == "KGTest MicrosoftGraph")
     assert graph.type == "Technology"
     assert graph.secondary_labels == ["API", "Service"]
     assert graph.all_labels == ["Technology", "API", "Service"]
-    assert graph.aliases == ["MS Graph"]
+    assert graph.aliases == ["KGTest MSGraph"]
     assert graph.confidence == 0.95
 
     # The relationship named the ALIAS; it must still bind to the canonical entity.
     rel = result.relationships[0]
-    assert rel.source == "Agentic AI" and rel.target == "Microsoft Graph"
+    assert rel.source == "KGTest AgenticAI" and rel.target == "KGTest MicrosoftGraph"
     assert rel.confidence == 0.8
 
 
@@ -199,44 +199,50 @@ def test_alias_resolution_maps_variants_to_canonical():
 
 def test_casing_never_mangles_deliberate_names():
     n = Normalizer()
-    for name in ("LiteLLM", "vLLM", "qwen-fast", "gpt-4.1", "Neo4j"):
+    for name in ("KGTest LiteLLM", "vLLM", "KGTest QwenFast", "gpt-4.1", "KGTest Neo4j"):
         assert n.canonical_name(name) == name
 
 
 def test_multilabel_merge_produces_one_entity_not_two():
     """The phase-2 duplicate-node bug, at the normalizer level."""
     n = Normalizer()
+    # Production ships "MS Graph" → "Microsoft Graph" in the static map. The
+    # namespaced pair is registered explicitly through the documented extension
+    # point, so the test exercises the SAME collapse behaviour without ever
+    # naming — and therefore without ever writing to — a production entity.
+    n.register_alias("KGTest MSGraph", "KGTest MicrosoftGraph")
     entities, merged, rename = n.resolve([
-        ExtractedEntity(name="Microsoft Graph", type="Technology", confidence=0.6),
-        ExtractedEntity(name="MS Graph", type="API", confidence=0.9),
+        ExtractedEntity(name="KGTest MicrosoftGraph", type="Technology", confidence=0.6),
+        ExtractedEntity(name="KGTest MSGraph", type="API", confidence=0.9),
     ])
     assert len(entities) == 1, "same thing under two labels must collapse to ONE entity"
     assert merged == 1
     e = entities[0]
-    assert e.canonical_name == "Microsoft Graph"
+    assert e.canonical_name == "KGTest MicrosoftGraph"
     assert set(e.all_labels) == {"Technology", "API"}, "the loser's label is kept"
     assert e.confidence == 0.9, "confidence is the max, not the latest"
-    assert "MS Graph" in e.aliases
+    assert "KGTest MSGraph" in e.aliases
     # Both spellings must repoint relationships at the canonical name.
-    assert rename["MS Graph"] == "Microsoft Graph"
-    assert rename["ms graph"] == "Microsoft Graph"
+    assert rename["KGTest MSGraph"] == "KGTest MicrosoftGraph"
+    assert rename["kgtest msgraph"] == "KGTest MicrosoftGraph"
 
 
 def test_entity_label_loses_to_a_specific_one():
     n = Normalizer()
     entities, _, _ = n.resolve([
-        ExtractedEntity(name="Agentic AI", type="Entity"),
-        ExtractedEntity(name="Agentic AI", type="Project"),
+        ExtractedEntity(name="KGTest AgenticAI", type="Entity"),
+        ExtractedEntity(name="KGTest AgenticAI", type="Project"),
     ])
     assert entities[0].type == "Project"
 
 
 def test_relationships_repoint_through_rename_map():
     n = Normalizer()
-    _, _, rename = n.resolve([ExtractedEntity(name="MS Graph", type="API")])
+    n.register_alias("KGTest MSGraph", "KGTest MicrosoftGraph")
+    _, _, rename = n.resolve([ExtractedEntity(name="KGTest MSGraph", type="API")])
     rels = n.normalize_relationships(
-        [ExtractedRelationship(source="Agentic AI", type="USES", target="MS Graph")], rename)
-    assert rels[0].target == "Microsoft Graph"
+        [ExtractedRelationship(source="KGTest AgenticAI", type="USES", target="KGTest MSGraph")], rename)
+    assert rels[0].target == "KGTest MicrosoftGraph"
 
 
 def test_id_is_label_free_and_stable():
@@ -292,8 +298,8 @@ def test_provenance_confidence_is_clamped():
 @needs_graph
 def test_batch_merge_uses_few_queries_not_one_per_node(builder):
     """The whole point of batching: query count must not scale with node count."""
-    entities = [ExtractedEntity(name=f"Thing {i}", type="Technology") for i in range(25)]
-    rels = [ExtractedRelationship(source="Thing 0", type="USES", target=f"Thing {i}")
+    entities = [ExtractedEntity(name=f"KGTest Thing{i}", type="Technology") for i in range(25)]
+    rels = [ExtractedRelationship(source="KGTest Thing0", type="USES", target=f"KGTest Thing{i}")
             for i in range(1, 25)]
     result = builder.build(entities, rels, provenance=prov())
 
@@ -306,9 +312,9 @@ def test_batch_merge_uses_few_queries_not_one_per_node(builder):
 @needs_graph
 def test_batch_groups_by_label_set(builder):
     entities = [
-        ExtractedEntity(name="A", type="Technology"),
-        ExtractedEntity(name="B", type="Technology", secondary_labels=["API"]),
-        ExtractedEntity(name="C", type="Person"),
+        ExtractedEntity(name="KGTest A", type="Technology"),
+        ExtractedEntity(name="KGTest B", type="Technology", secondary_labels=["API"]),
+        ExtractedEntity(name="KGTest C", type="Person"),
     ]
     result = builder.build(entities, [], provenance=prov())
     assert result.nodes_created == 3
@@ -318,16 +324,16 @@ def test_batch_groups_by_label_set(builder):
 @needs_graph
 def test_multilabel_merge_does_not_fork_the_node(builder, svc):
     """Same id seen under different labels must gain a label, not duplicate."""
-    builder.build([ExtractedEntity(name="Microsoft Graph", type="Technology")],
+    builder.build([ExtractedEntity(name="KGTest MicrosoftGraph", type="Technology")],
                   [], provenance=prov())
-    builder.build([ExtractedEntity(name="Microsoft Graph", type="API",
+    builder.build([ExtractedEntity(name="KGTest MicrosoftGraph", type="API",
                                    secondary_labels=["Service"])], [], provenance=prov())
 
     rows = svc.run_query("MATCH (n {id: $id}) RETURN count(n) AS c",
-                         {"id": "microsoft-graph"}, op="pytest")
+                         {"id": "kgtest-microsoftgraph"}, op="pytest")
     assert rows[0]["c"] == 1, "must be ONE node, not one per label"
 
-    found = svc.find_entity("microsoft-graph")
+    found = svc.find_entity("kgtest-microsoftgraph")
     assert found is not None
     _, labels = found
     assert set(labels) >= {"Entity", "Technology", "API", "Service"}
@@ -335,10 +341,10 @@ def test_multilabel_merge_does_not_fork_the_node(builder, svc):
 
 @needs_graph
 def test_duplicate_ingestion_is_idempotent(builder, svc):
-    entities = [ExtractedEntity(name="Microsoft Graph", type="Technology"),
-                ExtractedEntity(name="Agentic AI", type="Project")]
-    rels = [ExtractedRelationship(source="Agentic AI", type="USES",
-                                  target="Microsoft Graph")]
+    entities = [ExtractedEntity(name="KGTest MicrosoftGraph", type="Technology"),
+                ExtractedEntity(name="KGTest AgenticAI", type="Project")]
+    rels = [ExtractedRelationship(source="KGTest AgenticAI", type="USES",
+                                  target="KGTest MicrosoftGraph")]
 
     first = builder.build(entities, rels, provenance=prov())
     second = builder.build(entities, rels, provenance=prov())
@@ -356,22 +362,22 @@ def test_duplicate_ingestion_is_idempotent(builder, svc):
 @needs_graph
 def test_provenance_accumulates_across_sources(builder, svc):
     """Two different sources asserting the same fact must both be recorded."""
-    entity = [ExtractedEntity(name="LiteLLM", type="Technology")]
+    entity = [ExtractedEntity(name="KGTest LiteLLM", type="Technology")]
     builder.build(entity, [], provenance=prov(source_id="conv-1",
                                               source_type="conversation",
-                                              confidence=0.9, model="qwen-fast"))
+                                              confidence=0.9, model="KGTest QwenFast"))
     builder.build(entity, [], provenance=Provenance(
         source_id="doc-2", source_type="document", document_id="doc-2",
         confidence=0.4, model="gpt-4.1"))
 
-    node = svc.find_entity("litellm")
+    node = svc.find_entity("kgtest-litellm")
     assert node is not None
     props = node[0].properties
     summary = ProvenanceSummary.from_properties(props)
 
     assert set(summary.source_ids) == {"conv-1", "doc-2"}, "both sources retained"
     assert set(summary.source_types) == {"conversation", "document"}
-    assert set(summary.models) == {"qwen-fast", "gpt-4.1"}
+    assert set(summary.models) == {"KGTest QwenFast", "gpt-4.1"}
     assert summary.observations == 2
     assert summary.confidence == 0.9, "MAX confidence kept, not the later 0.4"
     assert summary.is_corroborated
@@ -380,12 +386,12 @@ def test_provenance_accumulates_across_sources(builder, svc):
 
 @needs_graph
 def test_provenance_first_seen_is_never_overwritten(builder, svc):
-    entity = [ExtractedEntity(name="Neo4j", type="Technology")]
+    entity = [ExtractedEntity(name="KGTest Neo4j", type="Technology")]
     builder.build(entity, [], provenance=Provenance(source_id="s1",
                                                     created_at="2020-01-01T00:00:00Z"))
     builder.build(entity, [], provenance=Provenance(source_id="s2",
                                                     created_at="2030-01-01T00:00:00Z"))
-    props = svc.find_entity("neo4j")[0].properties
+    props = svc.find_entity("kgtest-neo4j")[0].properties
     assert props["first_seen"] == "2020-01-01T00:00:00Z"
     assert props["last_seen"] == "2030-01-01T00:00:00Z"
 
@@ -396,34 +402,34 @@ def test_mixed_knowledge_sources_converge_on_one_node(builder, svc):
     for source in (KnowledgeSource.conversation("conv-7", "t", user_id="u1"),
                    KnowledgeSource.document("doc-7", "t"),
                    KnowledgeSource.email("mail-7", "t")):
-        builder.build([ExtractedEntity(name="Microsoft Graph", type="Technology")],
-                      [], provenance=Provenance.from_source(source, model="qwen-fast"))
+        builder.build([ExtractedEntity(name="KGTest MicrosoftGraph", type="Technology")],
+                      [], provenance=Provenance.from_source(source, model="KGTest QwenFast"))
 
     count = svc.run_query("MATCH (n {id:'microsoft-graph'}) RETURN count(n) AS c",
                           op="pytest")[0]["c"]
     assert count == 1
-    summary = ProvenanceSummary.from_properties(svc.find_entity("microsoft-graph")[0].properties)
+    summary = ProvenanceSummary.from_properties(svc.find_entity("kgtest-microsoftgraph")[0].properties)
     assert set(summary.source_types) == {"conversation", "document", "email"}
     assert summary.observations == 3
 
 
 @needs_graph
 def test_aliases_are_stored_and_deduplicated(builder, svc):
-    e = ExtractedEntity(name="Microsoft Graph", type="Technology",
-                        aliases=["MS Graph", "the Graph API"])
+    e = ExtractedEntity(name="KGTest MicrosoftGraph", type="Technology",
+                        aliases=["KGTest MSGraph", "the Graph API"])
     builder.build([e], [], provenance=prov())
-    builder.build([ExtractedEntity(name="Microsoft Graph", type="Technology",
-                                   aliases=["MS Graph", "msgraph"])], [], provenance=prov())
-    props = svc.find_entity("microsoft-graph")[0].properties
-    assert sorted(props["aliases"]) == ["MS Graph", "msgraph", "the Graph API"]
+    builder.build([ExtractedEntity(name="KGTest MicrosoftGraph", type="Technology",
+                                   aliases=["KGTest MSGraph", "kgtestmsgraph"])], [], provenance=prov())
+    props = svc.find_entity("kgtest-microsoftgraph")[0].properties
+    assert sorted(props["aliases"]) == ["KGTest MSGraph", "kgtestmsgraph", "the Graph API"]
 
 
 @needs_graph
 def test_relationship_to_unknown_entity_is_skipped_not_invented(builder):
     result = builder.build(
-        [ExtractedEntity(name="A", type="Technology")],
-        [ExtractedRelationship(source="A", type="USES", target="Nonexistent")],
+        [ExtractedEntity(name="KGTest A", type="Technology")],
+        [ExtractedRelationship(source="KGTest A", type="USES", target="KGTest Nonexistent")],
         provenance=prov())
     assert result.relationships_created == 0
     assert len(result.skipped_relationships) == 1
-    assert "Nonexistent" in result.skipped_relationships[0]
+    assert "KGTest Nonexistent" in result.skipped_relationships[0]
