@@ -64,8 +64,22 @@ def graph():
     one, so ranking order is predictable rather than incidental.
     """
     svc = get_graph_service()
-    svc.run_query("MATCH (n) WHERE n.source=$s DETACH DELETE n",
-                  {"s": TEST_SOURCE}, op="pytest_clean")
+    # Snapshot every id that exists BEFORE the fixture writes anything, and never
+    # delete those. Entity ids are `slugify(canonical_name)` and label-free, so
+    # the "Agentic AI" this fixture builds IS the production `agentic-ai` node —
+    # the MERGE stamps source='pytest-retrieval' onto it, and an unguarded
+    # teardown then DETACH DELETEs live data. That is not hypothetical: it removed
+    # 6 real entities and silently disabled graph retrieval until they were
+    # re-seeded. Same guard as tests/test_knowledge_graph.py::svc.
+    _protected = [r["id"] for r in svc.run_query(
+        "MATCH (n:Entity) RETURN n.id AS id", op="pytest_snapshot")]
+
+    def _clean() -> None:
+        svc.run_query(
+            "MATCH (n) WHERE n.source=$s AND NOT n.id IN $keep DETACH DELETE n",
+            {"s": TEST_SOURCE, "keep": _protected}, op="pytest_clean")
+
+    _clean()
     b = BatchKnowledgeGraphBuilder(service=svc, source=TEST_SOURCE)
 
     entities = [
@@ -90,8 +104,7 @@ def graph():
             provenance=Provenance(source_id="doc-b", source_type="document",
                                   confidence=0.8, model="gpt-4.1"))
     yield svc
-    svc.run_query("MATCH (n) WHERE n.source=$s DETACH DELETE n",
-                  {"s": TEST_SOURCE}, op="pytest_clean")
+    _clean()
 
 
 @pytest.fixture()

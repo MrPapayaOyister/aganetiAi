@@ -51,12 +51,43 @@ needs_graph = pytest.mark.skipif(not _graph_available(),
 
 @pytest.fixture()
 def svc():
+    """Live GraphService, with teardown that CANNOT delete pre-existing data.
+
+    The old teardown was `DELETE n WHERE n.source = 'pytest-kg'`, on the
+    assumption that tests only ever touch nodes they created. That assumption is
+    void, and the mechanism is the builder working correctly:
+
+      * `entity_id_for()` is `slugify(canonical_name)` and deliberately
+        LABEL-FREE, so a test entity named "LiteLLM" has id `litellm` — the
+        SAME NODE as the production entity, by design.
+      * `_entity_row` writes `props["source"] = self._source`, so the MERGE
+        stamps `source='pytest-kg'` onto that production node.
+      * Teardown then DETACH DELETEs it.
+
+    That is exactly what happened: a `pytest tests/` run removed 6 real entities
+    (agentic-ai, litellm, neo4j, akshay, …), the resolver stopped resolving them,
+    and GraphProvider silently contributed nothing to fused context.
+
+    The fix is to snapshot every id that exists BEFORE the test and exclude those
+    from the delete. Anything the test genuinely created is still cleaned up;
+    anything that was already there survives regardless of what the test stamped
+    on it.
+    """
     service = get_graph_service()
-    service.run_query("MATCH (n) WHERE n.source = $s DETACH DELETE n",
-                      {"s": TEST_SOURCE}, op="pytest_clean")
+
+    def _preexisting() -> list[str]:
+        return [r["id"] for r in service.run_query(
+            "MATCH (n:Entity) RETURN n.id AS id", op="pytest_snapshot")]
+
+    def _clean(protected: list[str]) -> None:
+        service.run_query(
+            "MATCH (n) WHERE n.source = $s AND NOT n.id IN $keep DETACH DELETE n",
+            {"s": TEST_SOURCE, "keep": protected}, op="pytest_clean")
+
+    protected = _preexisting()
+    _clean(protected)
     yield service
-    service.run_query("MATCH (n) WHERE n.source = $s DETACH DELETE n",
-                      {"s": TEST_SOURCE}, op="pytest_clean")
+    _clean(protected)
 
 
 @pytest.fixture()
