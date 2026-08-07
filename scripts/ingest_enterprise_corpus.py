@@ -227,6 +227,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                     help="graph extraction concurrency (>1 trips the gateway's 30s timeout)")
     ap.add_argument("--retries", type=int, default=3,
                     help="re-attempts for an empty/unparseable extraction")
+    ap.add_argument("--ids", type=str, default="",
+                    help="comma-separated doc_ids, or @file.json, to reprocess EXACTLY "
+                         "(recovery: rebuild edges/provenance for specific documents)")
     ap.add_argument("--resume", action="store_true",
                     help="skip documents whose doc_id already appears in Neo4j source_ids")
     ap.add_argument("--progress-every", type=int, default=10,
@@ -256,7 +259,20 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"[qdrant] FAILED {f}")
 
     if args.graph:
-        if args.resume:
+        if args.ids:
+            # Targeted recovery. --resume would SKIP these: their doc_ids are still
+            # present in other entities' source_ids, so the resume filter reads them
+            # as done even though the edges to the deleted entities are gone.
+            raw = args.ids.strip()
+            if raw.startswith("@"):
+                import json as _json
+                wanted = set(_json.loads(Path(raw[1:]).read_text()))
+            else:
+                wanted = {x.strip() for x in raw.split(",") if x.strip()}
+            files = [p for p in files
+                     if _frontmatter(p.read_text(encoding="utf-8")).get("doc_id") in wanted]
+            print(f"[ids] reprocessing {len(files)} of {len(wanted)} requested document(s)")
+        elif args.resume:
             done_ids = ingested_doc_ids()
             todo = [p for p in files if _frontmatter(p.read_text(encoding="utf-8"))
                     .get("doc_id") not in done_ids]

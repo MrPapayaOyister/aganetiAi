@@ -8,6 +8,7 @@ import CommandPalette from './components/CommandPalette'
 import IntelligenceCore from './components/IntelligenceCore'
 import AssistantPage from './pages/AssistantPage'
 import AnalyticsPage from './pages/AnalyticsPage'
+import ObservabilityPage from './pages/ObservabilityPage'
 import DashboardPage from './pages/DashboardPage'
 import FilesPage from './pages/FilesPage'
 import InboxPage from './pages/InboxPage'
@@ -73,6 +74,7 @@ function AnimatedRoutes() {
       <Routes location={location} key={location.pathname}>
         <Route path="/"          element={<Page><AssistantPage /></Page>} />
         <Route path="/analytics" element={<Page><AnalyticsPage /></Page>} />
+        <Route path="/observability" element={<Page><ObservabilityPage /></Page>} />
         <Route path="/dashboard" element={<Page><DashboardPage /></Page>} />
         <Route path="/files"     element={<Page><FilesPage /></Page>} />
         <Route path="/inbox"     element={<Page><InboxPage /></Page>} />

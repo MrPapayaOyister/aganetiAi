@@ -1,6 +1,6 @@
 import { NavLink } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { MessageSquare, BarChart2, LayoutDashboard, FolderOpen, Inbox, Mail, Settings, LogOut } from 'lucide-react'
+import { MessageSquare, BarChart2, LayoutDashboard, FolderOpen, Inbox, Mail, Settings, LogOut, Gauge } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useRef } from 'react'
 import { useAppContext } from '../App'
@@ -15,6 +15,9 @@ const HEALTH_COLORS: Record<string, string> = {
 const links = [
   { to: '/',          icon: MessageSquare,    label: 'Assistant' },
   { to: '/analytics', icon: BarChart2,        label: 'Analytics' },
+  // Engineering/admin view. Deliberately a SEPARATE entry from Analytics:
+  // that page stays the business dashboard, this one surfaces failures.
+  { to: '/observability', icon: Gauge,      label: 'Observability' },
   { to: '/dashboard', icon: LayoutDashboard,  label: 'Dashboard' },
   { to: '/files',     icon: FolderOpen,       label: 'Files'     },
   { to: '/inbox',     icon: Inbox,         label: 'Inbox'     },

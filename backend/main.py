@@ -753,6 +753,11 @@ app = FastAPI(title="Collaborative AI Enterprise OS", lifespan=lifespan)
 from backend.routes.provider_auth import router as provider_router
 app.include_router(provider_router, tags=["provider-auth"])
 
+# Read-only admin telemetry for the Observability dashboard. Adds no writes
+# and no request-path instrumentation; see backend/routes/observability.py.
+from backend.routes.observability import router as observability_router
+app.include_router(observability_router)
+
 # Enterprise Agentic OS — real LangGraph executor surface (chat SSE + approvals)
 from backend.routes.agent_os import router as agent_os_router
 app.include_router(agent_os_router)
