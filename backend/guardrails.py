@@ -28,7 +28,8 @@ ACTION_CATEGORY = {
     "resolve_contact": "read",
     "search_knowledge": "read",
     "recall_memory": "read",
-    "get_emails": "read",         # read-only Gmail inbox listing
+    "get_emails": "read",         # read-only inbox listing
+    "read_email": "read",         # read-only: one message's body, no mutation
     "get_agenda": "read",         # read-only Google Calendar agenda
     "get_contacts": "read",       # read-only Google Contacts lookup
     "remember_fact": "task",      # benign memory write

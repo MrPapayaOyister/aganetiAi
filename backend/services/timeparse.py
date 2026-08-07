@@ -2,16 +2,19 @@
 Natural-language meeting-time parsing — provider-agnostic, no I/O.
 
 Lifted out of the retired integrations/m365_calendar.py so both the Graph and
-Google calendar paths share one parser. Times are interpreted in Asia/Dubai
-(UTC+4, no DST) and returned as NAIVE ISO strings, because both providers take
-the zone as a separate field.
+Google calendar paths share one parser. Times are interpreted in the caller's
+zone and returned as NAIVE ISO strings, because both providers take the zone as a
+separate field — the caller passes that same zone on to the provider.
+
+The zone is a `ZoneInfo`, not a fixed offset: "tomorrow at 3pm" has to be anchored
+to the real local midnight, and a hardcoded UTC+4 rolled the day over at the wrong
+hour anywhere outside the Gulf and drifted by an hour under DST.
 """
 from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta, timezone
-
-DEFAULT_TZ_OFFSET_HOURS = 4       # Asia/Dubai
+from zoneinfo import ZoneInfo
 
 _WEEKDAYS = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
              "friday": 4, "saturday": 5, "sunday": 6}
@@ -33,14 +36,20 @@ def _extract_hm(s: str) -> tuple[int, int] | None:
     return hour, minute
 
 
-def parse_meeting_time(time_str: str,
-                       tz_offset_hours: int = DEFAULT_TZ_OFFSET_HOURS) -> tuple[str, str]:
+def parse_meeting_time(time_str: str, tz: ZoneInfo | None = None) -> tuple[str, str]:
     """
     Convert natural language or ISO time → (start_iso, end_iso), naive, 1-hour default
     duration. Understands ISO input, "in 30 minutes", "tomorrow at 3pm",
     "next tuesday 10am", and bare clock times (pushed to tomorrow if already past).
+
+    `tz` is the zone the phrase is meant in. Omitted, it falls back to the app's
+    configured zone. Output stays naive: the provider is told the zone
+    separately, and stamping an offset here would double-apply it.
     """
-    local_now = datetime.now(timezone.utc) + timedelta(hours=tz_offset_hours)
+    if tz is None:
+        from backend.services import user_tz as _utz
+        tz = _utz.tz()
+    local_now = datetime.now(timezone.utc).astimezone(tz).replace(tzinfo=None)
     ts = time_str.strip()
 
     def _out(start: datetime) -> tuple[str, str]:

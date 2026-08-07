@@ -210,12 +210,34 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "get_emails",
-            "description": "Read the user's recent Gmail inbox messages (subject, sender, "
-                           "preview, read/unread). Use when the user asks about their email, "
-                           "unread messages, or what's in their inbox.",
+            "description": "LIST the user's recent inbox messages (subject, sender, time, "
+                           "short preview, read/unread). Use when the user asks about their "
+                           "email, unread messages, or what's in their inbox. This returns "
+                           "only a short preview of each — to read what an email actually "
+                           "SAYS, call read_email.",
             "parameters": {
                 "type": "object",
                 "properties": {"max_results": {"type": "integer", "description": "Default 10"}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_email",
+            "description": "Read the FULL text of one email. Use whenever the user wants the "
+                           "contents rather than the list — 'read/open my latest email', "
+                           "'what does the Jira one say', 'summarise the email from Aisha', "
+                           "or any follow-up question about an email's contents. Do NOT answer "
+                           "from a get_emails preview; call this to get the real body.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string",
+                              "description": "Keywords from the subject or the sender's name "
+                                             "to pick which email. Omit to read the most "
+                                             "recent one."},
+                },
             },
         },
     },
@@ -309,6 +331,20 @@ def _provider_call(coro):
 
 # Back-compat alias for the call sites written against the Google-only helper.
 _google_call = _provider_call
+
+
+def _event_when(iso: str | None) -> str:
+    """An event timestamp as readable local text for the model.
+
+    Provider layers hand back ISO carrying the local UTC offset, so the wall clock
+    is already correct — this only makes it legible. The model must never be shown a
+    raw UTC stamp: it quotes whatever it is given, and a bare offset-less ISO is how
+    a 09:30 meeting started being read back as 05:30."""
+    from backend.services.user_tz import to_aware
+    if not iso or "T" not in iso:
+        return iso or ""
+    dt = to_aware(iso)
+    return dt.strftime("%a %d %b %H:%M") if dt else iso
 
 
 def _lead_in(name: str, args: dict) -> str:
@@ -459,10 +495,73 @@ def dispatch_tool_call(name: str, raw_args, user_id: str) -> str:
             return err
         if not res:
             return "Your inbox is empty."
-        lines = [f"{'•' if not m['is_read'] else ' '} {m['subject']} — {m['from_name']}"
-                 for m in res[:n]]
-        unread = sum(1 for m in res if not m["is_read"])
-        return f"{unread} unread of {len(res)} recent emails:\n" + "\n".join(lines)
+        # Carry a preview and the arrival time, not just subject+sender. With only a
+        # subject line the model has nothing to answer a follow-up with, so it either
+        # re-reads the list back or invents a body — which is what "[No preview
+        # available]" was. The preview is still a snippet: read_email fetches the rest.
+        lines = []
+        for m in res[:n]:
+            mark = "•" if not m.get("is_read") else " "
+            star = "★" if m.get("is_important") else ""
+            when = _event_when(m.get("received_at"))
+            preview = " ".join((m.get("preview") or "").split())[:160]
+            head = f"{mark}{star} {m.get('subject') or '(no subject)'} — {m.get('from_name') or m.get('from_email') or '?'}"
+            lines.append(f"{head}{f'  [{when}]' if when else ''}"
+                         + (f"\n    {preview}" if preview else ""))
+        unread = sum(1 for m in res if not m.get("is_read"))
+        return (f"{unread} unread of {len(res)} recent emails "
+                f"(previews only — call read_email for the full text):\n" + "\n".join(lines))
+
+    if name == "read_email":
+        from backend.services import mailbox
+        res, err = _provider_call(mailbox.inbox(user_id, 25))
+        if err:
+            return err
+        if not res:
+            return "Your inbox is empty."
+
+        q = (args.get("query") or "").strip().lower()
+        if q:
+            # Match on subject AND sender: the user names an email either way
+            # ("the Jira one", "the email from Aisha").
+            hits = [m for m in res
+                    if q in " ".join([m.get("subject") or "", m.get("from_name") or "",
+                                      m.get("from_email") or ""]).lower()]
+            if not hits:
+                listed = "\n".join(f"- {m.get('subject')} — {m.get('from_name')}" for m in res[:8])
+                return (f"No recent email matches {args.get('query')!r}. The 8 most recent are:\n"
+                        f"{listed}")
+            msg = hits[0]
+        else:
+            msg = res[0]
+
+        # Graph ships the body with the listing; Gmail only sends a 150-char snippet,
+        # so fall back to a per-message fetch rather than passing the snippet off as
+        # the full text.
+        body = (msg.get("body_text") or "").strip()
+        if not body:
+            fetched, ferr = _provider_call(mailbox.message_body(user_id, msg.get("id") or ""))
+            if ferr:
+                return ferr
+            body = (fetched or "").strip()
+        body = " ".join(body.split()) if body else ""
+        if not body:
+            return (f"Subject: {msg.get('subject')}\nFrom: {msg.get('from_name')} "
+                    f"<{msg.get('from_email')}>\n\nThis email has no readable text body "
+                    f"(it may be an image or attachment only).")
+        # Cap the body: a long thread would otherwise crowd out the rest of the prompt.
+        clipped = body[:4000]
+        if len(body) > 4000:
+            clipped += " …[truncated]"
+
+        when = _event_when(msg.get("received_at"))
+        header = [f"Subject: {msg.get('subject') or '(no subject)'}",
+                  f"From: {msg.get('from_name') or ''} <{msg.get('from_email') or ''}>".strip()]
+        if when:
+            header.append(f"Received: {when}")
+        if msg.get("has_attachments"):
+            header.append("Attachments: yes")
+        return "\n".join(header) + "\n\n" + clipped
 
     if name == "get_agenda":
         from backend.services import mailbox
@@ -476,7 +575,8 @@ def dispatch_tool_call(name: str, raw_args, user_id: str) -> str:
         if not res:
             return "No upcoming events."
         return "Upcoming events:\n" + "\n".join(
-            f"- {e['title']} at {e['start']}" + (f" ({e['location']})" if e.get('location') else "")
+            f"- {e['title']} at {_event_when(e.get('start'))}"
+            + (f" ({e['location']})" if e.get('location') else "")
             for e in res)
 
     if name == "get_contacts":
@@ -559,7 +659,10 @@ def dispatch_tool_call(name: str, raw_args, user_id: str) -> str:
             return "When should I schedule it?"
         try:
             from backend.services.timeparse import parse_meeting_time
-            start, end = parse_meeting_time(when)
+            from backend.services import user_tz
+            # The phrase is in the user's wall clock, and create_event sends that same
+            # zone to the provider — so both halves agree on what "3pm" meant.
+            start, end = parse_meeting_time(when, tz=user_tz.tz())
         except Exception:
             return "I couldn't understand that time — try e.g. 'tomorrow at 3pm'."
         from backend.services import mailbox

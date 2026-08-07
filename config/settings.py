@@ -49,6 +49,19 @@ LLM_VISION_MODEL = os.getenv("LLM_VISION_MODEL", "qwen-vl")
 # Vector DB Config
 QDRANT_URL = os.getenv("QDRANT_URL", "http://100.107.179.44:6333")
 
+# ── Graph DB (Neo4j) ──────────────────────────────────────────────────────────
+# Infrastructure only, alongside Postgres and Qdrant. Nothing in the request path
+# reads from it yet; see backend/graph/. Credentials come from .env — never inline.
+# NEO4J_ENABLED=false disables the driver entirely (no connect attempt at startup).
+NEO4J_URI      = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+NEO4J_USERNAME = os.getenv("NEO4J_USERNAME", "neo4j")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
+NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
+NEO4J_ENABLED  = os.getenv("NEO4J_ENABLED", "true").lower() == "true"
+# Seconds to wait for the startup connectivity probe before giving up. The probe
+# NEVER blocks boot — a dead graph logs a warning and the app serves as before.
+NEO4J_CONNECT_TIMEOUT = float(os.getenv("NEO4J_CONNECT_TIMEOUT", "5"))
+
 # Email Credentials
 EMAIL_ACCOUNT = os.getenv("EMAIL_ACCOUNT")
 APP_PASSWORD = os.getenv("APP_PASSWORD")

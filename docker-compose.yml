@@ -39,7 +39,7 @@ services:
       - "7687:7687"   # Bolt
 
     environment:
-      NEO4J_AUTH: neo4j/YourStrongPassword
+      NEO4J_AUTH: neo4j/tfyfu8ub
       NEO4J_dbms_security_auth__enabled: "true"
 
     volumes:

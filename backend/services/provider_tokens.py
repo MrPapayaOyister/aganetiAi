@@ -47,9 +47,9 @@ M365_TOKEN_URL = f"https://login.microsoftonline.com/{M365_TENANT}/oauth2/v2.0/t
 # Delegated Graph permissions we ask for. offline_access is what yields a refresh
 # token; it is never echoed back in the granted-scope list, so it lives here only.
 MS_SCOPES = [
-     "openid", "email", "profile",
+    "offline_access", "openid", "email", "profile",
     "User.Read", "Mail.Send", "Mail.ReadWrite",
-    "Calendars.ReadWrite",
+    "Calendars.ReadWrite","Contacts.Read"
 ]
 
 # When creds are absent the app still loads (dev mode); services degrade to "not connected".
@@ -126,13 +126,24 @@ from backend.services import _token_file_store as _file
 from backend.services import token_crypto
 
 
-async def _fetch_connection(user_id: str, provider: str) -> dict | None:
+async def _fetch_connection(user_id: str, provider: str, *,
+                            live_fallback: bool = True) -> dict | None:
     """Load the user's row for `provider`. Tries Supabase first; falls back to the JSON
-    file store. IDENTITY-AWARE: the OAuth connect flow stores tokens under the Supabase sub,
-    but the agent executor looks them up by the internal alias (e.g. "user_1"). If the
-    direct lookup misses, resolve the identity to its canonical Supabase uid and retry —
-    otherwise a connected mailbox reads as "not connected" for the aliased user. Tokens
-    are decrypted before returning."""
+    file store. Tokens are decrypted before returning.
+
+    IDENTITY-AWARE, in three steps. The OAuth connect flow stores tokens under the
+    Supabase sub, but the agent executor and the schedulers look them up by whatever id
+    they happen to hold, so a direct hit is not guaranteed:
+
+      1. the id as given;
+      2. the same identity's other ids, resolved from the users table;
+      3. `live_fallback` — the single live connection for this provider, whoever owns it.
+
+    Step 3 is what keeps the app bound to *whichever account is actually connected*
+    rather than to any configured id. It deliberately refuses to act when more than one
+    account is live: picking between two mailboxes would silently hand one user another
+    user's mail. Pass live_fallback=False where the answer must be about this identity
+    alone — the connect precheck, status, disconnect."""
     def _q(uid: str):
         try:
             sb = get_supabase_admin()
@@ -142,19 +153,61 @@ async def _fetch_connection(user_id: str, provider: str) -> dict | None:
             if row:
                 return row
         except Exception as e:
-            log.info("Supabase fetch failed, using file store: %s", e)
+            log.debug("Supabase fetch failed, using file store: %s", e)
         return _file.fetch(uid, provider)
     row = await asyncio.to_thread(_q, user_id)
-    if not row:
+    # A row with no refresh_token is a dead credential — it can only ever raise
+    # "token expired". Treat it like a miss and keep looking under the user's other
+    # ids, so one stale row cannot shadow a live connection stored under the alias's
+    # counterpart. The dead row is still returned as a last resort, so `status` and
+    # the connect precheck stay truthful about a connection existing.
+    if not row or not row.get("refresh_token"):
         for alt in await _alias_candidates(user_id):
-            row = await asyncio.to_thread(_q, alt)
-            if row:
+            alt_row = await asyncio.to_thread(_q, alt)
+            if alt_row and alt_row.get("refresh_token"):
+                row = alt_row
                 break
+            row = row or alt_row
+    if live_fallback and (not row or not row.get("refresh_token")):
+        row = await _sole_live_connection(provider) or row
     return token_crypto.dec_row(row) if row else None
 
 
+async def _sole_live_connection(provider: str) -> dict | None:
+    """The one connection for `provider` that can still be refreshed, or None.
+
+    "Live" means it holds a refresh token — a row without one is a dead credential
+    that can only ever raise "token expired". Returns None when zero or more than one
+    qualify: with two connected accounts there is no non-arbitrary answer, and guessing
+    would cross mailboxes between users."""
+    def _q():
+        rows: list[dict] = []
+        try:
+            sb = get_supabase_admin()
+            rows = (sb.table("provider_connections").select("*")
+                    .eq("provider", provider).execute()).data or []
+        except Exception as e:
+            log.debug("Supabase provider scan failed, using file store: %s", e)
+        if not rows:
+            rows = _file.fetch_all_for_provider(provider)
+        return [r for r in rows if r.get("refresh_token")]
+
+    live = await asyncio.to_thread(_q)
+    if len(live) == 1:
+        return live[0]
+    if len(live) > 1:
+        log.debug("%s: %d live connections — no sole account to fall back to",
+                  provider, len(live))
+    return None
+
+
 async def _alias_candidates(user_id: str) -> list[str]:
-    """Other ids this user may be stored under (internal alias ⇄ Supabase uid)."""
+    """Other ids this user may be stored under, resolved from the users table.
+
+    Deliberately DB-only: the configured USER_n_SUPABASE_UID registry used to be
+    consulted here, which pinned token lookups to whoever was named in .env instead of
+    to the account actually connected. Connections are now found by their real owner,
+    with `_sole_live_connection` covering ids the table doesn't know."""
     out: list[str] = []
     try:
         from backend.db.base import SessionLocal
@@ -166,15 +219,6 @@ async def _alias_candidates(user_id: str) -> list[str]:
             out.append(alt)
     except Exception:  # noqa: BLE001
         pass
-    if not out:
-        # Static registry fallback for the alias users that predate the DB bridge.
-        try:
-            from config.users import USERS
-            alt = (USERS.get(user_id) or {}).get("supabase_uid", "")
-            if alt and alt != user_id:
-                out.append(alt)
-        except Exception:  # noqa: BLE001
-            pass
     return out
 
 
@@ -288,9 +332,14 @@ async def which_provider(user_id: str) -> str | None:
     return None
 
 
-async def connected_providers(user_id: str) -> list[str]:
-    """All providers this user has a stored connection for."""
-    return [p for p in PROVIDERS if await _fetch_connection(user_id, p)]
+async def connected_providers(user_id: str, *, live_fallback: bool = True) -> list[str]:
+    """All providers this user has a stored connection for.
+
+    Pass live_fallback=False to ask strictly about THIS identity — otherwise a user with
+    no connection of their own inherits the sole live one, and the connect route would
+    refuse to link them an account of their own."""
+    return [p for p in PROVIDERS
+            if await _fetch_connection(user_id, p, live_fallback=live_fallback)]
 
 
 # ── Back-compat wrappers (Google-only call sites) ──────────────────────────────

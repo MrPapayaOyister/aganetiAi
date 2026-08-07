@@ -142,7 +142,11 @@ async def provider_connect(provider: str, user_id: str = Query(...),
 
     try:
         from backend.services.provider_tokens import connected_providers
-        others = [p for p in await connected_providers(user_id) if p != provider]
+        # Strictly this identity: the token layer lets a user with no connection of
+        # their own fall back to the sole live account, and inheriting it here would
+        # block them from ever linking one.
+        others = [p for p in await connected_providers(user_id, live_fallback=False)
+                  if p != provider]
     except Exception as e:  # noqa: BLE001 — a lookup failure must not block connecting
         log.info("connect precheck failed for %s: %s", user_id, e)
         others = []
@@ -223,11 +227,18 @@ async def provider_callback(provider: str, code: str = Query(None), state: str =
         "provider": provider,
         "provider_email": email,
         "access_token": access_token,
-        "refresh_token": refresh_token,
         "token_expiry": expiry,
         "scopes": granted_scopes or normalize_scopes(cfg["scopes"]),
         "raw_profile": profile,
     }
+    # Only write refresh_token when one actually came back. A silent re-consent can
+    # return none, and storing that None would overwrite the working refresh token
+    # already on the row — turning a live connection into one that can only ever
+    # report "expired". Omitting the key leaves the stored value untouched in both
+    # the file store (dict.update) and the Supabase upsert (DO UPDATE SET on
+    # supplied columns only).
+    if refresh_token:
+        payload["refresh_token"] = refresh_token
     # Encrypt the OAuth tokens once, at rest, before either store sees them.
     from backend.services import token_crypto
     epayload = token_crypto.enc_row(payload)
@@ -251,9 +262,11 @@ async def provider_callback(provider: str, code: str = Query(None), state: str =
             return RedirectResponse(fail)
 
     if not refresh_token:
-        # Without one, the connection dies at the first token expiry (~1h).
-        log.warning("%s connected for %s WITHOUT a refresh token — check offline_access "
-                    "/ access_type=offline and that consent was re-prompted.", provider, user_id)
+        # Any previously stored refresh token was preserved; if there wasn't one, the
+        # connection dies at the first token expiry (~1h).
+        log.warning("%s connected for %s WITHOUT a refresh token (kept any existing one) "
+                    "— check offline_access / access_type=offline and that consent was "
+                    "re-prompted.", provider, user_id)
 
     log.info("%s connected for user %s (%s)", provider, user_id, email)
     return RedirectResponse(f"{FRONTEND_URL}{redirect_uri}?connected={provider}")

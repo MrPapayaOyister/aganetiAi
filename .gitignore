@@ -40,3 +40,26 @@ memory/raft_state.json
 *.bak
 data_vault/*.json
 memory/*/
+
+# ── Production hardening: gaps found when auditing the first clean commit ──
+# The plain names (.env, credentials.json, data_vault/*.json) are ignored above,
+# but TIMESTAMPED BACKUP COPIES slipped past every rule and carry live secrets:
+#   .env.bak.pre-litellm                       → client secrets + DB passwords
+#   data_vault/provider_connections.json.bak.* → OAuth access/refresh tokens
+# Match the backup suffix explicitly rather than trusting the base pattern.
+.env.*
+!.env.example
+*.bak.*
+data_vault/*.json.bak*
+
+# Database dumps and archived token bundles — secret-bearing and large.
+backups/
+
+# Neo4j on-disk store (526 MB) — infrastructure state, not source.
+neo4j/
+
+# Generated artifacts: both are reproduced byte-identically by their scripts
+# (generate_enterprise_documents.py / run_evals.py), so committing them adds
+# churn without adding recoverability.
+data_vault/enterprise_corpus/
+reports/

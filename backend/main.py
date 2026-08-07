@@ -539,6 +539,30 @@ def _register_apscheduler_job(schedule: dict, user_id: str):
             replace_existing=True
         )
 
+async def _init_graph() -> None:
+    """Probe Neo4j and ensure its schema. Never raises — the graph is additive
+    infrastructure, so an outage must leave the rest of the API untouched."""
+    try:
+        from backend.knowledge_graph import bootstrap_schema, is_enabled, verify_connectivity
+        if not is_enabled():
+            log.info("Neo4j disabled — skipping graph init")
+            return
+        if not await asyncio.to_thread(verify_connectivity):
+            return                      # verify_connectivity already logged why
+        await asyncio.to_thread(bootstrap_schema)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Neo4j init skipped: %s", e)
+
+
+def _close_graph() -> None:
+    """Close the Neo4j pool on shutdown. Idempotent and never raises."""
+    try:
+        from backend.knowledge_graph import close_driver
+        close_driver()
+    except Exception as e:  # noqa: BLE001
+        log.warning("Neo4j shutdown: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -558,11 +582,20 @@ async def lifespan(app: FastAPI):
     _bridge.set_main_loop(_loop)
     _tools.set_main_loop(_loop)
 
+    # Neo4j (infrastructure only — nothing in the request path uses it yet).
+    # Probe + schema bootstrap run OFF the loop because the driver is sync, and
+    # are fully guarded: an unreachable or misconfigured graph logs and is skipped,
+    # it never blocks or fails startup.
+    await _init_graph()
+
     from config.settings import RUN_BACKGROUND, RAG_WATCH_INTERVAL, PREWARM_MODELS, TTS_ENABLED
     if not RUN_BACKGROUND:
         # HTTP-only mode (testing / web-dashboard host): no inbox polling, no bot.
         print("[lifespan] RUN_BACKGROUND=false — scheduler and Telegram bot disabled.")
-        yield
+        try:
+            yield
+        finally:
+            _close_graph()
         return
 
     scheduler.add_job(poll_inbox, "interval", seconds=30, max_instances=1, coalesce=True)
@@ -708,8 +741,11 @@ async def lifespan(app: FastAPI):
                     print(f"[prewarm] tts failed: {e}")
         asyncio.create_task(_prewarm())
 
-    yield
-    scheduler.shutdown()
+    try:
+        yield
+    finally:
+        scheduler.shutdown()
+        _close_graph()
 
 app = FastAPI(title="Collaborative AI Enterprise OS", lifespan=lifespan)
 
@@ -1663,6 +1699,7 @@ THINKING_MESSAGES = {
     # spec-provided mapping
     "get_agenda":       "Checking your calendar...",
     "get_emails":       "Reading your inbox...",
+    "read_email":       "Opening that email...",
     "get_unread_count": "Checking unread emails...",
     "create_task":      "Creating that task...",
     "update_task":      "Updating task...",
@@ -1741,7 +1778,7 @@ Current date and time: {day_time}
 User: {user_id}
 
 Your capabilities (call the named tool when the user asks):
-- Email: READ the inbox (get_emails), draft (draft_email), send. Works with Gmail (or Microsoft 365 if connected).
+- Email: LIST the inbox (get_emails), READ one message in full (read_email), draft (draft_email), send. Works with Gmail (or Microsoft 365 if connected).
 - Calendar: VIEW the agenda (get_agenda), create events (schedule_meeting). Works with Google Calendar (or M365 if connected).
 - Contacts: READ/SEARCH the address book (get_contacts), resolve a name to an email (resolve_contact). Works with Google Contacts.
 - Tasks: create_task, complete_task, update, prioritize.
@@ -1876,38 +1913,24 @@ async def chat_endpoint(request: ChatRequest, http_request: Request):
         else:  # unrelated
             should_append_reminder = True
 
-    # Mode A - Normal chat flow. Each context source is best-effort: a missing
-    # provider token, an empty Qdrant collection, or a cold user must NOT 500 the chat.
-    context = retrieve_corporate_context(request.message, owner=user_id)
-    # Calendar context from whichever provider the user connected; if neither is
-    # connected, the get_agenda tool path still works.
-    calendar_context = ""
-    try:
-        calendar_context = await mailbox.agenda_text(user_id)
-    except Exception as e:
-        print(f"[chat] calendar context unavailable for {user_id}: {e}")
-        calendar_context = ""
-    try:
-        tasks_context = get_pending_summary(user_id)
-    except Exception as e:
-        print(f"[chat] task context unavailable for {user_id}: {e}")
-        tasks_context = ""
-
-    from memory.long_term import search_memory
-    from memory.query_rewriter import rewrite_query
-    # rewrite_query makes a SYNCHRONOUS httpx call to the LLM; running it inline
-    # blocked the whole async event loop (stalling every other in-flight request)
-    # for up to 10s. search_memory also does a blocking embed + Qdrant query.
-    # Run the whole block in a worker thread so the loop stays responsive.
-    def _memory_block() -> str:
-        recent_msgs = get_recent_history(request.session_id, n=3)
-        search_query = rewrite_query(recent_msgs, request.message)
-        return search_memory(request.session_id, search_query, top_k=3)
-    try:
-        long_term_context = await asyncio.to_thread(_memory_block)
-    except Exception as e:
-        print(f"[chat] long-term memory unavailable for {request.session_id}: {e}")
-        long_term_context = ""
+    # Mode A - Normal chat flow. Every context source now comes from the Context
+    # Engine (backend/context/), which runs the providers CONCURRENTLY with a
+    # per-provider timeout and failure isolation. Previously these four lookups
+    # ran in sequence, so a turn paid the sum of their latencies and one slow
+    # source delayed the rest. Retrieval semantics are unchanged — each provider
+    # wraps the exact call this block used to make.
+    from backend.context import build_ranked_context, calendar_text, tasks_text
+    # Hybrid path (phase 4): providers run concurrently, then their results are
+    # fused (cross-source duplicates merged into one corroborated item), ranked
+    # by query relevance + corroboration + freshness, compressed algorithmically
+    # and trimmed to a token budget. `graph` is included from this phase on.
+    _bundle = await build_ranked_context(
+        user_id, request.message, request.session_id,
+        only=("corporate", "memory", "graph", "calendar", "tasks"))
+    context = _bundle.first_text("corporate", "No specific corporate guidelines found.")
+    calendar_context = calendar_text(_bundle)
+    tasks_context = tasks_text(_bundle)
+    long_term_context = _bundle.text_of("memory")
     # USERS[user_id]["name"] from config/users.py, fallback "the user"
     try:
         from config.users import USERS
@@ -1949,25 +1972,13 @@ async def chat_endpoint(request: ChatRequest, http_request: Request):
         f"{tsk_ctx}"
     )
     
-    # [MEMORY] - Omit entire block if empty
-    if long_term_context and long_term_context.strip():
-        prompt_parts.append(
-            f"[MEMORY]\n"
-            f"## Relevant Facts From Past Conversations\n"
-            f"{long_term_context.strip()}"
-        )
-        
-    # [COMPANY KNOWLEDGE] - Omit entire block if empty
-    clean_rag = ""
-    if context and context.strip() and context != "No specific corporate guidelines found.":
-        clean_rag = context.strip()
-    if clean_rag:
-        prompt_parts.append(
-            f"[COMPANY KNOWLEDGE]\n"
-            f"## Policies and Procedures (Retrieved)\n"
-            f"{clean_rag}"
-        )
-        
+    # [MEMORY] / [COMPANY KNOWLEDGE] / [KNOWLEDGE GRAPH] — built by the Context
+    # Engine's prompt builder from the bundle. Byte-identical to the blocks that
+    # were assembled inline here; a section is omitted when its provider returned
+    # nothing, exactly as before.
+    from backend.context import build_sections
+    prompt_parts.extend(build_sections(_bundle))
+
     # [CONVERSATION RULES]
     prompt_parts.append(
         f"[CONVERSATION RULES]\n"
@@ -1977,8 +1988,15 @@ async def chat_endpoint(request: ChatRequest, http_request: Request):
         f"- When you don't have enough information to act (such as who a meeting is with, or when it is), ask for ONLY the single most important missing piece (e.g., \"Who is the meeting with?\"). Do not ask for multiple details at once.\n"
         f"- When listing tasks or events, show a maximum of 5 items unless the user asks for more\n"
         f"- Before sending any email or making any calendar change, confirm with the user first\n"
-        f"- Be concise — if the answer is one sentence, use one sentence\n"
-        f"- NEVER output an [ACTION:...] tag for statements of intent like \"I need to send the report\" or \"I need to do X\". Only output [ACTION:...] if the user explicitly instructs you to draft an email, schedule a meeting, create a task, or complete a task."
+        f"- Be concise — if the answer is one sentence, use one sentence"
+        # The [ACTION:...] tag rule belongs to the LEGACY protocol only. Teaching it
+        # while native function-calling is on gives the model a second, dead way to
+        # "call" a tool: when a real tool_call doesn't come back for any reason, it
+        # falls back to writing "[ACTION: get_agenda]" as prose. Nothing executes that
+        # — action_parser requires [ACTION:{json}] — and nothing strips it, so the tag
+        # lands in the user's chat window verbatim.
+        + ("" if NATIVE_TOOLS else
+           f"\n- NEVER output an [ACTION:...] tag for statements of intent like \"I need to send the report\" or \"I need to do X\". Only output [ACTION:...] if the user explicitly instructs you to draft an email, schedule a meeting, create a task, or complete a task.")
     )
 
 
@@ -1990,8 +2008,9 @@ async def chat_endpoint(request: ChatRequest, http_request: Request):
             f"[TOOLS]\n"
             f"Tools: create_task, complete_task, draft_email, schedule_meeting, get_analytics, "
             f"resolve_contact, search_knowledge, recall_memory, remember_fact, set_reminder, web_search, "
-            f"get_emails, get_agenda, get_contacts.\n"
-            f"- get_emails: read the user's recent Gmail inbox. CALL THIS whenever the user asks about their email, unread messages, or what's in their inbox. Never say 'I don't have access' — call this tool.\n"
+            f"get_emails, read_email, get_agenda, get_contacts.\n"
+            f"- get_emails: LIST the user's recent inbox (subject, sender, time, short preview). CALL THIS whenever the user asks about their email, unread messages, or what's in their inbox. Never say 'I don't have access' — call this tool.\n"
+            f"- read_email: read ONE email's full body. CALL THIS whenever the user wants the CONTENTS — 'read/open my latest email', 'what does it say', 'summarise the email from X'. Pass `query` with subject or sender keywords, or omit it for the most recent. The get_emails preview is a snippet only — never answer questions about an email's contents from it, and never claim no preview is available.\n"
             f"- get_agenda: read upcoming Google Calendar events. CALL THIS for 'what's on my calendar', 'my agenda', 'next meeting', 'free this afternoon'.\n"
             f"- get_contacts: list or search the user's real Google contacts. CALL THIS when the user asks for contacts, or when they want to email someone you don't have an address for.\n"
             f"- get_analytics: quantitative questions about the user's tasks/email ('how many tasks did I finish last week').\n"
@@ -2854,7 +2873,8 @@ async def schedule_meeting_endpoint(payload: dict):
 
     # Parse time → ISO strings (naive; the zone is passed separately to the provider)
     try:
-        start_iso, end_iso = parse_meeting_time(time_str)
+        from backend.services import user_tz
+        start_iso, end_iso = parse_meeting_time(time_str, tz=user_tz.tz())
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Could not parse time '{time_str}': {e}")
 
@@ -2922,9 +2942,10 @@ async def set_reminder_endpoint(payload: dict):
         for k in stale:
             del _reminder_idem[k]
 
-    # Parse remind_at → local ISO datetime string (Asia/Dubai)
+    # Parse remind_at → naive ISO datetime string in the user's own wall clock
     try:
-        start_iso, _ = parse_meeting_time(remind_at)
+        from backend.services import user_tz
+        start_iso, _ = parse_meeting_time(remind_at, tz=user_tz.tz())
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Could not parse time: {e}")
 

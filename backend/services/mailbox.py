@@ -21,6 +21,7 @@ import logging
 from fastapi import HTTPException
 
 from backend.services import provider_tokens as _pt
+from backend.services import user_tz
 from backend.services.async_bridge import run_sync
 
 log = logging.getLogger("aria.mailbox")
@@ -174,13 +175,26 @@ async def agenda_text(user_id: str) -> str:
     return ""
 
 
+def _hhmm(value: str | None) -> str:
+    """HH:MM from an already-localized event timestamp, or "" if there is no clock.
+
+    Both provider layers emit start/end as ISO carrying the local UTC offset, so the
+    wall clock written in the string is the one to display — this reads it back
+    rather than converting a second time. An all-day event is a bare date with no
+    time part, and returns "" so the caller can label it."""
+    if not value or "T" not in value:
+        return ""
+    dt = user_tz.to_aware(value)
+    return dt.strftime("%H:%M") if dt else ""
+
+
 def _format_agenda_text(events: list[dict]) -> str:
     """Render structured events in the same layout the Graph text builder uses."""
     if not events:
         return "No events scheduled for today."
     lines = ["📅 Today's Calendar:\n"]
     for e in events:
-        start = (e.get("start") or "")[11:16] or "All day"
+        start = _hhmm(e.get("start")) or "All day"
         loc = f" | 📍 {e['location']}" if e.get("location") else ""
         link = f" | 🔗 {e['meet_link']}" if e.get("meet_link") else ""
         n = len(e.get("attendees") or [])
@@ -200,11 +214,8 @@ async def upcoming_events(user_id: str, window_minutes: int = 60) -> list[dict]:
         cutoff = datetime.now(timezone.utc) + timedelta(minutes=window_minutes)
         out = []
         for e in await agenda(user_id, days_ahead=1):
-            try:
-                start = datetime.fromisoformat((e.get("start") or "").replace("Z", "+00:00"))
-                if start.tzinfo is None:
-                    start = start.replace(tzinfo=timezone.utc)
-            except ValueError:
+            start = user_tz.to_aware(e.get("start"))
+            if not start:
                 continue
             if start <= cutoff:
                 out.append(e)
@@ -257,7 +268,7 @@ def format_meeting_brief(event: dict) -> str:
     pre_str = f"\n📝 {preview}" if preview else ""
     return (f"⏰ Meeting in ~30 min:\n"
             f"*{event.get('title', '(no subject)')}*\n"
-            f"🕐 {(event.get('start') or '')[11:16]}"
+            f"🕐 {_hhmm(event.get('start'))}"
             f"{loc_str}{meet_url}{att_str}{pre_str}")
 
 

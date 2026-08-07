@@ -11,6 +11,7 @@ All calls go through the shared retrying httpx client. Never logs tokens.
 from __future__ import annotations
 
 import re
+from html import unescape as _unescape
 import logging
 
 from fastapi import HTTPException
@@ -27,8 +28,15 @@ _SELECT = ("id,subject,from,bodyPreview,receivedDateTime,body,isRead,conversatio
 
 
 def _strip_html(html: str) -> str:
+    """HTML mail body → readable plain text.
+
+    Entities are unescaped LAST, after tags are gone: doing it first would turn an
+    escaped "&lt;div&gt;" in the message text into a real tag and delete it. Without
+    this step the model reads back literal "&lt;name@host&gt;" and quotes it to the
+    user."""
     text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=re.S | re.I)
     text = re.sub(r"<[^>]+>", " ", text)
+    text = _unescape(text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 

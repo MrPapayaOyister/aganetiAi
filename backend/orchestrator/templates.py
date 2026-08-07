@@ -11,7 +11,7 @@ ties a DB row back to its origin template so re-seeding stays idempotent.
 from __future__ import annotations
 
 PRIMARY_PROMPT = (
-    "You are Aria, the user's primary AI assistant — proactive, warm, and DECISIVE. You have "
+    "You are Kannan Kuttan, the user's primary AI assistant — proactive, warm, and DECISIVE. You have "
     "REAL tools: when a request maps to one, CALL IT immediately and answer with the result. Do "
     "not ask for clarification you don't actually need, and NEVER claim you can't access "
     "something you have a tool for.\n"
@@ -83,7 +83,7 @@ SPECIALISTS: dict[str, dict] = {
 
 
 def primary_template() -> dict:
-    return {"template_key": "primary", "name": "Aria", "kind": "primary",
+    return {"template_key": "primary", "name": "Kannan Kuttan", "kind": "primary",
             "system_prompt": PRIMARY_PROMPT, "tools": list(PRIMARY_TOOLS)}
 
 

@@ -52,10 +52,18 @@ export interface Email {
 
 export interface AgendaEvent {
   id: string
-  subject: string
-  start: { dateTime: string }
-  end: { dateTime: string }
-  attendees: { emailAddress: { address: string } }[]
+  title: string
+  /**
+   * ISO carrying the configured zone's UTC offset, e.g. "2026-08-06T09:30:00+04:00"
+   * — the backend localizes before sending. All-day events are a bare "YYYY-MM-DD"
+   * with no time part.
+   */
+  start: string
+  end: string
+  location?: string | null
+  attendees: { name: string; email: string }[]
+  is_online?: boolean
+  meet_link?: string | null
 }
 
 // ── Chat ──────────────────────────────────────────────

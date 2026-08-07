@@ -7,11 +7,23 @@ import type { UserID, AgendaEvent } from '../api/client'
 import { SkeletonCard } from './SkeletonCard'
 
 function formatTime(dt: string) {
-  return new Date(dt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
+  if (!dt) return ''
+  // Times arrive already localized to the app's configured timezone and carry its
+  // UTC offset. Read the wall clock straight off the string instead of letting
+  // toLocaleTimeString re-project it into the browser's zone — otherwise a laptop set
+  // to another country shows a different time here than the one the assistant quotes.
+  const hm = dt.slice(11, 16)
+  if (!hm) return 'All day'
+  const [h, m] = hm.split(':').map(Number)
+  if (Number.isNaN(h) || Number.isNaN(m)) return ''
+  const period = h >= 12 ? 'PM' : 'AM'
+  return `${String(h % 12 || 12).padStart(2, '0')}:${String(m).padStart(2, '0')} ${period}`
 }
 
 function formatDuration(start: string, end: string) {
+  // Safe on Date: both ends carry an explicit offset, so the difference is exact.
   const mins = (new Date(end).getTime() - new Date(start).getTime()) / 60000
+  if (!Number.isFinite(mins) || mins <= 0) return ''
   if (mins < 60) return `${mins}m`
   return `${Math.floor(mins / 60)}h${mins % 60 > 0 ? ` ${mins % 60}m` : ''}`
 }
@@ -79,9 +91,9 @@ export function AgendaTimeline({ userId }: AgendaTimelineProps) {
         {/* Events */}
         <div className="space-y-3">
           {events.map((event, i) => {
-            const isPast = new Date(event.end.dateTime) < new Date()
-            const isNow = new Date(event.start.dateTime) <= new Date() &&
-                          new Date(event.end.dateTime) >= new Date()
+            const isPast = new Date(event.end) < new Date()
+            const isNow = new Date(event.start) <= new Date() &&
+                          new Date(event.end) >= new Date()
             const attendeeCount = event.attendees?.length ?? 0
 
             return (
@@ -95,7 +107,7 @@ export function AgendaTimeline({ userId }: AgendaTimelineProps) {
                 {/* Time */}
                 <div className="w-16 shrink-0 text-right">
                   <span className="text-[11px] text-[#4A6080]">
-                    {formatTime(event.start.dateTime)}
+                    {formatTime(event.start)}
                   </span>
                 </div>
 
@@ -121,12 +133,12 @@ export function AgendaTimeline({ userId }: AgendaTimelineProps) {
                     <div className="min-w-0">
                       <p className={`text-sm font-medium leading-snug
                                      ${isPast ? 'text-[#4A6080]' : 'text-[#E2E8F0]'}`}>
-                        {event.subject}
+                        {event.title}
                       </p>
                       <div className="flex items-center gap-3 mt-1">
                         <span className="flex items-center gap-1 text-[11px] text-[#4A6080]">
                           <Clock size={10} />
-                          {formatDuration(event.start.dateTime, event.end.dateTime)}
+                          {formatDuration(event.start, event.end)}
                         </span>
                         {attendeeCount > 0 && (
                           <span className="flex items-center gap-1 text-[11px] text-[#4A6080]">
