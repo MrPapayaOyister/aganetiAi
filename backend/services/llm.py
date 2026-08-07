@@ -32,6 +32,41 @@ log = logging.getLogger("aganeti.llm")
 
 CHAT_URL = f"{LLM_BASE_URL.rstrip('/')}/chat/completions"
 
+
+# ── Typed failures ────────────────────────────────────────────────────────────
+# Before these existed, every transport and HTTP error collapsed into `return ""`.
+# That is survivable for chat (an empty answer degrades gracefully) and actively
+# misleading for extraction: a gateway timeout arrived at the knowledge-graph
+# extractor as an empty string and was reported as "unparseable JSON (0 chars)" —
+# a parser error for something that never reached the parser. Debugging that cost
+# real time, so the distinction is now carried in the type.
+
+class LLMError(RuntimeError):
+    """Base for every gateway failure. Catch this to treat all of them alike."""
+
+
+class LLMTimeoutError(LLMError):
+    """The request exceeded a deadline — ours (httpx) or the gateway's.
+
+    LiteLLM enforces its own per-route timeout and answers HTTP 408 when it
+    fires, so a timeout can arrive as either an httpx exception or a status code.
+    Both map here, because the caller's decision (retry, or back off) is the same.
+    """
+
+
+class LLMGatewayError(LLMError):
+    """The gateway answered, but not with a completion — 4xx/5xx, bad JSON body,
+    or a malformed envelope. Retrying an identical request usually will not help."""
+
+
+class LLMEmptyResponseError(LLMError):
+    """A well-formed 200 whose content is empty. The model genuinely returned
+    nothing — distinct from never having been reached."""
+
+
+# HTTP statuses that mean "deadline exceeded" rather than "bad request".
+_TIMEOUT_STATUSES = {408, 504}
+
 # Qwen3 thinking control. LiteLLM forwards this to vLLM's chat template.
 NO_THINK = {"enable_thinking": False}
 
@@ -134,12 +169,38 @@ def build_payload(messages: list, *, model: Optional[str] = None,
 
 # ── Sync ──────────────────────────────────────────────────────────────────────
 
+def _classify(e: Exception) -> LLMError:
+    """Map a transport/HTTP failure onto the typed hierarchy."""
+    if isinstance(e, (httpx.TimeoutException, httpx.ReadTimeout, httpx.ConnectTimeout)):
+        return LLMTimeoutError(f"request exceeded the client deadline: {e}")
+    if isinstance(e, httpx.HTTPStatusError):
+        status = e.response.status_code
+        if status in _TIMEOUT_STATUSES:
+            # LiteLLM's own per-route `timeout:` fired. Reported as a status, but
+            # it is a deadline, and the caller should treat it as one.
+            return LLMTimeoutError(f"gateway deadline exceeded (HTTP {status})")
+        return LLMGatewayError(f"gateway returned HTTP {status}: {e.response.text[:200]}")
+    if isinstance(e, httpx.HTTPError):
+        return LLMGatewayError(f"transport failure: {e}")
+    return LLMGatewayError(f"{type(e).__name__}: {e}")
+
+
 def complete(messages: list, *, model: Optional[str] = None, timeout: float | None = None,
-             think: bool = False, **kwargs: Any) -> str:
+             think: bool = False, raise_on_error: bool = False, **kwargs: Any) -> str:
     """Blocking single-shot completion → the assistant text (reasoning stripped).
 
-    Returns "" on any transport/HTTP error; callers all treat an empty answer as
-    "feature unavailable" and degrade rather than surfacing a stack trace."""
+    `raise_on_error` selects the failure contract:
+
+      * **False (default)** — return "" on any failure, exactly as before. Every
+        existing caller degrades on an empty answer, and flipping that default
+        would turn a soft "feature unavailable" into a 500 on the chat path.
+      * **True** — raise LLMTimeoutError / LLMGatewayError / LLMEmptyResponseError.
+        Use this wherever an empty string would be indistinguishable from real
+        output, which is precisely the knowledge-graph extraction case.
+
+    The failure is logged with its classification either way, so even the
+    degrading path no longer reports a timeout as an unexplained blank.
+    """
     try:
         r = httpx.post(CHAT_URL, headers=headers(),
                        json=build_payload(messages, model=model, think=think, **kwargs),
@@ -147,8 +208,13 @@ def complete(messages: list, *, model: Optional[str] = None, timeout: float | No
         r.raise_for_status()
         content = r.json()["choices"][0]["message"].get("content") or ""
     except Exception as e:  # noqa: BLE001
-        log.warning("llm complete failed: %s", e)
+        err = _classify(e)
+        log.warning("llm complete failed [%s]: %s", type(err).__name__, err)
+        if raise_on_error:
+            raise err from e
         return ""
+    if raise_on_error and not content.strip():
+        raise LLMEmptyResponseError("gateway returned a 200 with empty content")
     return content if think else strip_think(content)
 
 

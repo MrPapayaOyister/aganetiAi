@@ -242,23 +242,35 @@ async def provider_callback(provider: str, code: str = Query(None), state: str =
     # Encrypt the OAuth tokens once, at rest, before either store sees them.
     from backend.services import token_crypto
     epayload = token_crypto.enc_row(payload)
-    supabase_ok = False
+    # PostgreSQL is the system of record (migration d4e91a3b7c62); Supabase and
+    # the JSON file are written too so the fallbacks stay current. A connect is
+    # only reported as failed when NO store accepted it — otherwise the user is
+    # sent back to re-authorise an account that is, in fact, connected.
+    stored_ok = False
+    try:
+        from backend.services import _token_pg_store as _pg
+        await _pg.upsert(user_id, provider, epayload)
+        stored_ok = True
+    except Exception as e:  # noqa: BLE001
+        log.warning("%s connection upsert (Postgres) failed for %s — trying fallbacks: %s",
+                    provider, user_id, e)
     try:
         sb = get_supabase_admin()
         sb.table("provider_connections").upsert({
             **epayload,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }, on_conflict="user_id,provider").execute()
-        supabase_ok = True
+        stored_ok = True
     except Exception as e:
         log.info("%s connection upsert (Supabase) failed for %s — using file fallback: %s",
                  provider, user_id, e)
     try:
         from backend.services import _token_file_store as _file
         _file.upsert(user_id, provider, epayload)
+        stored_ok = True
     except Exception as e:
-        if not supabase_ok:
-            log.warning("%s connection upsert failed (both stores) for %s: %s", provider, user_id, e)
+        if not stored_ok:
+            log.warning("%s connection upsert failed (all stores) for %s: %s", provider, user_id, e)
             return RedirectResponse(fail)
 
     if not refresh_token:

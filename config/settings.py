@@ -146,3 +146,18 @@ M365_TENANT_ID     = os.getenv("M365_TENANT_ID", "common")
 for _dir in [MEMORY_DIR, LOGS_DIR, TEMP_DIR, EMAIL_STORE]:
     _dir.mkdir(parents=True, exist_ok=True)
 
+
+
+# ── Knowledge graph: extraction model + traversal depth ──────────────────────
+# KG_EXTRACT_MODEL routes extraction to a LiteLLM model with a LONGER deadline
+# than chat. Extraction over a ~650-word document measures 21-61s; the chat
+# route's 30s timeout turns that into an HTTP 408. Separate route = separate
+# timeout, with no effect on chat or any other consumer.
+KG_EXTRACT_MODEL = os.getenv("KG_EXTRACT_MODEL", "qwen-extract")
+KG_EXTRACT_TIMEOUT = float(os.getenv("KG_EXTRACT_TIMEOUT", "300"))
+
+# Graph traversal depth for the context provider. DEFAULT 1 — unchanged. Raising
+# it widens the frontier substantially on a dense graph (max degree 120 today),
+# so measure graph_ms before moving it in production. Configuration only: no
+# retrieval algorithm reads this beyond passing it to the existing API.
+GRAPH_RETRIEVAL_DEPTH = max(1, min(3, int(os.getenv("GRAPH_RETRIEVAL_DEPTH", "1"))))

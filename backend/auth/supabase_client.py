@@ -12,6 +12,18 @@ from functools import lru_cache
 
 from supabase import create_client, Client
 
+# Load .env HERE rather than relying on an earlier `import config.settings`.
+# These constants are read once at import; when this module is imported first (a
+# script, a worker, a test) the values would otherwise be empty and every call
+# would raise "SUPABASE_URL and SUPABASE_SERVICE_KEY must be set" for a fully
+# configured deployment. Same fix already applied to services/provider_tokens.py.
+try:
+    from pathlib import Path as _Path
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv(_Path(__file__).resolve().parents[2] / ".env")
+except Exception:  # noqa: BLE001 — dotenv is optional in container deploys
+    pass
+
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")

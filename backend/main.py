@@ -1439,8 +1439,27 @@ async def health_services_endpoint():
             # Probe coroutine itself raised → mark that service down.
             services[probes[i][0]] = {"status": "down", "latency_ms": None}
 
+    # ── Provider connections (Google / Microsoft) ────────────────────────────
+    # An expired or unrefreshable OAuth token used to be invisible: the calendar
+    # provider simply returned nothing and chat answered without it. That is the
+    # right behaviour for a chat REQUEST and the wrong behaviour for an operator,
+    # so the condition is surfaced here instead. Reported as `warnings`, never as
+    # `down`: a disconnected provider must not make the platform look unhealthy,
+    # and nothing in this block can fail a chat request.
+    provider_health: dict = {}
+    try:
+        from backend.services import provider_health as _ph
+        provider_health = await _ph.check_all()
+    except Exception as e:  # noqa: BLE001 — health must never 500
+        provider_health = {"status": "unknown", "error": str(e)[:200], "providers": {}}
+
+    warnings = list(provider_health.get("warnings") or [])
+    for w in warnings:
+        log.warning("provider health: %s", w)
+
     overall = "ok" if all(v["status"] == "ok" for v in services.values()) else "degraded"
-    return {"overall": overall, "services": services}
+    return {"overall": overall, "services": services,
+            "providers": provider_health, "warnings": warnings}
 
 @app.get("/tasks/summary")
 async def get_tasks_summary_endpoint(user_id: str = "user_1"):

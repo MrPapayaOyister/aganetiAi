@@ -31,10 +31,19 @@ class GraphProvider(ContextProvider):
     # and it must never be the reason a turn feels slow.
     timeout = 3.0
 
-    def __init__(self, enabled: "bool | None" = None, depth: int = 1,
+    def __init__(self, enabled: "bool | None" = None, depth: "int | None" = None,
                  top_k: int = 8, api=None) -> None:
         self.enabled = (os.getenv("CONTEXT_GRAPH_ENABLED", "true").lower() == "true"
                         if enabled is None else bool(enabled))
+        # depth=None → GRAPH_RETRIEVAL_DEPTH (default 1, unchanged). Configuration
+        # only: the traversal algorithm is untouched, this just chooses how many
+        # times it runs. An explicit argument still wins, for tests and benchmarks.
+        if depth is None:
+            try:
+                from config.settings import GRAPH_RETRIEVAL_DEPTH
+                depth = GRAPH_RETRIEVAL_DEPTH
+            except Exception:  # noqa: BLE001
+                depth = 1
         self.depth = depth
         self.top_k = top_k
         self._api = api

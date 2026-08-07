@@ -27,11 +27,38 @@ log = logging.getLogger("aganeti.kg.extractor")
 
 # Extraction is a background/batch operation, so a generous ceiling is fine;
 # what we do not want is an unbounded wait inside someone's ingest loop.
-EXTRACT_TIMEOUT = 90.0
+try:
+    from config.settings import KG_EXTRACT_TIMEOUT as _CFG_TIMEOUT, KG_EXTRACT_MODEL as _CFG_MODEL
+except Exception:  # noqa: BLE001 — settings is optional for unit tests
+    _CFG_TIMEOUT, _CFG_MODEL = 300.0, None
+# Deadline for one extraction call. Paired with KG_EXTRACT_MODEL, which routes to
+# a LiteLLM model whose OWN timeout is long enough to honour it — a client
+# deadline above the gateway's just turns into an HTTP 408.
+EXTRACT_TIMEOUT = _CFG_TIMEOUT
+EXTRACT_MODEL = _CFG_MODEL
 MAX_TEXT_CHARS = 12_000
 
 _LABELS = {label.value.lower(): label.value for label in NodeLabel}
 _REL_TYPES = {rel.value.lower(): rel.value for rel in RelType}
+
+# Phrases a refusal opens with. Deliberately anchored to the START of the reply:
+# a legitimate JSON extraction can easily CONTAIN "cannot" inside an entity name
+# or a summary, but it does not begin with one of these.
+_REFUSAL_OPENERS = (
+    "i cannot", "i can't", "i am unable", "i'm unable", "i won't", "i will not",
+    "as an ai", "sorry", "i apologize", "i apologise", "unable to comply",
+    "i do not have", "i don't have",
+)
+
+
+def _looks_like_refusal(raw: str) -> bool:
+    """True when the model answered in prose declining the task.
+
+    Checked only AFTER JSON parsing has already failed, so a well-formed
+    extraction can never be misread as a refusal."""
+    head = (raw or "").strip().lstrip("\"'`*# ").lower()[:80]
+    return any(head.startswith(opener) for opener in _REFUSAL_OPENERS)
+
 
 
 def _parse_json_object(raw: str) -> Optional[dict]:
@@ -215,7 +242,9 @@ class KnowledgeExtractor:
 
     def __init__(self, model: Optional[str] = None, timeout: float = EXTRACT_TIMEOUT,
                  max_tokens: int = 2000) -> None:
-        self._model = model                     # None → gateway default (qwen-fast)
+        # Falls back to KG_EXTRACT_MODEL (the long-deadline route), not the
+        # gateway default — extraction on the 30s chat route times out.
+        self._model = model or EXTRACT_MODEL
         self._timeout = timeout
         self._max_tokens = max_tokens
 
@@ -236,18 +265,46 @@ class KnowledgeExtractor:
             text = text[:MAX_TEXT_CHARS]
 
         started = time.perf_counter()
-        raw = _llm.complete(
-            [{"role": "user", "content": schemas.unified_prompt(text, source_type)}],
-            model=self._model,
-            temperature=0.0,
-            max_tokens=self._max_tokens,
-            response_format={"type": "json_object"},
-            timeout=self._timeout,
-        )
+        # raise_on_error=True: an empty string here is NOT a parse problem, and
+        # conflating the two sent a previous batch chasing a JSON bug that was
+        # really LiteLLM's 30s route timeout. Each cause now gets its own label so
+        # the caller can decide whether retrying could possibly help.
+        try:
+            raw = _llm.complete(
+                [{"role": "user", "content": schemas.unified_prompt(text, source_type)}],
+                model=self._model,
+                temperature=0.0,
+                max_tokens=self._max_tokens,
+                response_format={"type": "json_object"},
+                timeout=self._timeout,
+                raise_on_error=True,
+            )
+        except _llm.LLMTimeoutError as e:
+            took = (time.perf_counter() - started) * 1000
+            log.warning("kg: extraction timed out after %.0fms: %s", took, e)
+            # Retryable: the same request may well succeed on a quieter gateway.
+            return ExtractionResult(took_ms=took, error="timeout")
+        except _llm.LLMEmptyResponseError:
+            took = (time.perf_counter() - started) * 1000
+            log.warning("kg: extraction returned an empty completion after %.0fms", took)
+            return ExtractionResult(took_ms=took, error="empty_response")
+        except _llm.LLMGatewayError as e:
+            took = (time.perf_counter() - started) * 1000
+            log.warning("kg: extraction gateway error after %.0fms: %s", took, e)
+            # Not retryable in general — an identical request gets an identical 4xx.
+            return ExtractionResult(took_ms=took, error="gateway_error")
         took = (time.perf_counter() - started) * 1000
 
         payload = _parse_json_object(raw)
         if payload is None:
+            # The model answered, but not with JSON. A refusal ("I cannot…", "As an
+            # AI…") is a distinct condition from malformed JSON: no amount of
+            # retrying fixes a refusal, whereas a truncated object sometimes
+            # succeeds on a second pass with the same prompt.
+            if _looks_like_refusal(raw):
+                log.warning("kg: extraction refused by the model (%d chars): %r",
+                            len(raw), raw[:120])
+                return ExtractionResult(took_ms=took, error="model_refusal")
             log.warning("kg: unified extraction returned unparseable JSON (%d chars)", len(raw))
             return ExtractionResult(took_ms=took, error="unparseable_json")
 

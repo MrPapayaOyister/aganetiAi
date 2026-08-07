@@ -123,6 +123,7 @@ def _now() -> datetime:
 
 
 from backend.services import _token_file_store as _file
+from backend.services import _token_pg_store as _pg
 from backend.services import token_crypto
 
 
@@ -144,7 +145,8 @@ async def _fetch_connection(user_id: str, provider: str, *,
     account is live: picking between two mailboxes would silently hand one user another
     user's mail. Pass live_fallback=False where the answer must be about this identity
     alone — the connect precheck, status, disconnect."""
-    def _q(uid: str):
+    def _q_sync(uid: str):
+        """Supabase, then the JSON file — both are synchronous clients."""
         try:
             sb = get_supabase_admin()
             r = (sb.table("provider_connections").select("*")
@@ -155,7 +157,22 @@ async def _fetch_connection(user_id: str, provider: str, *,
         except Exception as e:
             log.debug("Supabase fetch failed, using file store: %s", e)
         return _file.fetch(uid, provider)
-    row = await asyncio.to_thread(_q, user_id)
+
+    async def _q(uid: str):
+        """PostgreSQL first — it became the system of record in migration
+        d4e91a3b7c62. Supabase and the JSON file remain behind it, tried in that
+        order, so a Postgres outage degrades to the old behaviour instead of
+        logging every connected user out. Never raises: a lookup that threw would
+        500 whichever chat request triggered it."""
+        try:
+            row = await _pg.fetch(uid, provider)
+            if row:
+                return row
+        except Exception as e:  # noqa: BLE001
+            log.warning("Postgres token store unavailable, falling back: %s", e)
+        return await asyncio.to_thread(_q_sync, uid)
+
+    row = await _q(user_id)
     # A row with no refresh_token is a dead credential — it can only ever raise
     # "token expired". Treat it like a miss and keep looking under the user's other
     # ids, so one stale row cannot shadow a live connection stored under the alias's
@@ -163,7 +180,7 @@ async def _fetch_connection(user_id: str, provider: str, *,
     # the connect precheck stay truthful about a connection existing.
     if not row or not row.get("refresh_token"):
         for alt in await _alias_candidates(user_id):
-            alt_row = await asyncio.to_thread(_q, alt)
+            alt_row = await _q(alt)
             if alt_row and alt_row.get("refresh_token"):
                 row = alt_row
                 break
@@ -171,6 +188,27 @@ async def _fetch_connection(user_id: str, provider: str, *,
     if live_fallback and (not row or not row.get("refresh_token")):
         row = await _sole_live_connection(provider) or row
     return token_crypto.dec_row(row) if row else None
+
+
+async def _all_rows_for_provider(provider: str) -> list[dict]:
+    """Every stored row for one provider, across all user ids and all stores.
+
+    Postgres first, falling back to the JSON file — the same precedence the read
+    path uses, so health reports on the rows that would actually be served.
+    Rows come back ENCRYPTED: callers only inspect metadata (expiry, email,
+    presence of a refresh token), and decrypting here would put plaintext tokens
+    in reach of a health endpoint for no reason."""
+    try:
+        rows = await _pg.fetch_all_for_provider(provider)
+        if rows:
+            return rows
+    except Exception as e:  # noqa: BLE001
+        log.debug("provider rows: Postgres unavailable for %s: %s", provider, e)
+    try:
+        return await asyncio.to_thread(_file.fetch_all_for_provider, provider)
+    except Exception as e:  # noqa: BLE001
+        log.debug("provider rows: file store unavailable for %s: %s", provider, e)
+        return []
 
 
 async def _sole_live_connection(provider: str) -> dict | None:
@@ -224,12 +262,21 @@ async def _alias_candidates(user_id: str) -> list[str]:
 
 async def _update_tokens(row_id: str, access_token: str, expiry_iso: str,
                          refresh_token: str | None = None) -> None:
+    patch = {"access_token": access_token, "token_expiry": expiry_iso}
+    if refresh_token:
+        patch["refresh_token"] = refresh_token
+    epatch = token_crypto.enc_row(patch)  # encrypt tokens before ANY store
+
+    # Postgres is the system of record, so its failure is the one worth logging.
+    try:
+        await _pg.update(row_id, epatch)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Postgres token update failed for row %s: %s", row_id, e)
+
     def _u():
-        patch = {"access_token": access_token, "token_expiry": expiry_iso}
-        if refresh_token:
-            patch["refresh_token"] = refresh_token
-        epatch = token_crypto.enc_row(patch)  # encrypt tokens before either store
-        # Update both stores — Supabase first (best-effort), then always JSON.
+        # Supabase best-effort, then always JSON. Writing all three keeps the
+        # fallbacks warm: if Postgres is lost, the file store still holds a token
+        # refreshed minutes ago rather than one from whenever it was last written.
         try:
             sb = get_supabase_admin()
             sb.table("provider_connections").update({**epatch,
@@ -241,6 +288,13 @@ async def _update_tokens(row_id: str, access_token: str, expiry_iso: str,
 
 
 async def _delete_connection(row_id: str) -> None:
+    # Delete from every store. A row surviving in ANY of them would resurrect the
+    # connection on the next read and make "disconnect" a lie.
+    try:
+        await _pg.delete(row_id)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Postgres token delete failed for row %s: %s", row_id, e)
+
     def _d():
         try:
             sb = get_supabase_admin()
