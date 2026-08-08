@@ -561,12 +561,10 @@ async def _probe_s3_auth() -> dict:
                 "detail": "SEAWEEDFS_ACCESS_KEY / SEAWEEDFS_SECRET_KEY are not set"}
 
     try:
-        # Signing lives in scripts/verify_seaweedfs.py so there is ONE
-        # implementation of SigV4 in the project rather than two that can drift.
-        import sys as _sys
-        if str(ROOT) not in _sys.path:
-            _sys.path.insert(0, str(ROOT))
-        from scripts.verify_seaweedfs import sigv4_headers
+        # backend.storage owns the only SigV4 implementation in the project.
+        # This used to import it from scripts/, which made a production health
+        # probe depend on a verification script — the wrong direction entirely.
+        from backend.storage.client import sigv4_headers
     except Exception as e:  # noqa: BLE001
         return {"status": "unavailable", "detail": f"signer unavailable: {str(e)[:80]}"}
 

@@ -54,50 +54,10 @@ def note(label: str, detail: str = "") -> None:
 
 # ── AWS SigV4, minimal and S3-specific ───────────────────────────────────────
 
-def _sign(key: bytes, msg: str) -> bytes:
-    return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
-
-
-def sigv4_headers(method: str, endpoint: str, path: str, *, access_key: str,
-                  secret_key: str, region: str = "us-east-1", service: str = "s3",
-                  payload: bytes = b"", query: str = "") -> dict:
-    """Signature Version 4 for one S3 request.
-
-    SeaweedFS validates the same signature AWS does, so a signature this script
-    computes proves the stored credentials are genuinely accepted — not merely
-    that a port answered.
-    """
-    host = endpoint.split("://", 1)[-1].rstrip("/")
-    now = datetime.now(timezone.utc)
-    amz_date = now.strftime("%Y%m%dT%H%M%SZ")
-    date_stamp = now.strftime("%Y%m%d")
-    payload_hash = hashlib.sha256(payload).hexdigest()
-
-    canonical_uri = quote(path, safe="/")
-    canonical_headers = (f"host:{host}\n"
-                         f"x-amz-content-sha256:{payload_hash}\n"
-                         f"x-amz-date:{amz_date}\n")
-    signed_headers = "host;x-amz-content-sha256;x-amz-date"
-    canonical_request = (f"{method}\n{canonical_uri}\n{query}\n"
-                         f"{canonical_headers}\n{signed_headers}\n{payload_hash}")
-
-    scope = f"{date_stamp}/{region}/{service}/aws4_request"
-    to_sign = ("AWS4-HMAC-SHA256\n"
-               f"{amz_date}\n{scope}\n"
-               f"{hashlib.sha256(canonical_request.encode()).hexdigest()}")
-
-    k_date = _sign(f"AWS4{secret_key}".encode(), date_stamp)
-    k_region = _sign(k_date, region)
-    k_service = _sign(k_region, service)
-    k_signing = _sign(k_service, "aws4_request")
-    signature = hmac.new(k_signing, to_sign.encode(), hashlib.sha256).hexdigest()
-
-    return {
-        "Authorization": (f"AWS4-HMAC-SHA256 Credential={access_key}/{scope}, "
-                          f"SignedHeaders={signed_headers}, Signature={signature}"),
-        "x-amz-date": amz_date,
-        "x-amz-content-sha256": payload_hash,
-    }
+# SigV4 lives in backend/storage/client.py — the one implementation in the
+# project. This script imports it rather than keeping a second copy that
+# could silently drift from what production actually signs with.
+from backend.storage.client import sigv4_headers  # noqa: E402
 
 
 def s3_request(method: str, path: str, *, endpoint: str, access_key: str,
