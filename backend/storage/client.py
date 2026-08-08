@@ -58,6 +58,24 @@ def _sign(key: bytes, msg: str) -> bytes:
     return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
 
 
+def canonical_query(params: Optional[dict] = None) -> str:
+    """Build the SigV4 canonical query string.
+
+    Two rules that are easy to get wrong and fail as an opaque 403:
+      * parameters are sorted BY NAME, not in the order the caller wrote them;
+      * each key and value is RFC3986-encoded with NOTHING left safe — a `/`
+        inside a `prefix` value must become %2F, unlike in the path.
+
+    A hand-built "a=1&b=2" string works right up to the moment a second
+    parameter arrives out of order, which is exactly how the paginated listing
+    broke. Callers pass a dict and this owns the ordering and the encoding.
+    """
+    if not params:
+        return ""
+    return "&".join(f"{quote(str(k), safe='')}={quote(str(v), safe='')}"
+                    for k, v in sorted(params.items()))
+
+
 def sigv4_headers(method: str, endpoint: str, path: str, *, access_key: str,
                   secret_key: str, region: str = "us-east-1", service: str = "s3",
                   payload: bytes = b"", query: str = "",
@@ -121,11 +139,14 @@ class S3Transport:
         return bool(self._endpoint and self._ak and self._sk)
 
     def _prepare(self, method: str, path: str, payload: bytes,
-                 query: str, extra: Optional[dict]) -> "tuple[str, dict]":
+                 query: "str | dict | None", extra: Optional[dict]) -> "tuple[str, dict]":
+        # The SIGNED query and the SENT query must be byte-identical, so both are
+        # derived from one canonical string here rather than built twice.
+        q = canonical_query(query) if isinstance(query, dict) else (query or "")
         headers = sigv4_headers(method, self._endpoint, path, access_key=self._ak,
-                                secret_key=self._sk, payload=payload, query=query,
+                                secret_key=self._sk, payload=payload, query=q,
                                 extra=extra)
-        url = f"{self._endpoint}{path}" + (f"?{query}" if query else "")
+        url = f"{self._endpoint}{path}" + (f"?{q}" if q else "")
         return url, headers
 
     def _classify(self, r: httpx.Response, path: str) -> None:
@@ -139,7 +160,7 @@ class S3Transport:
             raise StorageUnavailable(f"gateway error {r.status_code} for {path}")
 
     def request(self, method: str, path: str, *, payload: bytes = b"",
-                query: str = "", extra: Optional[dict] = None,
+                query: "str | dict | None" = None, extra: Optional[dict] = None,
                 raise_for_status: bool = True) -> httpx.Response:
         url, headers = self._prepare(method, path, payload, query, extra)
         try:
@@ -152,7 +173,7 @@ class S3Transport:
         return r
 
     async def arequest(self, method: str, path: str, *, payload: bytes = b"",
-                       query: str = "", extra: Optional[dict] = None,
+                       query: "str | dict | None" = None, extra: Optional[dict] = None,
                        raise_for_status: bool = True) -> httpx.Response:
         url, headers = self._prepare(method, path, payload, query, extra)
         try:

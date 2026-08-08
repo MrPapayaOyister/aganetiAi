@@ -48,7 +48,6 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional, Protocol
-from urllib.parse import quote
 
 from .client import (S3Transport, StorageAuthError, StorageError, StorageNotFound,
                      StorageUnavailable, get_transport)
@@ -211,15 +210,45 @@ class SeaweedFSStorage:
 
     # ── listing, for reconciliation only ─────────────────────────────────────
 
-    def list_keys(self, prefix: str = "", limit: int = 1000) -> list[str]:
-        """Keys under a prefix. Used by the reconciliation report, not by request
-        handlers — a handler should resolve a key from the database, never by
-        searching the bucket."""
-        q = f"list-type=2&max-keys={int(limit)}"
-        if prefix:
-            q += f"&prefix={quote(prefix, safe='/')}"
-        r = self._t.request("GET", f"/{self._bucket}/", query=q)
-        return re.findall(r"<Key>([^<]+)</Key>", r.text)
+    def iter_keys(self, prefix: str = "", page_size: int = 1000):
+        """Yield every key under a prefix, following continuation tokens.
+
+        A generator, not a list: the caller must never be forced to hold an
+        entire bucket in memory. The previous implementation issued ONE
+        list-objects-v2 call capped at 1000 and returned whatever came back,
+        which silently truncates at the 1001st object — and silent truncation in
+        a reconciliation tool reads as "nothing is orphaned" when the truth is
+        "we did not look".
+        """
+        token: Optional[str] = None
+        while True:
+            params = {"list-type": "2", "max-keys": str(int(page_size))}
+            if prefix:
+                params["prefix"] = prefix
+            if token:
+                params["continuation-token"] = token
+            r = self._t.request("GET", f"/{self._bucket}/", query=params)
+            body = r.text
+            for k in re.findall(r"<Key>([^<]+)</Key>", body):
+                yield k
+            m = re.search(r"<NextContinuationToken>([^<]+)</NextContinuationToken>", body)
+            truncated = "<istruncated>true</istruncated>" in body.lower().replace(" ", "")
+            if not (truncated and m):
+                break
+            token = m.group(1)
+
+    def list_keys(self, prefix: str = "", limit: Optional[int] = None) -> list[str]:
+        """Materialised form of iter_keys. `limit=None` means every key.
+
+        Kept for callers that genuinely want a list; anything that might face a
+        large bucket should use iter_keys directly.
+        """
+        out: list[str] = []
+        for k in self.iter_keys(prefix):
+            out.append(k)
+            if limit is not None and len(out) >= limit:
+                break
+        return out
 
     def health(self) -> dict:
         """Signed HEAD on the bucket: proves reachability AND credentials."""
@@ -256,3 +285,38 @@ def get_storage() -> SeaweedFSStorage:
 
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+# ── filename handling ────────────────────────────────────────────────────────
+
+_UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._ ()\[\]{}+,;=@&'!~-]")
+
+
+def safe_basename(filename: str, *, fallback: str = "upload.bin") -> str:
+    """Reduce a client-supplied filename to a bare, filesystem-safe basename.
+
+    This is NOT how storage location is decided — object keys come from UUIDs
+    (build_key) and never contain a filename. This exists for the one place a
+    filename still has to touch a filesystem: the indexing pipeline reads a
+    local Path and uses `path.name` as the Qdrant `source` and as part of the
+    point id, so the ORIGINAL name must survive or re-uploading the same file
+    would create duplicate points instead of replacing them.
+
+    Handles what an attacker actually sends:
+      ../../etc/passwd     -> passwd        (POSIX traversal)
+      /etc/shadow          -> shadow        (absolute)
+      C:\\Windows\\x.txt     -> x.txt         (Windows separators, which
+                                             Path().name does NOT strip on POSIX)
+      ....//x              -> x
+      NUL bytes, control chars, leading dots -> stripped
+    """
+    name = str(filename or "")
+    name = name.replace("\x00", "")
+    # Split on BOTH separators: Path().name leaves backslashes intact on POSIX,
+    # so "C:\\Windows\\evil.txt" would otherwise survive whole.
+    name = name.replace("\\", "/").split("/")[-1]
+    name = _UNSAFE_NAME.sub("_", name).strip().strip(".")
+    # Collapse anything that reduces to a traversal token or nothing at all.
+    if not name or name in (".", "..") or set(name) <= {".", "_", " "}:
+        return fallback
+    return name[:180]

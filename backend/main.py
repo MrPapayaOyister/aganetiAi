@@ -1022,43 +1022,143 @@ async def ingest_upload(request: Request, file: UploadFile = File(...)):
     # Identity from the trusted auth header ONLY (never a client-supplied user_id) —
     # this both scopes the RAG chunks per-user and closes the upload IDOR.
     user_id = request.headers.get("x-auth-user") or "user_1"
-    dest = Path(f"data_vault/{user_id}/{file.filename}")
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(await file.read())
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty upload")
+
+    # The filename NEVER decides where anything is stored. It used to be
+    # interpolated straight into a path — Path(f"data_vault/{user_id}/{filename}") —
+    # so "../../x" escaped the user's directory and landed where the 300s sweep
+    # ingests files as ORG-WIDE. The object key now comes from a generated UUID
+    # (backend/storage), and the name survives only as a title and as the local
+    # basename the indexer needs.
+    from backend.storage.object_store import safe_basename
+    display_name = safe_basename(file.filename or "")
+
+    # Two different identifiers, deliberately not conflated:
+    #   user_id  — the auth alias (may be "user_1"); Qdrant ACL is keyed on this
+    #   db_user  — the real users.id UUID; documents.user_id is a NOT NULL FK
+    db_user = org_id = None
+    try:
+        from backend.db import sync as _dbsync
+        db_user, org_id = _dbsync.resolve_ids(user_id)
+    except Exception:  # noqa: BLE001
+        db_user = org_id = None
+
+    # ── durable object storage (additive; never blocks indexing) ─────────────
+    stored: dict = {"stored": False, "reason": "storage not attempted"}
+    try:
+        from config.settings import SEAWEEDFS_ENABLED
+        if not SEAWEEDFS_ENABLED:
+            stored = {"stored": False, "reason": "SEAWEEDFS_ENABLED=false"}
+        elif not (db_user and org_id):
+            # documents.user_id/org_id are NOT NULL foreign keys, so an identity
+            # that does not resolve to real rows cannot be recorded. Indexing
+            # still proceeds exactly as before rather than failing the upload.
+            stored = {"stored": False,
+                      "reason": "identity does not resolve to a users/organizations row"}
+        else:
+            from backend.storage import SCOPE_PRIVATE, store_document
+            doc = await store_document(
+                data=raw, filename=display_name, user_id=str(db_user),
+                org_id=str(org_id), scope=SCOPE_PRIVATE,
+                content_type=file.content_type or "application/octet-stream")
+            stored = {"stored": True, "document_id": doc.document_id,
+                      "uri": doc.uri, "size": doc.size, "status": doc.status}
+    except Exception as e:  # noqa: BLE001
+        # A storage outage must not cost the user their upload: the pre-existing
+        # behaviour (index into Qdrant) still runs, and the response says plainly
+        # that the durable copy did not happen. store_document has already marked
+        # the row failed/orphaned, so reconciliation can see it.
+        log.warning("ingest_upload: durable storage failed for %s (user=%s): %s",
+                    display_name, user_id, e)
+        stored = {"stored": False, "reason": f"{type(e).__name__}: {str(e)[:160]}"}
 
     def _do_ingest() -> int:
-        # ingest_file(client, path, owner) requires a Qdrant client and the collection
-        # to exist; build both here (same helpers ingest_all uses). owner=user_id tags
-        # every chunk so search_documents can ACL-filter to this uploader; org_id is
-        # resolved so the canonical metadata carries the tenant.
+        # UNCHANGED pipeline. ingest_file needs a local Path and uses `path.name`
+        # as the Qdrant `source` AND inside the point id — so the temp file keeps
+        # the ORIGINAL basename inside a private temp directory. A randomised name
+        # would break dedup: re-uploading the same file would append a second set
+        # of points instead of replacing the first.
+        import shutil as _shutil
+        import tempfile as _tempfile
         from backend.ingest import ingest_file, get_client, ensure_collection
-        org_id = None
+        tmpdir = _tempfile.mkdtemp(prefix="aganeti-upload-")
         try:
-            from backend.db import sync as _dbsync
-            _u, org_id = _dbsync.resolve_ids(user_id)
-        except Exception:
-            org_id = None
-        client = get_client()
-        ensure_collection(client)
-        return ingest_file(client, dest, user_id, org_id=org_id, source_type="file")
+            tmp = Path(tmpdir) / display_name
+            tmp.write_bytes(raw)
+            client = get_client()
+            ensure_collection(client)
+            return ingest_file(client, tmp, user_id, org_id=org_id, source_type="file")
+        finally:
+            _shutil.rmtree(tmpdir, ignore_errors=True)
 
     try:
         chunks = await asyncio.to_thread(_do_ingest)
     except Exception:
-        log.exception("ingest_upload failed for %s (user=%s)", file.filename, user_id)
+        log.exception("ingest_upload failed for %s (user=%s)", display_name, user_id)
         raise HTTPException(status_code=500, detail="Failed to index file")
 
-    return {"status": "indexed", "file": file.filename, "chunks": chunks}
+    return {"status": "indexed", "file": display_name, "chunks": chunks,
+            "storage": stored}
+
 
 @app.get("/files/{user_id}")
-async def list_user_files(user_id: str):
-    vault = Path(f"data_vault/{user_id}")
-    if not vault.exists():
-        return {"files": []}
-    files = [
-        {"name": p.name, "size": p.stat().st_size, "modified": p.stat().st_mtime}
-        for p in sorted(vault.iterdir()) if p.is_file()
-    ]
+async def list_user_files(user_id: str, request: Request):
+    """Files owned by the CALLER.
+
+    The path parameter is not authorization. The auth middleware only rewrites a
+    path segment when the caller's own sub appears in it, so a request for
+    /files/<someone-else's-uuid> previously reached this handler unchanged and
+    listed that user's directory. The trusted identity is the x-auth-user header;
+    a mismatch is refused rather than silently served.
+    """
+    caller = request.headers.get("x-auth-user") or "user_1"
+    if str(user_id) != str(caller):
+        # Aliases resolve to the same person under different ids, so compare the
+        # resolved UUIDs too before refusing.
+        same = False
+        try:
+            from backend.db import sync as _dbsync
+            a, _ = _dbsync.resolve_ids(caller)
+            b, _ = _dbsync.resolve_ids(user_id)
+            same = bool(a and b and str(a) == str(b))
+        except Exception:  # noqa: BLE001
+            same = False
+        if not same:
+            raise HTTPException(status_code=403,
+                                detail="Not authorized to list another user's files")
+
+    files: list[dict] = []
+    # Documents stored durably (SeaweedFS + Postgres).
+    try:
+        from sqlalchemy import text as _text
+        from backend.db import sync as _dbsync
+        from backend.db.base import engine as _engine
+        db_user, _org = _dbsync.resolve_ids(caller)
+        if db_user:
+            async with _engine.connect() as c:
+                rows = (await c.execute(_text(
+                    "SELECT id, title, uri, meta, created_at FROM documents "
+                    "WHERE user_id = CAST(:u AS uuid) AND deleted_at IS NULL "
+                    "ORDER BY created_at DESC LIMIT 500"), {"u": str(db_user)})).mappings().all()
+            for r in rows:
+                m = dict(r["meta"] or {})
+                files.append({"name": r["title"], "size": m.get("size"),
+                              "document_id": str(r["id"]), "storage": "seaweedfs",
+                              "status": m.get("status"),
+                              "modified": r["created_at"].timestamp() if r["created_at"] else None})
+    except Exception as e:  # noqa: BLE001
+        log.warning("list_user_files: document query failed for %s: %s", caller, e)
+
+    # Legacy files still on local disk. Listed so pre-B4 uploads do not vanish
+    # from the UI; nothing here is deleted or migrated by this endpoint.
+    vault = Path(f"data_vault/{caller}")
+    if vault.exists():
+        for p in sorted(vault.iterdir()):
+            if p.is_file():
+                files.append({"name": p.name, "size": p.stat().st_size,
+                              "modified": p.stat().st_mtime, "storage": "local"})
     return {"files": files}
 
 # ==========================================
