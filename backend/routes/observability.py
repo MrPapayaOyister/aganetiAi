@@ -534,6 +534,74 @@ async def context(probe: bool = Query(True, description="run one live context bu
 # §5  SeaweedFS
 # ══════════════════════════════════════════════════════════════════════════════
 
+async def _probe_s3_auth() -> dict:
+    """Is the S3 gateway up AND do our credentials work?
+
+    Four distinguishable outcomes, because collapsing them loses the one that
+    matters most:
+
+        ok             signed request accepted — the platform can use storage
+        auth_failure   gateway answered 401/403 to a SIGNED request; the cluster
+                       is fine and the credentials are wrong
+        not_configured no access key / secret configured
+        unreachable    the gateway did not answer at all
+
+    A HEAD on the bucket is the cheapest signed call that exercises the whole
+    path (signature, identity, bucket ACL) without listing or transferring
+    anything. Credentials are never returned or logged — only the outcome.
+    """
+    try:
+        from config.settings import (SEAWEEDFS_ACCESS_KEY, SEAWEEDFS_BUCKET_NAME,
+                                     SEAWEEDFS_S3_URL, SEAWEEDFS_SECRET_KEY)
+    except ImportError:
+        return {"status": "not_configured", "detail": "config.settings unavailable"}
+
+    if not (SEAWEEDFS_ACCESS_KEY and SEAWEEDFS_SECRET_KEY):
+        return {"status": "not_configured", "endpoint": SEAWEEDFS_S3_URL,
+                "detail": "SEAWEEDFS_ACCESS_KEY / SEAWEEDFS_SECRET_KEY are not set"}
+
+    try:
+        # Signing lives in scripts/verify_seaweedfs.py so there is ONE
+        # implementation of SigV4 in the project rather than two that can drift.
+        import sys as _sys
+        if str(ROOT) not in _sys.path:
+            _sys.path.insert(0, str(ROOT))
+        from scripts.verify_seaweedfs import sigv4_headers
+    except Exception as e:  # noqa: BLE001
+        return {"status": "unavailable", "detail": f"signer unavailable: {str(e)[:80]}"}
+
+    path = f"/{SEAWEEDFS_BUCKET_NAME}/"
+    started = time.monotonic()
+    try:
+        headers = sigv4_headers("HEAD", SEAWEEDFS_S3_URL, path,
+                                access_key=SEAWEEDFS_ACCESS_KEY,
+                                secret_key=SEAWEEDFS_SECRET_KEY)
+        async with asyncio.timeout(PROBE_TIMEOUT):
+            async with httpx.AsyncClient(timeout=PROBE_TIMEOUT) as c:
+                r = await c.head(f"{SEAWEEDFS_S3_URL.rstrip('/')}{path}", headers=headers)
+        ms = round((time.monotonic() - started) * 1000, 1)
+        if r.status_code in (401, 403):
+            return {"status": "auth_failure", "endpoint": SEAWEEDFS_S3_URL,
+                    "bucket": SEAWEEDFS_BUCKET_NAME, "latency_ms": ms,
+                    "detail": f"gateway rejected a signed request (HTTP {r.status_code}) — "
+                              f"the cluster is reachable but the credentials or the "
+                              f"bucket ACL are wrong"}
+        if r.status_code == 404:
+            return {"status": "auth_failure", "endpoint": SEAWEEDFS_S3_URL,
+                    "bucket": SEAWEEDFS_BUCKET_NAME, "latency_ms": ms,
+                    "detail": f"bucket {SEAWEEDFS_BUCKET_NAME!r} does not exist"}
+        return {"status": "ok" if r.status_code < 400 else "unreachable",
+                "endpoint": SEAWEEDFS_S3_URL, "bucket": SEAWEEDFS_BUCKET_NAME,
+                "latency_ms": ms, "http_status": r.status_code,
+                "authenticated": r.status_code < 400}
+    except (asyncio.TimeoutError, TimeoutError):
+        return {"status": "unreachable", "endpoint": SEAWEEDFS_S3_URL,
+                "detail": f"no response within {PROBE_TIMEOUT}s"}
+    except Exception as e:  # noqa: BLE001
+        return {"status": "unreachable", "endpoint": SEAWEEDFS_S3_URL,
+                "detail": str(e)[:140]}
+
+
 @router.get("/storage")
 async def storage() -> dict:
     """§5 — SeaweedFS object storage.
@@ -569,11 +637,22 @@ async def storage() -> dict:
 
     cluster, vols = await asyncio.gather(_get("/cluster/status"), _get("/dir/status"))
     if cluster is None and vols is None:
-        return {"generated_at": _now_iso(), "status": "error",
-                "detail": f"SEAWEEDFS_MASTER_URL is set to {base} but the master did not respond"}
+        return {"generated_at": _now_iso(), "status": "unreachable",
+                "detail": f"SEAWEEDFS_MASTER_URL is set to {base} but the master "
+                          f"did not respond within {PROBE_TIMEOUT}s",
+                "master": {"url": base}}
+
+    # The master answering does NOT mean the platform can actually use the
+    # storage: the master is unauthenticated, while every real read/write goes
+    # through the S3 gateway with SigV4. Probing S3 separately is what separates
+    # "cluster is up" from "our credentials work" — reporting a healthy master as
+    # overall healthy would hide a credential failure completely.
+    s3_state = await _probe_s3_auth()
 
     topo = (vols or {}).get("Topology", {}) or {}
-    return {"generated_at": _now_iso(), "status": "healthy",
+    overall = "healthy" if s3_state["status"] == "ok" else s3_state["status"]
+    return {"generated_at": _now_iso(), "status": overall,
+            "s3": s3_state,
             "master": {"url": base, "leader": (cluster or {}).get("Leader"),
                        "peers": (cluster or {}).get("Peers")},
             "volume_servers": topo.get("DataCenters"),
