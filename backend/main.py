@@ -1074,33 +1074,48 @@ async def ingest_upload(request: Request, file: UploadFile = File(...)):
                     display_name, user_id, e)
         stored = {"stored": False, "reason": f"{type(e).__name__}: {str(e)[:160]}"}
 
-    def _do_ingest() -> int:
-        # UNCHANGED pipeline. ingest_file needs a local Path and uses `path.name`
-        # as the Qdrant `source` AND inside the point id — so the temp file keeps
-        # the ORIGINAL basename inside a private temp directory. A randomised name
-        # would break dedup: re-uploading the same file would append a second set
-        # of points instead of replacing the first.
-        import shutil as _shutil
-        import tempfile as _tempfile
-        from backend.ingest import ingest_file, get_client, ensure_collection
-        tmpdir = _tempfile.mkdtemp(prefix="aganeti-upload-")
+    # ── indexing is now ASYNCHRONOUS ─────────────────────────────────────────
+    # B5 measured embedding at ~47ms/chunk: a 2 MB document costs ~60s. Blocking
+    # the HTTP request for that is unacceptable, so the response returns once the
+    # bytes are DURABLE and indexing continues in the background. Postgres — not
+    # the in-process task — is the source of truth, so a process death leaves a
+    # `processing` row that the recovery sweep re-drives.
+    #
+    # `status` deliberately reports what is actually true. It says "stored", not
+    # "indexed", until indexing has finished; the old response claimed "indexed"
+    # the moment the upload returned, which was only accidentally true because
+    # indexing happened to be synchronous.
+    scheduled = False
+    if stored.get("stored") and stored.get("document_id"):
+        from backend.storage import schedule_indexing
+        scheduled = schedule_indexing(stored["document_id"])
+    elif not stored.get("stored"):
+        # No durable copy means nothing for the sweep to re-drive later, so index
+        # inline exactly as before rather than dropping the upload on the floor.
+        def _fallback_ingest() -> int:
+            import shutil as _sh, tempfile as _tf
+            from backend.ingest import ingest_file, get_client, ensure_collection
+            d = _tf.mkdtemp(prefix="aganeti-upload-")
+            try:
+                t = Path(d) / display_name
+                t.write_bytes(raw)
+                c = get_client(); ensure_collection(c)
+                return ingest_file(c, t, user_id, org_id=org_id, source_type="file")
+            finally:
+                _sh.rmtree(d, ignore_errors=True)
         try:
-            tmp = Path(tmpdir) / display_name
-            tmp.write_bytes(raw)
-            client = get_client()
-            ensure_collection(client)
-            return ingest_file(client, tmp, user_id, org_id=org_id, source_type="file")
-        finally:
-            _shutil.rmtree(tmpdir, ignore_errors=True)
+            chunks = await asyncio.to_thread(_fallback_ingest)
+            return {"status": "indexed", "file": display_name, "chunks": chunks,
+                    "storage": stored, "indexing": "inline (no durable copy to retry)"}
+        except Exception:
+            log.exception("ingest_upload inline fallback failed for %s (user=%s)",
+                          display_name, user_id)
+            raise HTTPException(status_code=500, detail="Failed to index file")
 
-    try:
-        chunks = await asyncio.to_thread(_do_ingest)
-    except Exception:
-        log.exception("ingest_upload failed for %s (user=%s)", display_name, user_id)
-        raise HTTPException(status_code=500, detail="Failed to index file")
-
-    return {"status": "indexed", "file": display_name, "chunks": chunks,
-            "storage": stored}
+    return {"status": stored.get("status", "stored"), "file": display_name,
+            "document_id": stored.get("document_id"), "storage": stored,
+            "indexing": "scheduled" if scheduled else "queued for sweep",
+            "chunks": None}
 
 
 @app.get("/files/{user_id}")

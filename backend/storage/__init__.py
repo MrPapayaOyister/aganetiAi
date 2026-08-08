@@ -14,6 +14,8 @@ from .client import (S3Transport, StorageAuthError, StorageError, StorageNotFoun
 from .documents import (STATUS_FAILED, STATUS_ORPHANED, STATUS_PENDING, STATUS_STORED,
                         DocumentStorageError, StoredDocument, delete_document,
                         fetch_document, store_document)
+from .indexing import (STATUS_FAILED as IDX_FAILED, STATUS_INDEXED, STATUS_PROCESSING,
+                       index_document, indexing_stats, schedule_indexing, sweep_pending)
 from .object_store import (SCOPE_ORG, SCOPE_PRIVATE, InvalidObjectKey, ObjectMeta,
                            SeaweedFSStorage, StorageService, build_key, get_storage,
                            key_is_owned_by, sha256, validate_key)
@@ -27,4 +29,6 @@ __all__ = [
     "store_document", "fetch_document", "delete_document", "StoredDocument",
     "DocumentStorageError", "STATUS_PENDING", "STATUS_STORED", "STATUS_ORPHANED",
     "STATUS_FAILED",
+    "STATUS_PROCESSING", "STATUS_INDEXED", "index_document",
+    "schedule_indexing", "sweep_pending", "indexing_stats",
 ]
