@@ -86,7 +86,16 @@ STT_URL       = os.getenv("STT_URL",        "http://100.107.179.44:5003")
 # whisper.cpp CUDA server (GPU STT). When reachable, /stt forwards audio here
 # for sub-200ms transcription on the GB10; otherwise it falls back to the local
 # CPU faster-whisper module. Empty string disables the GPU path.
-WHISPER_CPP_URL = os.getenv("WHISPER_CPP_URL", "http://127.0.0.1:8090")
+#
+# Default is EMPTY on purpose. It used to be http://127.0.0.1:8090, but no
+# whisper.cpp server is deployed and port 8090 now belongs to the SeaweedFS
+# volume server — `curl :8090/status` returns its DiskStatuses JSON. Every /stt
+# request was therefore POSTing audio at an object store, taking a non-200 back,
+# and falling through to CPU with only an info-level log to show for it. An
+# empty default makes the CPU path an explicit choice instead of the silent
+# result of a misrouted request. Set this only when a real whisper.cpp server
+# exists, and check the port is not already taken.
+WHISPER_CPP_URL = os.getenv("WHISPER_CPP_URL", "")
 
 # ──────────────────────────────────────────────────────────────────────────
 # Tier-1 additions (DGX Spark): GPU Whisper, RAG ingestion, native tool-calling
@@ -161,3 +170,43 @@ KG_EXTRACT_TIMEOUT = float(os.getenv("KG_EXTRACT_TIMEOUT", "300"))
 # so measure graph_ms before moving it in production. Configuration only: no
 # retrieval algorithm reads this beyond passing it to the existing API.
 GRAPH_RETRIEVAL_DEPTH = max(1, min(3, int(os.getenv("GRAPH_RETRIEVAL_DEPTH", "1"))))
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Object storage (SeaweedFS) and shared cache (Redis)
+#
+# Declared HERE, not read with a bare os.getenv at the call site. Modules that
+# call os.getenv directly only see these when config.settings has already been
+# imported, which is why the observability panel reported SeaweedFS as "not
+# deployed" while a healthy four-container cluster was running — the same class
+# of bug already fixed in services/provider_tokens.py and auth/supabase_client.py.
+#
+# Addresses are host-published loopback ports on purpose. The backend runs as a
+# HOST process (deploy/aganeti-api.service), not a container, so Docker's
+# embedded DNS does not resolve — `seaweed-master:9333` or `redis:6379` would
+# fail. Verified: `getent hosts redis` returns nothing from this runtime.
+# ──────────────────────────────────────────────────────────────────────────
+SEAWEEDFS_ENABLED     = os.getenv("SEAWEEDFS_ENABLED", "true").lower() == "true"
+SEAWEEDFS_MASTER_URL  = os.getenv("SEAWEEDFS_MASTER_URL", "http://127.0.0.1:9333")
+SEAWEEDFS_FILER_URL   = os.getenv("SEAWEEDFS_FILER_URL", "http://127.0.0.1:8888")
+SEAWEEDFS_S3_URL      = os.getenv("SEAWEEDFS_S3_URL", "http://127.0.0.1:8333")
+SEAWEEDFS_BUCKET_NAME = os.getenv("SEAWEEDFS_BUCKET_NAME", "agentic-ai")
+SEAWEEDFS_ACCESS_KEY  = os.getenv("SEAWEEDFS_ACCESS_KEY", "")
+SEAWEEDFS_SECRET_KEY  = os.getenv("SEAWEEDFS_SECRET_KEY", "")
+SEAWEEDFS_TIMEOUT     = float(os.getenv("SEAWEEDFS_TIMEOUT", "5"))
+
+# The volume server is published on host 8090 (container 8080). Recorded because
+# 8090 was previously the WHISPER_CPP_URL default and the collision sent STT
+# audio to the object store; see the note on WHISPER_CPP_URL above.
+SEAWEEDFS_VOLUME_URL  = os.getenv("SEAWEEDFS_VOLUME_URL", "http://127.0.0.1:8090")
+
+# Redis. DB 1, NOT DB 0 — db0 on this host is the Video Indexer's Celery broker
+# (its _kombu.binding.* keys are live there). db1-db15 were verified empty.
+# Note this instance has no requirepass and runs maxmemory-policy=allkeys-lru
+# with a 2GB ceiling shared with that other application: a separate DB index
+# isolates the KEYSPACE but NOT eviction, so either side can evict the other.
+REDIS_ENABLED         = os.getenv("REDIS_ENABLED", "false").lower() == "true"
+REDIS_URL             = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/1")
+REDIS_CONNECT_TIMEOUT = float(os.getenv("REDIS_CONNECT_TIMEOUT", "2.0"))
+REDIS_DEFAULT_TTL     = int(os.getenv("REDIS_DEFAULT_TTL", "300"))
+REDIS_KEY_PREFIX      = os.getenv("REDIS_KEY_PREFIX", "aganeti")

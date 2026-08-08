@@ -9,8 +9,7 @@ they are inspecting.
 Design rules, all load-bearing:
 
   * **No fabricated numbers.** Where a metric genuinely does not exist in this
-    deployment (SeaweedFS is not installed; LiteLLM exposes no per-minute
-    counters), the field is reported as `unavailable` or `not_configured` with a
+    deployment (LiteLLM exposes no per-minute counters), the field is reported as `unavailable` or `not_configured` with a
     `detail` explaining why. A monitoring dashboard that invents a plausible
     number is worse than one that admits a gap, because the gap is then
     invisible forever.
@@ -30,7 +29,7 @@ Endpoints (all GET, all under /observability):
     /graph            §3  knowledge-graph statistics
     /graph/preview    §3  small subgraph for the interactive preview
     /context          §4  hybrid context-engine provider stats
-    /storage          §5  SeaweedFS (not configured in this deployment)
+    /storage          §5  SeaweedFS object storage
     /evaluation       §6  latest baseline + historical reports
     /activity         §7  recent pipeline events from the structured logs
     /trace/{sid}      §8  per-conversation execution trace
@@ -152,19 +151,42 @@ def _probe_qdrant() -> dict:
 def _probe_redis() -> dict:
     started = time.monotonic()
     try:
+        # Read through settings, not a bare getenv. The old inline default was
+        # redis://localhost:6379/0 — and DB 0 on this host is the Video Indexer's
+        # Celery broker (its _kombu.binding.* keys live there). A probe pointed at
+        # another application's keyspace reports "healthy" about the wrong thing,
+        # and any later cache write would land in their database. DB 1 is empty
+        # and reserved for this platform.
+        try:
+            from config.settings import (REDIS_CONNECT_TIMEOUT, REDIS_ENABLED,
+                                         REDIS_URL)
+        except ImportError:
+            REDIS_ENABLED, REDIS_URL, REDIS_CONNECT_TIMEOUT = True, \
+                os.getenv("REDIS_URL", "redis://127.0.0.1:6379/1"), PROBE_TIMEOUT
+        if not REDIS_ENABLED:
+            return {"name": "Redis", "status": "not_configured", "latency_ms": None,
+                    "connection": "disabled",
+                    "detail": "REDIS_ENABLED=false — the platform does not use Redis yet",
+                    "last_check": _now_iso()}
         import redis  # type: ignore
-        url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-        r = redis.Redis.from_url(url, socket_timeout=PROBE_TIMEOUT)
+        r = redis.Redis.from_url(REDIS_URL, socket_timeout=REDIS_CONNECT_TIMEOUT)
         r.ping()
         info = r.info(section="server")
+        mem = r.info(section="memory")
+        clients = r.info(section="clients")
         ms = round((time.monotonic() - started) * 1000, 1)
         return {"name": "Redis", "status": "healthy", "latency_ms": ms,
                 "connection": "connected", "version": info.get("redis_version"),
+                "used_memory_human": mem.get("used_memory_human"),
+                "maxmemory_policy": mem.get("maxmemory_policy"),
+                "connected_clients": clients.get("connected_clients"),
+                "db": REDIS_URL.rsplit("/", 1)[-1],
                 "last_check": _now_iso()}
     except ImportError:
-        return {"name": "Redis", "status": "unknown", "latency_ms": None,
+        return {"name": "Redis", "status": "not_configured", "latency_ms": None,
                 "connection": "no client library",
-                "detail": "redis-py not installed; cannot probe",
+                "detail": "redis-py is not installed and the platform does not use "
+                          "Redis yet; this is expected, not a fault",
                 "last_check": _now_iso()}
     except Exception as e:  # noqa: BLE001
         return {"name": "Redis", "status": "error", "latency_ms": None,
@@ -209,7 +231,19 @@ async def _probe_provider(kind: str) -> dict:
 
 
 def _seaweed_base() -> str:
-    return os.getenv("SEAWEEDFS_MASTER_URL", "").rstrip("/")
+    """SeaweedFS master URL, read through config.settings.
+
+    Previously a bare `os.getenv`, which only sees the value once something else
+    has imported config.settings and loaded .env. The result was this panel
+    reporting "not deployed" against a healthy four-container cluster — the
+    exact failure mode the module docstring warns about, produced by the module
+    itself. Reading the setting removes the import-order dependency.
+    """
+    try:
+        from config.settings import SEAWEEDFS_ENABLED, SEAWEEDFS_MASTER_URL
+        return SEAWEEDFS_MASTER_URL.rstrip("/") if SEAWEEDFS_ENABLED else ""
+    except ImportError:
+        return os.getenv("SEAWEEDFS_MASTER_URL", "").rstrip("/")
 
 
 @router.get("/infrastructure")
@@ -502,12 +536,17 @@ async def context(probe: bool = Query(True, description="run one live context bu
 
 @router.get("/storage")
 async def storage() -> dict:
-    """§5 — SeaweedFS. Not installed in this deployment.
+    """§5 — SeaweedFS object storage.
 
-    The endpoint is live and will populate itself the moment SEAWEEDFS_MASTER_URL
-    points at a cluster; until then it reports `not_configured` rather than zeros,
-    because a dashboard full of zeroes reads as "healthy and empty" when the truth
-    is "absent".
+    Reads SEAWEEDFS_MASTER_URL through config.settings. When it is unset or the
+    tier is disabled this reports `not_configured` rather than zeros, because a
+    dashboard full of zeroes reads as "healthy and empty" when the truth is
+    "absent".
+
+    NOTE: an earlier revision of this file asserted SeaweedFS "is not installed"
+    in this deployment. That is no longer true — a four-container cluster
+    (master 9333, filer 8888, s3 8333, volume host 8090) is live and the
+    `agentic-ai` bucket exists.
     """
     base = _seaweed_base()
     if not base:

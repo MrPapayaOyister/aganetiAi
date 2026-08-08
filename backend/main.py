@@ -48,6 +48,14 @@ from integrations.agent_inbox import (
 init_db()
 
 # Initialize Scheduler
+from functools import partial as _partial
+
+# APScheduler's AsyncIOExecutor dispatches to the event loop ONLY when
+# iscoroutinefunction_partial(job.func) is True. A lambda is not a coroutine
+# function, so `lambda: asyncio.create_task(...)` was handed to a worker
+# THREAD, where create_task raised "RuntimeError: no running event loop" —
+# 223 times in the current log. functools.partial(<coro fn>) passes that
+# check and preserves argument binding, so the job actually runs.
 scheduler = AsyncIOScheduler()
 
 def get_recent_history(user_id: str, n: int = 3) -> list:
@@ -518,7 +526,7 @@ def _register_apscheduler_job(schedule: dict, user_id: str):
         except ValueError:
             return  # Unparseable — skip
         scheduler.add_job(
-            lambda: asyncio.create_task(run_scheduled_action()),
+            _partial(run_scheduled_action),
             "date",
             run_date=fire_dt,
             id=f"user_schedule_{schedule['id']}",
@@ -528,7 +536,7 @@ def _register_apscheduler_job(schedule: dict, user_id: str):
         parts = cron_expr.split()
         minute, hour, day, month, day_of_week = parts
         scheduler.add_job(
-            lambda: asyncio.create_task(run_scheduled_action()),
+            _partial(run_scheduled_action),
             "cron",
             minute=minute,
             hour=hour,
@@ -637,7 +645,7 @@ async def lifespan(app: FastAPI):
                         dedup_key=f"meeting:{uid}:{title}:{start.date()}:{start.hour}:{start.minute}",
                         meta={"start": start.isoformat()},
                     )
-    scheduler.add_job(lambda: asyncio.create_task(_premeeting_sweep()),
+    scheduler.add_job(_premeeting_sweep,
                       "interval", minutes=5, id="premeeting_sweep", replace_existing=True)
 
     # RAG ingestion: keep corporate_memory in sync with the data_vault drop folder.
@@ -653,7 +661,7 @@ async def lifespan(app: FastAPI):
     from config.settings import PROACTIVE_BRIEFINGS
     for uid in get_all_user_ids():
         scheduler.add_job(
-            lambda u=uid: asyncio.create_task(send_scheduled_digest(u)),
+            _partial(send_scheduled_digest, uid),
             "cron", hour=8, minute=0,
             id=f"digest_{uid}", replace_existing=True
         )
@@ -662,18 +670,18 @@ async def lifespan(app: FastAPI):
             # nudge at 18:00 surfaces tasks that slipped. Supersedes the bare due-task
             # reminder (folded into the morning brief).
             scheduler.add_job(
-                lambda u=uid: asyncio.create_task(send_morning_brief(u)),
+                _partial(send_morning_brief, uid),
                 "cron", hour=8, minute=0,
                 id=f"morning_brief_{uid}", replace_existing=True
             )
             scheduler.add_job(
-                lambda u=uid: asyncio.create_task(send_eod_summary(u)),
+                _partial(send_eod_summary, uid),
                 "cron", hour=18, minute=0,
                 id=f"eod_{uid}", replace_existing=True
             )
         else:
             scheduler.add_job(
-                lambda u=uid: asyncio.create_task(send_due_reminders(u)),
+                _partial(send_due_reminders, uid),
                 "cron", hour=8, minute=0,
                 id=f"due_tasks_{uid}", replace_existing=True
             )
@@ -1451,10 +1459,20 @@ async def health_services_endpoint():
     # so the condition is surfaced here instead. Reported as `warnings`, never as
     # `down`: a disconnected provider must not make the platform look unhealthy,
     # and nothing in this block can fail a chat request.
+    #
+    # deep=True is deliberate. The shallow check only inspects the STORED row, so
+    # a credential that still has a refresh token reads as "ok" even when the
+    # provider has already revoked it. Measured on this deployment: shallow
+    # reported status=ok / 0 warnings while deep reported degraded / 2 warnings —
+    # two dead Google connections that monitoring could not see. The deep check
+    # actually attempts the refresh, which is the only way to tell a live
+    # credential from a stored-but-dead one. Cost is ~300ms (497ms → 797ms), paid
+    # on a health endpoint rather than on a user's request, and it still cannot
+    # fail a chat: the result only ever becomes `warnings`.
     provider_health: dict = {}
     try:
         from backend.services import provider_health as _ph
-        provider_health = await _ph.check_all()
+        provider_health = await _ph.check_all(deep=True)
     except Exception as e:  # noqa: BLE001 — health must never 500
         provider_health = {"status": "unknown", "error": str(e)[:200], "providers": {}}
 
