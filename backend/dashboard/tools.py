@@ -210,12 +210,23 @@ async def _get_database_schema(ctx) -> str:
     return await asyncio.to_thread(_sync_get_schema)
 
 
+# Short by design: long enough to collect a Stage 2 retry re-running the same SQL and
+# an immediate follow-up, short enough that a stated figure is current.
+_CHAT_CACHE_TTL_S = 60
+
+
 async def _query_data(ctx, sql: str) -> str:
     def _run():
         # Measured here, not by the caller: LangGraph batches parallel tool results
         # into one update, so an observer upstream cannot tell the two apart.
         _t0 = time.monotonic()
-        rows = coreshare_db.run_query(sql)
+        # The charts have used this cache since the 24s -> 0.6s board-open fix; the chat
+        # path called run_query directly and so paid full price on every repeat (measured
+        # 765ms miss vs 0ms hit). stale=ttl means fresh-or-live: a repeat within the
+        # window is free, but a chat answer never quotes an hour-old figure the way a
+        # board stamped "as of HH:MM" legitimately can.
+        rows = coreshare_db.run_query_cached(sql, ttl=_CHAT_CACHE_TTL_S,
+                                            stale=_CHAT_CACHE_TTL_S)
         _ms = int((time.monotonic() - _t0) * 1000)
         # When an evidence ledger is active (analytics pipeline), record the FULL
         # typed rows in Python and hand the model an id it can cite. The rows are

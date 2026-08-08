@@ -13,12 +13,14 @@ password as just "P" and folds the rest into the hostname. ``URL.create()`` take
 each field as a literal, so no manual %-encoding is ever needed.
 
 Ported from Hermes ``daralber/coreshare_db.py``, plus:
-  - cold-start tolerance: DABS-CORE-SHARE is a SERVERLESS Azure SQL DB that
-    auto-pauses when idle. After idle, login + server-scalar queries return
-    instantly, but the FIRST storage/catalog query blocks ~15-60s while the DB
-    resumes. We set a generous per-query timeout (90s) so that first query waits
-    for the resume and succeeds instead of failing, and retry once on a query
-    timeout.
+  - query ceiling: an earlier version of this module assumed DABS-CORE-SHARE was a
+    SERVERLESS database that auto-pauses, and so allowed 90s per query plus one
+    retry on a query timeout, on the theory that the first query was waking paused
+    storage. That was wrong twice over: the database is provisioned (S1) and cannot
+    auto-pause, and a resume would take seconds rather than ninety in any case -- so
+    a 90s QUERY timeout only ever meant the query was genuinely too slow, and the
+    retry was guaranteed to fail after burning another 90s. The ceiling is now 30s
+    with no retry, which bounds a stuck query at 30s instead of ~182s.
   - ``get_schema`` + ``validate_select_only`` live here (engine-agnostic), so the
     tools never build their own connection.
 
@@ -34,9 +36,10 @@ import threading
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import URL
 
-# The reader auto-resumes serverless storage on the first query after idle; give it
-# room. Warm queries return in <5s; the ceiling only bounds a pathological hang.
-_QUERY_TIMEOUT_S = 90
+# Bounds a genuinely stuck query. Measured: the heaviest legitimate aggregate runs in
+# ~2.2s and the worst known plan pathology (the row-goal trap) in 12.8s, so 30s leaves
+# ample headroom while capping what a client tester can be made to wait.
+_QUERY_TIMEOUT_S = 30
 _LOGIN_TIMEOUT_S = 30
 
 
@@ -58,11 +61,11 @@ def _build_url() -> URL:
     )
 
 
-# pool_pre_ping mirrors the resilience need: the relay/VM can drop idle sockets, so
-# validate a pooled connection before handing it out rather than failing a query.
+# The relay/VM can drop idle sockets. pool_recycle below already discards connections
+# older than 300s, which covers that; pool_pre_ping additionally spent a round-trip
+# validating EVERY checkout (~400ms measured on this path), so it is redundant cost.
 engine = create_engine(
     _build_url(),
-    pool_pre_ping=True,
     pool_recycle=300,
     pool_size=8,
     max_overflow=8,
@@ -73,8 +76,6 @@ engine = create_engine(
 @event.listens_for(engine, "connect")
 def _set_query_timeout(dbapi_conn, _record):  # pragma: no cover - driver hook
     # pyodbc Connection.timeout is the per-query timeout in seconds (0 = infinite).
-    # A generous bound lets the serverless auto-resume complete on a cold first
-    # query while still capping a genuinely stuck query.
     try:
         dbapi_conn.timeout = _QUERY_TIMEOUT_S
     except Exception:
@@ -129,32 +130,20 @@ def validate_no_pii(sql: str) -> None:
             "queried. Only aggregate, non-identifying analytics are allowed.")
 
 
-def _is_cold_start_timeout(exc: Exception) -> bool:
-    s = str(exc)
-    return "HYT00" in s or "Query timeout expired" in s or "HYT01" in s
-
-
 def run_query(sql: str) -> list[dict]:
     """Validate then execute a SELECT-only query against CORE-SHARE. Returns row dicts.
 
-    Retries once on a query-timeout, which on this serverless DB almost always means
-    the first query is still resuming paused storage — the retry then lands warm.
+    No retry on a query timeout. It used to retry once, on the theory that the first
+    query was waking paused serverless storage — but this database is provisioned and
+    cannot pause, and a resume would take seconds rather than the full 30s ceiling
+    anyway. A timeout here means the query is genuinely too slow, so the retry could
+    only fail a second time while doubling what the user waits.
     """
     validate_select_only(sql)
     validate_no_pii(sql)
-    last: Exception | None = None
-    for attempt in range(2):
-        try:
-            with engine.connect() as conn:
-                result = conn.execute(text(sql))
-                return [dict(row._mapping) for row in result]
-        except Exception as exc:  # noqa: BLE001
-            last = exc
-            if attempt == 0 and _is_cold_start_timeout(exc):
-                time.sleep(2)  # let the resume finish, then retry warm
-                continue
-            raise
-    raise last  # unreachable, keeps type-checkers happy
+    with engine.connect() as conn:
+        result = conn.execute(text(sql))
+        return [dict(row._mapping) for row in result]
 
 
 # --- Live result cache (stale-while-revalidate) ---------------------------------
@@ -200,13 +189,21 @@ def _refresh_async(key: str, sql: str) -> None:
     threading.Thread(target=_job, daemon=True, name="coreshare-refresh").start()
 
 
-def run_query_cached(sql: str, ttl: float | None = None) -> list:
+def run_query_cached(sql: str, ttl: float | None = None,
+                    stale: float | None = None) -> list:
     """SELECT with stale-while-revalidate caching (keyed by SQL text).
 
     fresh (<ttl): cached rows. stale (<stale window): cached rows now + background
     refresh. cold: query live, then cache. For read-only idempotent chart/KPI queries
-    where <ttl staleness is fine (the underlying aid data changes slowly)."""
+    where <ttl staleness is fine (the underlying aid data changes slowly).
+
+    `stale` caps how old a row set may be and still be served. Pass stale=ttl to
+    refuse stale rows entirely — which is what the CHAT path does, because a board
+    stamped "as of HH:MM" can honestly show hour-old numbers and a chat answer that
+    states a figure as current cannot.
+    """
     ttl = _RESULT_TTL_S if ttl is None else ttl
+    stale_window = _RESULT_STALE_S if stale is None else stale
     key = hashlib.sha1(sql.encode("utf-8")).hexdigest()
     now = time.time()
     with _result_lock:
@@ -216,7 +213,7 @@ def run_query_cached(sql: str, ttl: float | None = None) -> list:
         data, age = snap
         if age < ttl:
             return data
-        if age < _RESULT_STALE_S:
+        if age < stale_window:
             _refresh_async(key, sql)
             return data
     data = run_query(sql)
@@ -298,11 +295,12 @@ def get_forecast_context() -> dict:
 
 
 # --- Keep-warm ------------------------------------------------------------------
-# Serverless CORE-SHARE auto-pauses when idle; the first query then takes ~60s to
-# resume ("temporary issue connecting to the data" + stuck dashboard skeletons). A
-# tiny background ping keeps it warm so the dashboard stays snappy. Trade-off: the
-# serverless DB stays billing-active during quiet periods — disable with
-# CORESHARE_KEEPWARM=0 if cost matters more than latency.
+# This used to be described as preventing a serverless auto-pause, with a note about
+# the database staying "billing-active". Neither applies: CORE-SHARE is provisioned, so
+# it never pauses and it bills the same whether we ping it or not. The ping is kept
+# because what it ACTUALLY buys is a warm socket through the relay and a warm connection
+# pool, so the first real query after a quiet spell does not pay setup. Disable with
+# CORESHARE_KEEPWARM=0.
 def _keepwarm_loop() -> None:  # pragma: no cover
     while True:
         time.sleep(240)

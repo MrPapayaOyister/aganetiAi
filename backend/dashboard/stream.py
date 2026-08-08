@@ -63,9 +63,9 @@ def system_prompt(board_id: str) -> str:
         "EMIRATE — Dubai, Ajman, RAK, Sharjah, UAQ), Gender, MaritalStatus, Nationality, Religion, "
         "and amounts RequiredAmountForAssistance / SuggestedAssistanceAmount.\n"
         + metric_contract() +
-        "- PERFORMANCE (important): NEVER select or reference the DurationInDays / DurationInHours / "
-        "DurationInMinutes columns — they make the query scan a huge table and time out. For counts "
-        "and sums, GROUP BY a category column and COUNT(*) or SUM(amount).\n"
+        "- PERFORMANCE (important): DurationInDays on DataShare.VRequests is fine and charts in "
+        "about 1-2 seconds. What times out is aggregating DataShare.VRequestSteps (1.28M rows) — "
+        "never GROUP BY over that table. Do not chart DurationInHours / DurationInMinutes.\n"
         "- Country is a single value (UAE) — do NOT chart by country; use Category, status, or "
         "State (emirate) instead. There is no year column beyond SubmitDate.\n\n"
         "WRITING CHART SQL:\n"
