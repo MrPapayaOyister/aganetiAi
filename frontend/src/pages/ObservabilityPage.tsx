@@ -16,10 +16,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import axios from 'axios'
 import {
   PipelineTimeline, GraphExplorer, GrowthPanel, QdrantExplorer,
-  ProvidersPanel, TopologyPanel, EvaluationTrend,
+  ProvidersPanel, TopologyPanel, EvaluationTrend, DocumentIndexingPanel,
 } from '../components/observability/Phase2Panels'
 import {
-  Activity, AlertTriangle, Boxes, Cpu, Database, GitBranch, HardDrive,
+  Activity, AlertTriangle, Cpu, GitBranch, HardDrive,
   Layers, RefreshCw, Server, Share2, Terminal, Zap,
 } from 'lucide-react'
 
@@ -655,6 +655,7 @@ export default function ObservabilityPage() {
         <ContextPanel />
         <GraphExplorer />
         <GrowthPanel />
+        <DocumentIndexingPanel />
         <QdrantExplorer />
         <ProvidersPanel />
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">

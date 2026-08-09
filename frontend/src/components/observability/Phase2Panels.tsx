@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import axios from 'axios'
 import {
-  Boxes, Database, GitBranch, Network, Search, TrendingUp, Workflow,
+  Boxes, Database, FileStack, GitBranch, Network, Search, TrendingUp, Workflow,
 } from 'lucide-react'
 
 // ── shared ──────────────────────────────────────────────────────────────────
@@ -74,6 +74,39 @@ function usePoll<T>(url: string, ms: number, enabled = true) {
 }
 
 const ms = (v: any) => (typeof v === 'number' ? `${Math.round(v)} ms` : '—')
+/** A value that may legitimately not exist. Renders the reason, never a fake 0.
+ *  Defined here rather than imported from ObservabilityPage: that page imports
+ *  THIS module, so importing back would be a cycle. */
+function Metric({ label, value, unit, hint }: {
+  label: string; value: unknown; unit?: string; hint?: string
+}) {
+  const missing =
+    value === null || value === undefined ||
+    (typeof value === 'object' && (value as any)?.status === 'unavailable')
+  const detail = typeof value === 'object' ? (value as any)?.detail : undefined
+  return (
+    <div className="rounded-xl bg-white/[0.02] border border-white/5 px-3 py-2.5">
+      <div className="text-[11px] uppercase tracking-wide text-[#4A6080]">{label}</div>
+      {missing ? (
+        <div className="mt-1">
+          <Pill status="unknown">not available</Pill>
+          {(detail || hint) && (
+            <div className="mt-1 text-[10px] leading-snug text-[#4A6080]">{detail || hint}</div>
+          )}
+        </div>
+      ) : (
+        <>
+          <div className="mt-0.5 text-lg font-semibold text-[#E2E8F0] tabular-nums">
+            {typeof value === 'number' ? value.toLocaleString() : String(value)}
+            {unit && <span className="ml-1 text-xs font-normal text-[#4A6080]">{unit}</span>}
+          </div>
+          {hint && <div className="mt-0.5 text-[10px] leading-snug text-[#4A6080]">{hint}</div>}
+        </>
+      )}
+    </div>
+  )
+}
+
 const Unavailable = ({ reason }: { reason?: string }) => (
   <div><Pill status="unknown">not available</Pill>
     {reason && <div className="mt-1 text-[10px] leading-snug text-[#4A6080]">{reason}</div>}</div>
@@ -545,6 +578,134 @@ export function EvaluationTrend() {
           {data?.note && <p className="mt-2 text-[10px] text-[#4A6080]">{data.note}</p>}
         </>
       )}
+    </Section>
+  )
+}
+
+// ── Document indexing (ingestion pipeline) ──────────────────────────────────
+
+/**
+ * Ingestion-pipeline state from /observability/documents.
+ *
+ * Every number is a PostgreSQL COUNT or MAX. There is no queue in this
+ * architecture, so no queue depth, worker count or throughput is shown — and
+ * this is deliberately not called a Redis queue, because Redis is not used.
+ *
+ * The four states use the backend's exact vocabulary. `stored` means the bytes
+ * are safe in SeaweedFS, NOT that the document is searchable; showing them as
+ * one number would tell an operator a document is findable when it is not.
+ */
+export function DocumentIndexingPanel() {
+  const { data } = usePoll<any>('/observability/documents', 30000)
+
+  // An unreachable endpoint must never render as zeros — "0 failed" and "we
+  // cannot see the pipeline" are opposite claims.
+  if (data && data.status !== 'ok') {
+    return (
+      <Section icon={FileStack} title="Document Indexing"
+        subtitle="Ingestion pipeline — PostgreSQL-derived counts"
+        right={<Pill status="unknown">unavailable</Pill>}>
+        <div className="rounded-xl border border-dashed border-white/10 bg-white/[0.01] p-4">
+          <Unavailable reason={data.detail || 'the statistics endpoint did not respond'} />
+        </div>
+      </Section>
+    )
+  }
+
+  const c = data?.counts ?? {}
+  const failed = Number(c.failed ?? 0)
+  const stale = Boolean(data?.stale_processing)
+  const fmtTime = (v: any) =>
+    v ? new Date(String(v)).toLocaleString() : null
+
+  const STATES: [string, keyof typeof c, string][] = [
+    ['Stored', 'stored', 'bytes durable in SeaweedFS — not yet searchable'],
+    ['Processing', 'processing', 'indexing running'],
+    ['Indexed', 'indexed', 'searchable'],
+    ['Failed', 'failed', 'indexing failed after the retry budget'],
+  ]
+
+  return (
+    <Section icon={FileStack} title="Document Indexing"
+      subtitle="Ingestion pipeline — PostgreSQL-derived counts, no queue in this architecture"
+      right={
+        <div className="flex items-center gap-1.5">
+          {stale && <Pill status="warning">stale processing</Pill>}
+          {failed > 0 && <Pill status="error">{failed} failed</Pill>}
+          {!stale && failed === 0 && data && <Pill status="healthy">healthy</Pill>}
+        </div>
+      }>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {STATES.map(([label, key, hint]) => {
+          const n = data ? Number(c[key] ?? 0) : null
+          const warn = (key === 'failed' && (n ?? 0) > 0) ||
+                       (key === 'processing' && stale)
+          return (
+            <div key={label}
+              className={`rounded-xl border px-3 py-2.5 ${warn
+                ? 'border-amber-500/25 bg-amber-500/[0.06]'
+                : 'border-white/5 bg-white/[0.02]'}`}>
+              <div className="text-[11px] uppercase tracking-wide text-[#4A6080]">{label}</div>
+              <div className={`mt-0.5 text-lg font-semibold tabular-nums ${
+                warn ? 'text-amber-300' : 'text-[#E2E8F0]'}`}>
+                {n === null ? '—' : n.toLocaleString()}
+              </div>
+              <div className="mt-0.5 text-[10px] leading-snug text-[#4A6080]">{hint}</div>
+            </div>
+          )
+        })}
+      </div>
+
+      {stale && (
+        <div className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/[0.06] px-3 py-2.5">
+          <div className="text-[12px] text-amber-300">
+            A document has been <span className="font-medium">processing</span> for longer than{' '}
+            {Math.round((data?.stale_processing_after_s ?? 900) / 60)} minutes
+          </div>
+          <div className="mt-0.5 text-[10px] leading-snug text-[#4A6080]">
+            Its process most likely died mid-index. The recovery sweep re-drives it
+            from PostgreSQL — no action is normally required, but repeated staleness
+            means indexing is dying rather than failing.
+          </div>
+        </div>
+      )}
+
+      <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3">
+        <Metric label="Avg index duration" value={data?.avg_index_duration_ms} unit="ms"
+          hint="mean over documents that reached indexed" />
+        <Metric label="Retry attempts" value={data?.retry_attempts}
+          hint={`max ${data?.max_attempts ?? 3} attempts per document`} />
+        <Metric label="Total documents" value={data?.total_documents} />
+        <Metric label="Active in this process" value={data?.active_in_process?.length} />
+      </div>
+
+      <dl className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px]">
+        {[['Oldest processing', fmtTime(data?.oldest_processing)],
+          ['Latest indexed', fmtTime(data?.latest_indexed)],
+          ['Latest failure', fmtTime(data?.latest_failure)]].map(([k, v]) => (
+          <div key={String(k)} className="rounded-xl bg-white/[0.02] border border-white/5 px-3 py-2">
+            <dt className="text-[10px] uppercase tracking-wide text-[#4A6080]">{k}</dt>
+            <dd className="mt-0.5 text-[#94A3B8]">{v ?? <span className="text-[#4A6080]">none</span>}</dd>
+          </div>
+        ))}
+      </dl>
+
+      {(data?.recent_failures ?? []).length > 0 && (
+        <div className="mt-3 rounded-xl bg-black/20 border border-white/5 divide-y divide-white/[0.04]">
+          {data.recent_failures.map((f: any, i: number) => (
+            <div key={i} className="flex items-center gap-3 px-3 py-2 text-[11px]">
+              <span className="w-40 shrink-0 truncate text-[#94A3B8]">{f.title}</span>
+              <span className="w-40 shrink-0 text-rose-300/80">{f.category ?? 'unknown'}</span>
+              <span className="flex-1 truncate text-[#4A6080]">{f.last_error}</span>
+              <span className="shrink-0 text-[10px] text-[#4A6080]">
+                {f.attempts}/{data?.max_attempts ?? 3}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {data?.note && <p className="mt-2 text-[10px] text-[#4A6080]">{data.note}</p>}
     </Section>
   )
 }
