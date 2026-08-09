@@ -765,6 +765,17 @@ app.include_router(provider_router, tags=["provider-auth"])
 # and no request-path instrumentation; see backend/routes/observability.py.
 from backend.routes.observability import router as observability_router
 app.include_router(observability_router)
+from backend.routes.observability_explorer import router as observability_explorer_router
+app.include_router(observability_explorer_router)
+
+# Document indexing recovery sweep. Registered HERE, beside the router includes,
+# rather than inside lifespan: the lifespan region is being edited concurrently
+# and the registration could not be staged without taking unrelated work with it.
+# Registering at import is equivalent — the job only fires once the scheduler is
+# started, and it is the only durable part of the async indexing design (an
+# in-process task dies with the process; this re-derives work from Postgres).
+from backend.storage.indexing import register_sweep as _register_index_sweep
+_register_index_sweep(scheduler)
 
 # Enterprise Agentic OS — real LangGraph executor surface (chat SSE + approvals)
 from backend.routes.agent_os import router as agent_os_router
@@ -1046,6 +1057,7 @@ async def ingest_upload(request: Request, file: UploadFile = File(...)):
         db_user = org_id = None
 
     # ── durable object storage (additive; never blocks indexing) ─────────────
+    from backend.storage import DuplicateDocument as _DuplicateDocument
     stored: dict = {"stored": False, "reason": "storage not attempted"}
     try:
         from config.settings import SEAWEEDFS_ENABLED
@@ -1065,6 +1077,20 @@ async def ingest_upload(request: Request, file: UploadFile = File(...)):
                 content_type=file.content_type or "application/octet-stream")
             stored = {"stored": True, "document_id": doc.document_id,
                       "uri": doc.uri, "size": doc.size, "status": doc.status}
+    except _DuplicateDocument as dup:
+        # Same user, byte-identical content. The DB constraint
+        # uq_document_user_hash already forbids a second row; surfacing that as
+        # an asyncpg UniqueViolation leaked SQL to the client. Return the
+        # EXISTING document instead — no second row, no second object, no
+        # re-index. Uniqueness is per user, so another user uploading the same
+        # bytes is unaffected.
+        log.info("ingest_upload: duplicate content for user=%s -> existing document %s",
+                 user_id, dup.document_id)
+        return {"status": "duplicate", "file": display_name,
+                "document_id": dup.document_id,
+                "detail": "A document with identical content already exists for this user.",
+                "storage": {"stored": True, "duplicate_of": dup.document_id},
+                "indexing": "not required", "chunks": None}
     except Exception as e:  # noqa: BLE001
         # A storage outage must not cost the user their upload: the pre-existing
         # behaviour (index into Qdrant) still runs, and the response says plainly

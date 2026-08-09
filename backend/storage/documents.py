@@ -60,6 +60,24 @@ class DocumentStorageError(RuntimeError):
     pass
 
 
+class DuplicateDocument(DocumentStorageError):
+    """This user already has a document with identical content.
+
+    Enforced by `uq_document_user_hash UNIQUE (user_id, content_hash)`. Raised
+    instead of letting asyncpg's UniqueViolation surface, which leaked SQL and
+    the constraint name to the caller. Carries the EXISTING document_id so the
+    caller can return something useful rather than an error.
+
+    Uniqueness is per user by design: two people may legitimately hold the same
+    file, and each gets their own row and their own object.
+    """
+
+    def __init__(self, document_id: str, content_hash: str) -> None:
+        super().__init__(f"document with identical content already exists: {document_id}")
+        self.document_id = document_id
+        self.content_hash = content_hash
+
+
 @dataclass(slots=True)
 class StoredDocument:
     document_id: str
@@ -112,19 +130,34 @@ async def store_document(*, data: bytes, filename: str, user_id: str, org_id: st
     # purpose so a hostile filename cannot influence addressing.
     title = (filename or "untitled")[:255]
 
+    # Reject an exact re-upload BEFORE writing an object. Checking first avoids
+    # storing bytes we would then have to orphan; the try/except below still
+    # catches the race where two uploads of the same content arrive together.
+    existing = await _find_by_hash(user_id, digest)
+    if existing:
+        raise DuplicateDocument(existing, digest)
+
     # 1. record the INTENT first, so a crash mid-write is discoverable.
-    await _exec("""
-        INSERT INTO documents (id, org_id, user_id, source_type, source_id, title,
-                               content_hash, sensitivity, meta)
-        VALUES (CAST(:id AS uuid), CAST(:org AS uuid), CAST(:usr AS uuid),
-                :stype, :sid, :title, :hash, :sens, CAST(:meta AS jsonb))
-    """, {"id": document_id, "org": org_id, "usr": user_id, "stype": source_type,
-          "sid": title, "title": title, "hash": digest,
-          "sens": SENSITIVITY[scope],
-          "meta": _json({"status": STATUS_PENDING, "scope": scope,
-                         "object_key": key, "content_type": content_type,
-                         "size": len(data), "filename": title,
-                         "created_by_phase": "B3", "recorded_at": _now()})})
+    try:
+        await _exec("""
+            INSERT INTO documents (id, org_id, user_id, source_type, source_id, title,
+                                   content_hash, sensitivity, meta)
+            VALUES (CAST(:id AS uuid), CAST(:org AS uuid), CAST(:usr AS uuid),
+                    :stype, :sid, :title, :hash, :sens, CAST(:meta AS jsonb))
+        """, {"id": document_id, "org": org_id, "usr": user_id, "stype": source_type,
+              "sid": title, "title": title, "hash": digest,
+              "sens": SENSITIVITY[scope],
+              "meta": _json({"status": STATUS_PENDING, "scope": scope,
+                             "object_key": key, "content_type": content_type,
+                             "size": len(data), "filename": title,
+                             "created_by_phase": "B3", "recorded_at": _now()})})
+    except Exception as e:  # noqa: BLE001
+        # Race: another upload of identical content won the INSERT between the
+        # pre-check and here. Report it as a duplicate, not as a 500.
+        if "uq_document_user_hash" in str(e) or "UniqueViolation" in type(e).__name__:
+            dup = await _find_by_hash(user_id, digest)
+            raise DuplicateDocument(dup or "", digest) from None
+        raise
 
     storage = get_storage()
     meta: Optional[ObjectMeta] = None
@@ -266,3 +299,14 @@ async def _mark(document_id: str, status: str, **extra: Any) -> None:
 def _json(obj: dict) -> str:
     import json
     return json.dumps(obj)
+
+
+async def _find_by_hash(user_id: str, content_hash: str) -> Optional[str]:
+    """The user's existing document with this exact content, if any."""
+    from backend.db.base import engine
+    async with engine.connect() as conn:
+        row = (await conn.execute(text(
+            "SELECT id FROM documents WHERE user_id = CAST(:u AS uuid) "
+            "AND content_hash = :h AND deleted_at IS NULL LIMIT 1"),
+            {"u": str(user_id), "h": content_hash})).first()
+    return str(row[0]) if row else None

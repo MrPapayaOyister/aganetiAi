@@ -791,3 +791,42 @@ async def evaluation_trend() -> dict:
             "baseline": baseline, "regressions": regressions,
             "note": "one point per saved report; comparability depends on the "
                     "reports having run the same case set"}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Document indexing (ingestion pipeline)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/documents")
+async def documents() -> dict:
+    """Ingestion-pipeline state, read straight from PostgreSQL.
+
+    Every value is a COUNT or a MAX over documents.meta — there is no queue in
+    this architecture, so there is no queue depth, no worker count and no
+    throughput to report, and inventing them would be worse than omitting them.
+    Deliberately NOT labelled a Redis queue: Redis is not used here.
+    """
+    try:
+        from backend.storage import indexing_stats
+        stats = await indexing_stats()
+    except Exception as e:  # noqa: BLE001
+        return {"generated_at": _now_iso(), "status": "unavailable",
+                "detail": str(e)[:200]}
+
+    counts = stats.get("counts", {})
+    oldest = stats.get("oldest_processing")
+    # `processing` older than the stale threshold means a process died mid-index;
+    # the sweep will re-drive it, but an operator should see that it happened.
+    stale = False
+    if oldest:
+        try:
+            age = (datetime.now(timezone.utc)
+                   - datetime.fromisoformat(str(oldest).replace("Z", "+00:00"))).total_seconds()
+            stale = age > stats.get("stale_processing_after_s", 900)
+        except ValueError:
+            stale = False
+
+    return {"generated_at": _now_iso(), "status": "ok", **stats,
+            "stale_processing": stale,
+            "note": "PostgreSQL-derived counts; no queue exists in this "
+                    "architecture, so queue depth/throughput are not reported"}

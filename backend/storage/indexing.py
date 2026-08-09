@@ -370,3 +370,27 @@ async def indexing_stats() -> dict:
         "max_attempts": MAX_ATTEMPTS,
         "stale_processing_after_s": int(STALE_PROCESSING_AFTER.total_seconds()),
     }
+
+
+def register_sweep(scheduler: Any, *, minutes: int = 2) -> bool:
+    """Attach the recovery sweep to an APScheduler instance.
+
+    Lives here rather than being written inline in main.py so the registration
+    is one call at a stable location. Passing a coroutine function directly
+    matters: APScheduler's AsyncIOExecutor only dispatches to the event loop
+    when iscoroutinefunction_partial(func) is True, and a lambda wrapper would
+    be handed to a worker thread where create_task raises "no running event
+    loop" — the defect that left eight job types never running.
+    """
+    async def _sweep() -> None:
+        try:
+            await sweep_pending()
+        except Exception as e:  # noqa: BLE001 — a sweep must never kill the scheduler
+            log.warning("index sweep failed: %s", e)
+    try:
+        scheduler.add_job(_sweep, "interval", minutes=minutes, id="index_sweep",
+                          replace_existing=True, max_instances=1, coalesce=True)
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.warning("could not register index sweep: %s", e)
+        return False
