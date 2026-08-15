@@ -1,0 +1,5 @@
+# Pinned to the Dockerfile's base image tag. A mismatch between these two fails at
+# browser launch, not at build, which is a confusing place to discover version skew.
+playwright==1.62.0
+fastapi>=0.110
+uvicorn[standard]>=0.27

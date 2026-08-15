@@ -47,3 +47,86 @@ services:
       - ./neo4j/logs:/logs
       - ./neo4j/plugins:/plugins
       - ./neo4j/import:/import
+
+  # ── Browser Lab — hermetic dummy site for browser automation ──
+  # docs/automation-architecture.md §10. A test fixture, not a product service:
+  # it holds no data worth keeping and is meant to be reset between tests via
+  # POST /_test/reset.
+  #
+  # Sibling services reach it as http://browser-lab:8080 — the compose service
+  # DNS name. NOT browser-lab.local: that is mDNS and will not resolve reliably
+  # from inside the worker container (§10.1).
+  browser-lab:
+    build:
+      # Repo root, so the Dockerfile can COPY browser_lab/ as a package.
+      context: .
+      dockerfile: browser_lab/Dockerfile
+    container_name: browser_lab
+    ports:
+      # Host mapping is for the test suite and manual poking only. Nothing in
+      # the compose topology needs it — service-to-service traffic uses the
+      # internal 8080 above.
+      - "8080:8080"
+    restart: unless-stopped
+    # Hermetic (§10.1): the lab must behave identically with egress blocked.
+    # Uncomment to prove it — the container keeps working, because it never
+    # calls anything. Left commented because `internal: true` on the shared
+    # default network would cut off the services that legitimately do.
+    #
+    #   networks: [lab_internal]
+    #
+    # Real segmentation belongs with the playwright-worker work (§15 item 13),
+    # which is out of scope here.
+
+  # ── Playwright worker (§6.1) ────────────────────────────────────────────────
+  # Chromium in its OWN container, never in the orchestrator process. It renders
+  # untrusted content and is the component most likely to be compromised;
+  # co-locating it would put a renderer escape in the process holding tenant
+  # context, the tool registry and the database clients.
+  #
+  # Reaches the lab as http://browser-lab:8080 — the compose service DNS name, on
+  # the shared default network. Network segmentation is §15 item 13 and is
+  # deliberately NOT attempted here: the audit found this file declares no
+  # networks at all and no application service, so there is nothing to segment
+  # against yet.
+  playwright-worker:
+    build:
+      # Repo root, so the Dockerfile can COPY playwright_worker/ as a package.
+      context: .
+      dockerfile: playwright_worker/Dockerfile
+    container_name: playwright_worker
+    depends_on:
+      - browser-lab
+    environment:
+      BROWSER_LAB_URL: http://browser-lab:8080
+      # Defence in depth against in-cluster SSRF (§6.2). Unset = open, which the
+      # worker warns about at startup.
+      WORKER_TOKEN: ${WORKER_TOKEN:-}
+      # §9.2 budgets. Listed explicitly rather than left to defaults so the
+      # deployed values are visible in the topology, not only in code.
+      BROWSER_MAX_ACTIONS_PER_TASK: "40"
+      BROWSER_MAX_RETRIES_PER_ELEMENT: "2"
+      BROWSER_MAX_NAVIGATIONS_PER_TASK: "10"
+      BROWSER_ACTION_TIMEOUT_MS: "15000"
+      BROWSER_TASK_WALL_CLOCK_MS: "300000"
+      BROWSER_MAX_INSPECT_ELEMENTS: "60"
+      # §5.4 lifetimes. idle_ttl must exceed the approval window or approvals fail
+      # on resume (§8.2a) — revisit in Phase H.
+      BROWSER_IDLE_TTL_S: "900"
+      BROWSER_ABSOLUTE_TTL_S: "7200"
+      BROWSER_MAX_SESSIONS_PER_USER: "3"
+      BROWSER_MAX_SESSIONS_PER_TENANT: "10"
+    ports:
+      # Host mapping is for the Level 1 suite and manual poking only. Nothing in
+      # the topology needs it — the orchestrator will reach the worker at
+      # http://playwright-worker:8090 over the compose network.
+      #
+      # Host 8091, not 8090: this machine already publishes 8090 for
+      # seaweed-volume, which is not part of this compose file. The CONTAINER
+      # port stays 8090 so the service DNS name and port are what the design says.
+      - "8091:8090"
+    # Chromium needs more than the default 64MB of /dev/shm or it crashes on
+    # non-trivial pages. --disable-dev-shm-usage is also passed at launch; both
+    # are cheap and the failure mode without them is an opaque renderer crash.
+    shm_size: "1gb"
+    restart: unless-stopped

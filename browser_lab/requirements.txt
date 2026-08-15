@@ -1,0 +1,14 @@
+# Browser Lab runtime deps — deliberately the shortest list that works.
+#
+# The lab image does NOT install the repo's root requirements.txt. It needs no
+# LLM client, no database driver and no vector store, and pulling them in would
+# make a test fixture that takes minutes to build and breaks when an unrelated
+# dependency does.
+#
+# No Playwright here. The lab is the *target*; the driver lives in the worker.
+fastapi==0.138.0
+uvicorn==0.49.0
+# Required by Starlette to parse multipart forms — the /application file upload
+# 400s without it. Transitively present in the repo venv, pinned here because
+# the lab image installs only this file.
+python-multipart==0.0.32
