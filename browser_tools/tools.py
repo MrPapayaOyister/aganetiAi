@@ -27,7 +27,7 @@ import re
 from typing import Any, Optional
 
 from .artifacts import ArtifactError, ArtifactState, get_artifact_store
-from .client import WorkerGateway, get_gateway
+from .client import AuthorizationDenied, WorkerGateway, get_gateway
 from .outcomes import Origin, Outcome
 from .results import ToolResult, from_observation
 from .schemas import FORBIDDEN_PARAMS, SCHEMAS
@@ -140,11 +140,26 @@ async def _run(tool: str, *, tenant_id: str, user_id: str, agent_id: str,
                gateway: Optional[WorkerGateway] = None) -> ToolResult:
     """Every tool ends here, and every tool reaches the worker only through this."""
     gw = gateway or get_gateway()
-    obs = await gw.call(action=tool, tenant_id=tenant_id, user_id=user_id,
-                        agent_id=agent_id, session_id=session_id,
-                        browser_session_id=browser_session_id,
-                        arguments=worker_args or {})
+    try:
+        obs = await gw.call(action=tool, tenant_id=tenant_id, user_id=user_id,
+                            agent_id=agent_id, session_id=session_id,
+                            browser_session_id=browser_session_id,
+                            arguments=worker_args or {})
+    except AuthorizationDenied as e:
+        # The boundary refused. Shaped like any other refusal so the agent reads it
+        # the same way — and stamped `origin=tool`, because the worker never saw it.
+        return _refused(tool, e)
     return from_observation(tool, obs, summary=summary, detail=detail)
+
+
+def _refused(tool: str, e: AuthorizationDenied) -> ToolResult:
+    from .outcomes import is_terminal, recovery_for
+    return ToolResult(
+        tool=tool, outcome=Outcome.FAILED,
+        summary="the call was refused by the authorization boundary",
+        error_code=e.code, error_message=e.reason,
+        recovery=recovery_for(e.code), terminal=e.terminal or is_terminal(e.code),
+        origin=Origin.TOOL, detail={"rule": e.rule} if e.rule else {})
 
 
 def _guard(tool: str):
@@ -359,9 +374,12 @@ async def browser_screenshot(*, tenant_id: str, user_id: str, agent_id: str,
     # — a worker-memory ref must never occupy the field that means "durable".
     # It still reaches the worker only through the gateway (requirement 6).
     gw = gateway or get_gateway()
-    obs = await gw.call(action="browser_screenshot", tenant_id=tenant_id, user_id=user_id,
-                        agent_id=agent_id, session_id=session_id,
-                        browser_session_id=browser_session_id, arguments=args)
+    try:
+        obs = await gw.call(action="browser_screenshot", tenant_id=tenant_id,
+                            user_id=user_id, agent_id=agent_id, session_id=session_id,
+                            browser_session_id=browser_session_id, arguments=args)
+    except AuthorizationDenied as e:
+        return _refused("browser_screenshot", e)
     masked = (obs.get("extracted") or {}).get("masked_fields") \
         if isinstance(obs.get("extracted"), dict) else None
     res = from_observation("browser_screenshot", obs, summary="screenshot captured",

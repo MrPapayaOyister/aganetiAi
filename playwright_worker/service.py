@@ -102,6 +102,24 @@ async def screenshot(ref: str, request: Request,
                     headers={"Cache-Control": "no-store"})
 
 
+@app.get("/session/{browser_session_id}")
+async def session_facts(browser_session_id: str, request: Request,
+                        authorization: str | None = Header(default=None)):
+    """Owner + live page host, for the caller's authorization decision.
+
+    404 for a session that does not exist and for one owned by another identity —
+    the same answer, so this cannot be used to enumerate other tenants' sessions.
+    """
+    _authenticate(authorization)
+    facts = WORKER.session_facts(
+        browser_session_id,
+        tenant_id=request.headers.get("x-tenant-id", ""),
+        user_id=request.headers.get("x-user-id", ""))
+    if facts is None:
+        raise HTTPException(status_code=404, detail="no such browser session")
+    return facts
+
+
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok", **WORKER.sessions.stats()}

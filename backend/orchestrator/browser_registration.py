@@ -19,6 +19,7 @@ understands (§4.3: per-tool grants, which work today at zero cost).
 """
 from __future__ import annotations
 
+import contextvars
 import logging
 from typing import Any, Callable
 
@@ -51,6 +52,13 @@ PERMISSIONS: dict[str, str] = {
     "browser_upload": "browser.write",
     "browser_submit": "browser.submit",
 }
+
+#: The one tool that carries `is_outbound`. See the browser block in
+#: guardrails.TOOL_CATEGORY for why: `comms` alone yields "auto" at
+#: AUTONOMY_LEVEL=autonomous, so the category is not a sufficient gate on its own.
+#: The flag short-circuits `decide_tool` at every level, giving two independent
+#: gates on the only irreversible action.
+OUTBOUND_TOOLS: frozenset[str] = frozenset({"browser_submit"})
 
 #: Hosts a browser session may reach. §11.2: for v1 exactly the lab.
 #:
@@ -142,19 +150,55 @@ def _handler_for(name: str) -> Callable:
                 terminal=True,
             ).for_model()
 
-        if name == "browser_open" and "allowed_domains" not in args:
-            # §11.2: the allowlist is policy, not a model choice. A model that could
-            # widen it could navigate anywhere, so the default is applied here and
-            # the parameter stays in the schema only for a caller that wants to
-            # NARROW it. Phase E moves the check into the boundary; this is the
-            # session-scoped backstop the worker already enforces.
-            args["allowed_domains"] = list(ALLOWED_DOMAINS)
+        if name == "browser_open":
+            # §11.2: the allowlist is policy, not a model choice. The parameter
+            # exists so a caller can NARROW the policy, never widen it — so what
+            # arrives from the model is INTERSECTED with policy rather than
+            # trusted. Phase D applied the default only when the argument was
+            # absent, which meant a model supplying `["evil.example.com"]` got a
+            # worker session scoped to evil.example.com. Phase E's boundary denies
+            # the navigation that would follow, so this was never exploitable —
+            # but a backstop a model can widen is not a backstop, and the two
+            # controls must not be able to disagree about what is allowed.
+            asked = args.get("allowed_domains")
+            args["allowed_domains"] = (
+                [d for d in asked if d in ALLOWED_DOMAINS] if asked
+                else list(ALLOWED_DOMAINS))
+            if asked and not args["allowed_domains"]:
+                # An intersection of nothing is a session that can reach nothing,
+                # which is a confusing failure. Fall back to policy and say so.
+                log.warning("browser_open asked for %s, none of which is policy; "
+                            "using the policy allowlist", asked)
+                args["allowed_domains"] = list(ALLOWED_DOMAINS)
 
         result = await fn(**ident, **args)
+        _LAST_RESULT.set(result)
         return result.for_model()
 
     handler.__name__ = f"{name}_handler"
     return handler
+
+
+#: The structured result the handler most recently rendered.
+#:
+#: `registry.Tool.handler` returns `str`, so the executor only ever sees the
+#: rendering. The Browser Agent needs the object — outcome, error code, element
+#: list, field errors — to maintain §7.1 state, and re-parsing prose to recover
+#: structure that existed a function call ago would make the state depend on
+#: message formatting. A contextvar rather than a module global because it must not
+#: leak between concurrent turns; `_tools_node` awaits handlers one at a time, so
+#: within a turn the pairing is exact.
+_LAST_RESULT: "contextvars.ContextVar[Any | None]" = contextvars.ContextVar(
+    "browser_last_result", default=None)
+
+
+def take_last_result():
+    """Read and clear. Clearing matters: a stale result read after a handler that
+    did not run (a refusal, an exception) would attribute the previous action's
+    outcome to this one."""
+    r = _LAST_RESULT.get()
+    _LAST_RESULT.set(None)
+    return r
 
 
 _registered = False
@@ -166,6 +210,7 @@ def register_browser_tools() -> list[str]:
     if _registered:
         return list(SCHEMAS)
     _install_artifact_store()
+    _install_authorizer()
     for name in SCHEMAS:
         register(Tool(
             name=name,
@@ -173,12 +218,36 @@ def register_browser_tools() -> list[str]:
             parameters=_schema_for(name),
             handler=_handler_for(name),
             required_permission=PERMISSIONS[name],
-            # NOT outbound — see the reasoning in guardrails.TOOL_CATEGORY.
-            is_outbound=False,
+            # 13 are NOT outbound: the flag forces approval, and an approval in
+            # front of browser_inspect is unusable. browser_submit IS, as the
+            # second of its two independent gates (see OUTBOUND_TOOLS).
+            is_outbound=(name in OUTBOUND_TOOLS),
         ))
     _registered = True
     log.info("registered %d browser tools", len(SCHEMAS))
     return list(SCHEMAS)
+
+
+def _install_authorizer() -> None:
+    """Inject the Phase E authorizer into the single chokepoint.
+
+    `browser_tools` still knows nothing about the boundary — it knows only that
+    something may raise `AuthorizationDenied` before the transport. This is where
+    the two are joined, and it is the only place.
+    """
+    from browser_tools.client import get_gateway, set_gateway, WorkerGateway
+
+    from .browser_authz import BrowserAuthorizer, grants_from_db
+
+    existing = get_gateway()
+    authorizer = BrowserAuthorizer(grants_for=lambda **kw: grants_from_db(**kw))
+    gw = WorkerGateway(existing._t, authorizer=authorizer)
+    # The resolver reads session facts THROUGH the gateway, and the gateway calls
+    # the authorizer — so the authorizer needs the gateway it lives on. Bound after
+    # construction to break the cycle.
+    authorizer.bind_gateway(gw)
+    set_gateway(gw)
+    log.info("browser authorization boundary wired")
 
 
 def _install_artifact_store() -> None:

@@ -39,6 +39,9 @@ class Transport(Protocol):
 
     async def fetch_screenshot(self, ref: str, *, tenant_id: str, user_id: str) -> bytes: ...
 
+    async def session_facts(self, browser_session_id: str, *, tenant_id: str,
+                            user_id: str) -> dict | None: ...
+
 
 class InProcessTransport:
     """Wraps a `BrowserWorker` object directly.
@@ -58,6 +61,11 @@ class InProcessTransport:
     async def fetch_screenshot(self, ref: str, *, tenant_id: str, user_id: str) -> bytes:
         shot = self._w.screenshots.get(ref, tenant_id=tenant_id, user_id=user_id)
         return shot.png
+
+    async def session_facts(self, browser_session_id: str, *, tenant_id: str,
+                            user_id: str) -> dict | None:
+        return self._w.session_facts(browser_session_id, tenant_id=tenant_id,
+                                     user_id=user_id)
 
 
 class HttpTransport:
@@ -92,12 +100,46 @@ class HttpTransport:
             r.raise_for_status()
             return r.content
 
+    async def session_facts(self, browser_session_id: str, *, tenant_id: str,
+                            user_id: str) -> dict | None:
+        import httpx
+        async with httpx.AsyncClient(timeout=self.timeout_s) as c:
+            r = await c.get(f"{self.base_url}/session/{browser_session_id}",
+                            headers=self._headers(**{"X-Tenant-Id": tenant_id,
+                                                     "X-User-Id": user_id}))
+            if r.status_code == 404:
+                return None
+            r.raise_for_status()
+            return r.json()
+
+
+class AuthorizationDenied(Exception):
+    """Raised by `_authorize` to stop a call before the transport.
+
+    An exception rather than a return value on purpose: a caller that forgets to
+    check a returned verdict still does not reach the worker. The only way past
+    this is not to call `_authorize` at all, and there is one call site.
+    """
+
+    def __init__(self, code: str, reason: str, rule: str = "", terminal: bool = True):
+        self.code = code
+        self.reason = reason
+        self.rule = rule
+        self.terminal = terminal
+        super().__init__(f"{code}: {reason}")
+
 
 class WorkerGateway:
-    """The chokepoint. One method in, one observation out."""
+    """The chokepoint. One method in, one observation out.
 
-    def __init__(self, transport: Transport):
+    `authorizer` is how Phase E's policy is injected. `browser_tools` still knows
+    nothing about the boundary, `TenantContext`, or the registry — it knows only
+    that something may refuse a call before the transport.
+    """
+
+    def __init__(self, transport: Transport, authorizer: Any = None):
         self._t = transport
+        self._authorizer = authorizer
 
     async def call(self, *, action: str, tenant_id: str, user_id: str, agent_id: str,
                    session_id: str, browser_session_id: str = "",
@@ -127,14 +169,32 @@ class WorkerGateway:
         """
         return await self._t.fetch_screenshot(ref, tenant_id=tenant_id, user_id=user_id)
 
-    async def _authorize(self, payload: dict) -> None:
-        """Phase E's insertion point. Intentionally empty.
+    async def session_facts(self, browser_session_id: str, *, tenant_id: str,
+                            user_id: str) -> dict | None:
+        """Owner + live page host, for the authorization resolver.
 
-        It exists now, and is called on the single path every tool uses, so Phase E
-        is a body rather than an architecture change — and so the anti-bypass test
-        has one function to assert against. Do not add authorization to a tool; add
-        it here.
+        Not routed through `call()`: it is not an action, charges no budget, and
+        must be answerable BEFORE `_authorize` runs — routing it through the very
+        function it feeds would be circular.
         """
+        return await self._t.session_facts(browser_session_id, tenant_id=tenant_id,
+                                           user_id=user_id)
+
+    async def _authorize(self, payload: dict) -> None:
+        """The single authorization point. Raises `AuthorizationDenied` to refuse.
+
+        Called from `call()` BEFORE `self._t.execute(...)`, so a denial means the
+        transport is never touched and Playwright is never reached. That ordering
+        is the anti-bypass property, and it is what
+        `test_a_denial_never_reaches_the_worker` asserts — by counting transport
+        invocations, not by inspecting the returned error.
+
+        With no authorizer injected this is a no-op, which is what keeps
+        `browser_tools` independently testable.
+        """
+        if self._authorizer is None:
+            return None
+        await self._authorizer(payload)
         return None
 
 

@@ -177,8 +177,21 @@ TOOL_CATEGORY = {
     # will be held to, so `task` rather than `read`.
     "browser_click": "task", "browser_fill": "task", "browser_select": "task",
     "browser_check": "task", "browser_upload": "task",
-    # The one approval-gated tool. `comms` -> approval at standard autonomy, which
-    # is what makes the §19 governance demo real.
+    # The one approval-gated tool, and it is gated TWICE on purpose.
+    #
+    # `comms` -> approval via `guardrail_approval`. That was the only gate, and it
+    # is not sufficient: `_verdict("comms")` returns "auto" at
+    # AUTONOMY_LEVEL=autonomous, so on an autonomous deployment the model could
+    # submit a form with no approval at all. Measured, not assumed.
+    #
+    # The second gate is `is_outbound=True` on the registry entry (see
+    # browser_registration.PERMISSIONS / register_browser_tools). `decide_tool`
+    # short-circuits on that flag BEFORE consulting this table, so it holds at
+    # every autonomy level. Removing either leaves the other standing.
+    #
+    # Only browser_submit carries the flag. Marking all 14 outbound would put an
+    # approval in front of browser_inspect — that is the Phase-D hazard, and it is
+    # a different thing from gating the one tool that submits.
     "browser_submit": "comms",
 }
 

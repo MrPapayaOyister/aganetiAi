@@ -107,6 +107,29 @@ class BrowserWorker:
                 duration_ms=int((time.monotonic() - t0) * 1000),
                 browser_session_id=(sess.id if sess else ""))
 
+    def session_facts(self, browser_session_id: str, *, tenant_id: str,
+                      user_id: str) -> dict | None:
+        """Owner + live page host for one session, or None.
+
+        A READ, deliberately outside `execute()`: it charges no budget and takes no
+        session lock, because it runs on the authorization path before the action
+        is permitted. Charging a budget for asking whether an action is allowed
+        would let a denied caller exhaust the budget of the session it cannot use.
+
+        Returns None for a session that does not exist AND for one owned by someone
+        else — `sessions.resolve` raises the same error for both (§5.1), and
+        collapsing them here is what lets the boundary be indistinguishable without
+        having to be careful about it.
+        """
+        try:
+            sess = self.sessions.resolve(browser_session_id, tenant_id=tenant_id,
+                                         user_id=user_id)
+        except WorkerError:
+            return None
+        return {"browser_session_id": sess.id, "tenant_id": sess.tenant_id,
+                "user_id": sess.user_id, "agent_id": sess.agent_id,
+                "current_url": (sess.page.url if sess.page else "")}
+
     # ── dispatch ──────────────────────────────────────────────────────────────
     async def _dispatch(self, cmd: BrowserCommand, sess: BrowserSession) -> BrowserObservation:
         a = cmd.action

@@ -19,8 +19,8 @@ from .artifacts import (
     FilesystemArtifactStore, get_artifact_store, set_artifact_store,
 )
 from .client import (
-    HttpTransport, InProcessTransport, WorkerGateway, get_gateway,
-    in_process_gateway, set_gateway,
+    AuthorizationDenied, HttpTransport, InProcessTransport, WorkerGateway,
+    get_gateway, in_process_gateway, set_gateway,
 )
 from .outcomes import CORRECTABLE, RETRYABLE, TERMINAL, Outcome, recovery_for
 from .results import ElementSummary, ToolResult, from_observation
@@ -33,6 +33,7 @@ __all__ = [
     "ToolResult", "ElementSummary", "from_observation",
     "Outcome", "TERMINAL", "RETRYABLE", "CORRECTABLE", "recovery_for",
     "WorkerGateway", "get_gateway", "set_gateway", "in_process_gateway",
+    "AuthorizationDenied",
     "InProcessTransport", "HttpTransport",
     "ArtifactStore", "ArtifactRef", "ArtifactState", "ArtifactError",
     "FilesystemArtifactStore", "get_artifact_store", "set_artifact_store",
