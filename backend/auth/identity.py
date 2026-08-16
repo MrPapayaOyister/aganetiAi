@@ -8,8 +8,9 @@ Authorization policy (domain-allowlist auto-provision):
   3. Else -> NotAuthorized (caller returns 403).
 
 An in-process TTL cache keeps repeated requests off the DB after first resolution.
-Config-alias users (config.users 'user_1') never reach here: the auth middleware
-short-circuits them via internal_user_for_sub before calling this.
+EVERY authenticated caller reaches here — the middleware used to short-circuit a
+hand-listed pair of subs into "user_1"/"user_2" before calling this, so the
+authorization rules below silently did not apply to them.
 """
 from __future__ import annotations
 
@@ -42,19 +43,6 @@ def _email_allowed(email: str) -> bool:
     return dom in ALLOWED_DOMAINS
 
 
-def _is_disabled_config_sub(supabase_uid: str) -> bool:
-    """A sub an operator explicitly disabled in config.users (enabled=False) must
-    never be auto-provisioned by the domain allowlist — the disable is authoritative."""
-    try:
-        from config.users import USERS
-        for u in USERS.values():
-            if u.get("supabase_uid") == supabase_uid and not u.get("enabled", True):
-                return True
-    except Exception:
-        pass
-    return False
-
-
 async def resolve_or_provision(supabase_uid: str, email: str = "",
                                full_name: str | None = None) -> dict:
     """Return {uid, org_id, supabase_uid, email} or raise NotAuthorized."""
@@ -76,9 +64,10 @@ async def resolve_or_provision(supabase_uid: str, email: str = "",
         if (getattr(user, "status", "active") or "active") != "active":
             raise NotAuthorized(f"user {user.id} is not active")
     else:
-        # New sub: never resurrect an operator-disabled config user, then gate on domain.
-        if _is_disabled_config_sub(supabase_uid):
-            raise NotAuthorized("login disabled for this user")
+        # New sub: gate on the domain allowlist. Revoking access is `users.status`
+        # (checked above for anyone already provisioned) — it used to ALSO be an
+        # `enabled: False` flag in config/users.py, a second switch that only worked
+        # for the two people listed there and was silently ignored for everyone else.
         if not _email_allowed(email):
             raise NotAuthorized(f"{email or supabase_uid} not permitted")
         from backend import onboarding

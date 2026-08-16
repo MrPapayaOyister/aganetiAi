@@ -9,16 +9,21 @@ Never logs tokens.
 """
 from __future__ import annotations
 
-import os
-import json
 import base64
+import hashlib
+import hmac
+import json
 import logging
+import os
+import secrets
+import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import RedirectResponse, JSONResponse
 
+from backend.auth import tenant
 from backend.auth.supabase_client import get_supabase_admin
 from backend.services.http_client import api_request
 from backend.services.provider_tokens import MS_SCOPES, normalize_scopes
@@ -77,16 +82,95 @@ def _redirect_uri(provider: str) -> str:
     return f"{BACKEND_URL}/auth/{provider}/callback"
 
 
+# ── OAuth `state` — signed, bound to the authenticated user, short-lived ───────
+# The state used to be plain base64 JSON. Two consequences, both exploited by the
+# same attack (audit R2):
+#
+#   * /connect took `user_id` from the query string while sitting on the public
+#     prefix list, so an anonymous caller could mint a consent URL naming a victim;
+#   * even with /connect authenticated, an unsigned state could simply be EDITED
+#     before the browser reached the provider — the callback trusted whatever came
+#     back and stored the attacker's tokens under the victim's id.
+#
+# Fixing only the first would have left the second. The state is therefore now an
+# HMAC-signed envelope carrying the SERVER'S view of who initiated the flow, plus
+# an issue time and a nonce. The callback accepts nothing else.
+STATE_TTL_SECONDS = int(os.getenv("OAUTH_STATE_TTL", "600"))  # 10 minutes
+
+
+def _state_secret() -> bytes:
+    """Key for the state HMAC.
+
+    Prefers a dedicated secret; falls back to INTERNAL_API_TOKEN so an existing
+    deployment is protected without a new variable. If neither is set the signature
+    is unforgeable-by-nobody, so `_sign_state` refuses rather than issuing a token
+    that only looks signed.
+    """
+    from backend.service_auth import internal_token
+    return (os.getenv("OAUTH_STATE_SECRET", "") or internal_token()).encode("utf-8")
+
+
+class StateUnsigned(RuntimeError):
+    """No signing key configured — refuse to start an OAuth flow at all."""
+
+
+def _sign(payload: bytes) -> str:
+    key = _state_secret()
+    if not key:
+        raise StateUnsigned(
+            "neither OAUTH_STATE_SECRET nor INTERNAL_API_TOKEN is set; refusing to "
+            "issue an unsigned OAuth state")
+    return base64.urlsafe_b64encode(hmac.new(key, payload, hashlib.sha256).digest()).decode().rstrip("=")
+
+
 def _encode_state(user_id: str, redirect_uri: str) -> str:
-    raw = json.dumps({"user_id": user_id, "redirect_uri": redirect_uri or "/"}).encode()
-    return base64.urlsafe_b64encode(raw).decode()
+    body = json.dumps({
+        "user_id": user_id,
+        "redirect_uri": redirect_uri or "/",
+        "iat": int(time.time()),
+        "nonce": secrets.token_urlsafe(8),
+    }, separators=(",", ":"), sort_keys=True).encode()
+    b = base64.urlsafe_b64encode(body).decode().rstrip("=")
+    return f"{b}.{_sign(body)}"
+
+
+def _b64d(s: str) -> bytes:
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
 
 def _decode_state(state: str) -> dict:
+    """Verify and decode. Returns {} on ANY failure — a bad signature, a tampered
+    payload, an expired flow or a malformed token are all the same answer, so the
+    callback has one path for "not a state I issued"."""
     try:
-        return json.loads(base64.urlsafe_b64decode(state.encode()).decode())
-    except Exception:
-        return {"user_id": "", "redirect_uri": "/"}
+        b, sig = state.rsplit(".", 1)
+        body = _b64d(b)
+        if not hmac.compare_digest(sig, _sign(body)):
+            log.warning("oauth state signature mismatch")
+            return {}
+        data = json.loads(body)
+        age = int(time.time()) - int(data.get("iat", 0))
+        if age < -60 or age > STATE_TTL_SECONDS:
+            log.warning("oauth state expired (age=%ss, ttl=%ss)", age, STATE_TTL_SECONDS)
+            return {}
+        if not data.get("user_id"):
+            return {}
+        return data
+    except StateUnsigned:
+        raise
+    except Exception:  # noqa: BLE001
+        log.warning("oauth state could not be decoded")
+        return {}
+
+
+def _safe_redirect(target: str) -> str:
+    """Only same-app relative paths. `redirect_uri` reaches us from the client and
+    is echoed into a Location header on the way back; without this an attacker could
+    hand a victim a connect link that lands them on another origin afterwards."""
+    t = (target or "/").strip()
+    if not t.startswith("/") or t.startswith("//") or "\\" in t:
+        return "/"
+    return t
 
 
 def _jwt_claim(token: str, claim: str) -> str | None:
@@ -122,15 +206,34 @@ async def _fetch_profile(provider: str, access_token: str) -> tuple[str | None, 
 # ── Connect ────────────────────────────────────────────────────────────────────
 
 @router.get("/auth/{provider}/connect")
-async def provider_connect(provider: str, user_id: str = Query(...),
-                           redirect_uri: str = Query("/")):
-    """Build the provider consent URL (offline access + forced consent so a refresh
-    token is always issued) and redirect the browser to it.
+async def provider_connect(provider: str, request: Request,
+                           redirect_uri: str = Query("/"),
+                           mode: str = Query("json")):
+    """Mint the provider consent URL for THE AUTHENTICATED CALLER.
 
-    ONE PROVIDER AT A TIME: if the user already has the *other* provider linked, we
-    stop here — before sending them through a full consent round-trip — and bounce
-    back to the UI asking them to disconnect it first. Two live mailboxes would make
-    every read ambiguous."""
+    SECURITY (audit R2 — account-linking IDOR). This route used to be anonymous and
+    take `user_id` from the query string, which it embedded in an unsigned `state`.
+    An attacker could therefore start a flow naming a victim, complete consent with
+    their OWN provider account, and have the callback file their tokens against the
+    victim's record — after which the victim's agent read the attacker's mailbox and,
+    worse, the attacker's mailbox became a channel into the victim's assistant.
+
+    Two changes close it, and both are needed:
+      1. the subject is now `TenantContext.supabase_uid` and the query parameter is
+         ignored entirely;
+      2. the `state` is HMAC-signed (see `_encode_state`), so it cannot be edited in
+         flight — authenticating this endpoint alone would not have been enough.
+
+    The OAuth redirect flow itself is preserved. Because a top-level browser
+    navigation cannot carry a bearer token, the default response is now JSON
+    carrying the consent URL: the SPA fetches it with its token and then navigates.
+    `mode=redirect` keeps the 302 behaviour for a caller that can authenticate the
+    navigation itself (e.g. a future cookie session); it is not used by the SPA.
+    """
+    ctx = await tenant.require(request)
+    user_id = ctx.supabase_uid or str(ctx.user_id)
+    redirect_uri = _safe_redirect(redirect_uri)
+
     cfg = PROVIDERS.get(provider)
     if not cfg:
         return JSONResponse(status_code=404, content={"error": "unknown_provider"})
@@ -145,17 +248,20 @@ async def provider_connect(provider: str, user_id: str = Query(...),
         # Strictly this identity: the token layer lets a user with no connection of
         # their own fall back to the sole live account, and inheriting it here would
         # block them from ever linking one.
-        others = [p for p in await connected_providers(user_id, live_fallback=False)
+        others = [p for p in await connected_providers(user_id)
                   if p != provider]
     except Exception as e:  # noqa: BLE001 — a lookup failure must not block connecting
         log.info("connect precheck failed for %s: %s", user_id, e)
         others = []
     if others:
         log.info("refusing %s connect for %s — %s already linked", provider, user_id, others[0])
-        return RedirectResponse(
-            f"{FRONTEND_URL}{redirect_uri}?connect_error=already_connected"
-            f"&connected_provider={others[0]}"
-        )
+        bounce = (f"{FRONTEND_URL}{redirect_uri}?connect_error=already_connected"
+                  f"&connected_provider={others[0]}")
+        if mode == "redirect":
+            return RedirectResponse(bounce)
+        return JSONResponse(status_code=409, content={
+            "error": "already_connected", "connected_provider": others[0],
+            "redirect_url": bounce})
 
     params = {
         "client_id": cfg["client_id"],
@@ -168,7 +274,10 @@ async def provider_connect(provider: str, user_id: str = Query(...),
     }
     if provider == "google":
         params["prompt"] = "consent"
-    return RedirectResponse(f"{cfg['auth_url']}?{urlencode(params)}")
+    authorize_url = f"{cfg['auth_url']}?{urlencode(params)}"
+    if mode == "redirect":
+        return RedirectResponse(authorize_url)
+    return {"authorize_url": authorize_url, "provider": provider}
 
 
 # ── Callback ───────────────────────────────────────────────────────────────────
@@ -180,15 +289,20 @@ async def provider_callback(provider: str, code: str = Query(None), state: str =
     """Exchange the code for tokens, fetch the profile, upsert the connection,
     then redirect back to the frontend."""
     cfg = PROVIDERS.get(provider)
+    # The subject comes from the SIGNED state and from nowhere else. A tampered,
+    # forged, expired or absent state decodes to {}, so `user_id` is empty and the
+    # branch below bounces the browser without touching any token store. This is
+    # the second half of the R2 fix: authenticating /connect stops an attacker
+    # MINTING a hostile state, and the signature stops them EDITING a legitimate one.
     st = _decode_state(state)
     user_id = st.get("user_id", "")
-    redirect_uri = st.get("redirect_uri", "/")
+    redirect_uri = _safe_redirect(st.get("redirect_uri", "/"))
     fail = f"{FRONTEND_URL}{redirect_uri}?connect_error={provider}"
 
     if not cfg:
         return JSONResponse(status_code=404, content={"error": "unknown_provider"})
     if error or not code or not user_id:
-        log.warning("%s callback error=%s (%s) code?=%s user?=%s", provider, error,
+        log.warning("%s callback error=%s (%s) code?=%s state_valid?=%s", provider, error,
                     (error_description or "")[:160], bool(code), bool(user_id))
         return RedirectResponse(fail)
 
@@ -300,10 +414,30 @@ async def _identity_ids(user_id: str) -> list[str]:
     return ids
 
 
+async def _self_identity(request: Request) -> str:
+    """The caller's OWN external identity, for the two self-service provider routes.
+
+    SECURITY (audit S1/S2): these routes used to take `user_id` from the query
+    string while sitting on the middleware's public-prefix list, so an anonymous
+    caller could name any victim. Identity now comes from X-Auth-User — injected by
+    AuthEnforceMiddleware from the verified token and stripped from the inbound
+    request, so it cannot be forged — and the query parameter is ignored entirely.
+
+    `TenantContext.require` additionally refuses an identity that does not resolve
+    to an ACTIVE user in a tenant. The supabase uid is what the token stores are
+    keyed by, so that is what we hand to `_identity_ids`.
+    """
+    ctx = await tenant.require(request)
+    return ctx.supabase_uid or str(ctx.user_id)
+
+
 @router.get("/auth/provider/status")
-async def provider_status(user_id: str = Query(...)):
-    """Report which providers this user has connected. Reads from Supabase
-    first, falls back to the file store; checks every id this identity maps to."""
+async def provider_status(request: Request):
+    """Report which providers THE CALLER has connected. Reads from Supabase
+    first, falls back to the file store; checks every id this identity maps to.
+
+    Always self-scoped: there is no way to ask about another user."""
+    user_id = await _self_identity(request)
     out = {p: {"connected": False, "configured": bool(PROVIDERS[p]["client_id"])}
            for p in PROVIDERS}
     rows: list[dict] = []
@@ -336,13 +470,22 @@ async def provider_status(user_id: str = Query(...)):
 
 
 @router.delete("/auth/provider/{provider}")
-async def disconnect_provider(provider: str, user_id: str = Query(...)):
-    """Delete the stored connection for a provider, under every id this identity
-    maps to, from BOTH stores.
+async def disconnect_provider(provider: str, request: Request):
+    """Delete THE CALLER'S stored connection for a provider, under every id this
+    identity maps to, from BOTH stores.
+
+    Always self-scoped (audit S1): this route was anonymous and took the victim's
+    id from the query string, so any unauthenticated caller could destroy any
+    user's Google/Microsoft credentials. The target is now the authenticated
+    caller and nobody else.
 
     Note: this revokes our copy of the credentials, not the grant itself —
     Microsoft has no simple per-app revoke endpoint, so an already-issued Graph
     access token stays valid until it expires (≤1h)."""
+    if provider not in PROVIDERS:
+        return JSONResponse(status_code=404, content={"disconnected": False,
+                                                      "error": "unknown provider"})
+    user_id = await _self_identity(request)
     errors: list[str] = []
     for uid in await _identity_ids(user_id):
         sb_ok = False
