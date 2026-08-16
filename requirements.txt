@@ -24,13 +24,45 @@ faster-whisper
 kokoro>=0.9.4
 soundfile
 
+# ── Auth / identity ────────────────────────────────────────
+# Direct imports in backend/auth/. Previously undeclared and arriving only as
+# someone else's transitive dependency — a clean resolve had none of them.
+supabase
+pyjwt
+cryptography
+
+# ── Database ───────────────────────────────────────────────
+# backend/chat/store.py, backend/db/. Direct import, was undeclared.
+sqlalchemy
+
+# ── Observability ──────────────────────────────────────────
+psutil
+
 # ── Documents / reports ────────────────────────────────────
 weasyprint
 jinja2
 pdfplumber
+# PyMuPDF (imported as `fitz`) renders PDF pages for OCR. Without it every
+# scanned PDF and uploaded image silently yields no text.
+pymupdf
 python-docx
 openpyxl
 pandas
+
+# ── OCR ────────────────────────────────────────────────────
+# Transcription path for scanned PDFs and images. CPU-only (no aarch64 CUDA
+# build, and none wanted — the GPU is committed to two vLLM engines).
+# Runs in a SUBPROCESS: paddleocr pulls in torch, and torch/ctranslate2 each
+# ship their own libgomp while paddle links the system one, so importing it
+# beside torch segfaults. See backend/services/ocr_paddle_worker.py.
+# ~940 MB installed, plus ~226 MB of models on first use.
+paddlepaddle
+paddleocr
+
+# Pillow: direct import in backend/ingest.py and services/image_read.py. It
+# currently arrives via the qrcode[pil] extra, which is a fragile place to get a
+# hard dependency from.
+pillow
 
 # ── Frontend ───────────────────────────────────────────────
 streamlit
@@ -45,3 +77,8 @@ pyodbc
 
 # ── Graph DB (Neo4j) — infrastructure service, see backend/graph/ ──
 neo4j
+
+# ── Web + YouTube search (both keyless, no quota) ──
+yt-dlp
+
+qrcode[pil]

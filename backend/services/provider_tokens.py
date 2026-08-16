@@ -127,24 +127,28 @@ from backend.services import _token_pg_store as _pg
 from backend.services import token_crypto
 
 
-async def _fetch_connection(user_id: str, provider: str, *,
-                            live_fallback: bool = True) -> dict | None:
+async def _fetch_connection(user_id: str, provider: str) -> dict | None:
     """Load the user's row for `provider`. Tries Supabase first; falls back to the JSON
     file store. Tokens are decrypted before returning.
 
-    IDENTITY-AWARE, in three steps. The OAuth connect flow stores tokens under the
+    IDENTITY-AWARE, in two steps. The OAuth connect flow stores tokens under the
     Supabase sub, but the agent executor and the schedulers look them up by whatever id
     they happen to hold, so a direct hit is not guaranteed:
 
       1. the id as given;
-      2. the same identity's other ids, resolved from the users table;
-      3. `live_fallback` — the single live connection for this provider, whoever owns it.
+      2. the same identity's other ids, resolved from the users table.
 
-    Step 3 is what keeps the app bound to *whichever account is actually connected*
-    rather than to any configured id. It deliberately refuses to act when more than one
-    account is live: picking between two mailboxes would silently hand one user another
-    user's mail. Pass live_fallback=False where the answer must be about this identity
-    alone — the connect precheck, status, disconnect."""
+    Both steps stay INSIDE one identity. There used to be a third: fall back to the
+    sole live connection for the provider, whoever owned it, so the app stayed bound to
+    whichever account was actually connected. That is safe only while exactly one human
+    can log in. With real accounts it silently handed every user who had not yet
+    connected anything the one mailbox that was connected — a cross-user data leak, and
+    the worse for being invisible: the answers looked perfectly plausible, just sourced
+    from somebody else's mail. It was removed rather than defaulted off, so it cannot be
+    switched back on by a stray keyword argument.
+
+    A miss here must stay a miss. The caller turns it into `not_connected(provider)`,
+    which is the prompt to go connect an account in Settings."""
     def _q_sync(uid: str):
         """Supabase, then the JSON file — both are synchronous clients."""
         try:
@@ -185,8 +189,6 @@ async def _fetch_connection(user_id: str, provider: str, *,
                 row = alt_row
                 break
             row = row or alt_row
-    if live_fallback and (not row or not row.get("refresh_token")):
-        row = await _sole_live_connection(provider) or row
     return token_crypto.dec_row(row) if row else None
 
 
@@ -211,41 +213,17 @@ async def _all_rows_for_provider(provider: str) -> list[dict]:
         return []
 
 
-async def _sole_live_connection(provider: str) -> dict | None:
-    """The one connection for `provider` that can still be refreshed, or None.
-
-    "Live" means it holds a refresh token — a row without one is a dead credential
-    that can only ever raise "token expired". Returns None when zero or more than one
-    qualify: with two connected accounts there is no non-arbitrary answer, and guessing
-    would cross mailboxes between users."""
-    def _q():
-        rows: list[dict] = []
-        try:
-            sb = get_supabase_admin()
-            rows = (sb.table("provider_connections").select("*")
-                    .eq("provider", provider).execute()).data or []
-        except Exception as e:
-            log.debug("Supabase provider scan failed, using file store: %s", e)
-        if not rows:
-            rows = _file.fetch_all_for_provider(provider)
-        return [r for r in rows if r.get("refresh_token")]
-
-    live = await asyncio.to_thread(_q)
-    if len(live) == 1:
-        return live[0]
-    if len(live) > 1:
-        log.debug("%s: %d live connections — no sole account to fall back to",
-                  provider, len(live))
-    return None
-
-
 async def _alias_candidates(user_id: str) -> list[str]:
     """Other ids this user may be stored under, resolved from the users table.
 
     Deliberately DB-only: the configured USER_n_SUPABASE_UID registry used to be
     consulted here, which pinned token lookups to whoever was named in .env instead of
-    to the account actually connected. Connections are now found by their real owner,
-    with `_sole_live_connection` covering ids the table doesn't know."""
+    to the account actually connected.
+
+    This is now the ONLY way a lookup reaches a row stored under a different id, so it
+    is also the only thing standing between a legitimately-aliased user and a spurious
+    "not connected". An id the users table cannot resolve is a miss, by design — the
+    former catch-all is what leaked one account's mail to everybody."""
     out: list[str] = []
     try:
         from backend.db.base import SessionLocal
@@ -386,14 +364,13 @@ async def which_provider(user_id: str) -> str | None:
     return None
 
 
-async def connected_providers(user_id: str, *, live_fallback: bool = True) -> list[str]:
-    """All providers this user has a stored connection for.
+async def connected_providers(user_id: str) -> list[str]:
+    """All providers THIS identity has a stored connection for.
 
-    Pass live_fallback=False to ask strictly about THIS identity — otherwise a user with
-    no connection of their own inherits the sole live one, and the connect route would
-    refuse to link them an account of their own."""
-    return [p for p in PROVIDERS
-            if await _fetch_connection(user_id, p, live_fallback=live_fallback)]
+    Always strict. This used to take live_fallback, and the connect route had to pass
+    False explicitly or a user with no connection would appear already-linked and be
+    refused an account of their own."""
+    return [p for p in PROVIDERS if await _fetch_connection(user_id, p)]
 
 
 # ── Back-compat wrappers (Google-only call sites) ──────────────────────────────

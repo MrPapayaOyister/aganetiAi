@@ -51,7 +51,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 import httpx
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
+from fastapi.responses import JSONResponse
+
+from backend.auth import tenant
 
 log = logging.getLogger("aria.observability")
 
@@ -792,18 +795,37 @@ async def activity(limit: int = Query(100, ge=1, le=500)) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/sessions")
-async def sessions(limit: int = Query(25, ge=1, le=200)) -> dict:
-    """§8 — conversations available to trace."""
+async def sessions(request: Request, limit: int = Query(25, ge=1, le=200)) -> dict:
+    """§8 — conversations available to trace, scoped to the caller.
+
+    SECURITY (audit S3): this endpoint was authenticated but not AUTHORIZED. It
+    grouped over the whole `chat_messages` table with no predicate, so any logged-in
+    user could enumerate every other user's session ids — and then read their
+    content via /trace/{session_id}. That is horizontal privilege escalation.
+
+    The scope is now explicit and enforced in SQL, not in the response shape:
+      * an employee/manager sees ONLY their own sessions;
+      * an admin sees their own tenant's sessions and no others.
+    There is no unscoped branch, so a future caller cannot opt out of the filter.
+    """
+    ctx = await tenant.require(request)
     try:
         from sqlalchemy import text
         from backend.db.base import engine
+        if ctx.is_admin:
+            where = "WHERE org_id = :tenant"
+            params = {"lim": limit, "tenant": str(ctx.tenant_id)}
+        else:
+            where = "WHERE user_id = :uid AND org_id = :tenant"
+            params = {"lim": limit, "uid": str(ctx.user_id), "tenant": str(ctx.tenant_id)}
         async with engine.connect() as c:
             rows = (await c.execute(text(
                 "SELECT session_id, user_id, max(created_at) AS last_at, count(*) AS messages "
-                "FROM chat_messages GROUP BY session_id, user_id "
-                "ORDER BY last_at DESC LIMIT :lim"), {"lim": limit})).fetchall()
+                f"FROM chat_messages {where} GROUP BY session_id, user_id "
+                "ORDER BY last_at DESC LIMIT :lim"), params)).fetchall()
         return {"generated_at": _now_iso(),
-                "sessions": [{"session_id": r[0], "user_id": r[1],
+                "scope": "tenant" if ctx.is_admin else "self",
+                "sessions": [{"session_id": str(r[0]), "user_id": str(r[1]),
                               "last_at": r[2].isoformat() if r[2] else None,
                               "messages": r[3]} for r in rows]}
     except Exception as e:  # noqa: BLE001
@@ -812,27 +834,46 @@ async def sessions(limit: int = Query(25, ge=1, le=200)) -> dict:
 
 
 @router.get("/trace/{session_id}")
-async def trace(session_id: str) -> dict:
-    """§8 — the execution pipeline for one conversation.
+async def trace(request: Request, session_id: str) -> dict:
+    """§8 — the execution pipeline for one conversation, scoped to the caller.
 
-    IMPORTANT, and stated rather than hidden: per-stage latency is NOT persisted
-    per conversation. The chat path logs its stage timings but does not store
-    them against a session id, and recording them would be a backend change this
-    phase forbids. So each stage reports whether it is *observable* for this
-    session, and the timings come from a live probe of the same pipeline — they
-    are representative of the pipeline, not a replay of that specific turn.
+    SECURITY (audit S3): the message query was `WHERE session_id = :s` with no
+    ownership predicate, so any authenticated caller who knew (or enumerated, via
+    /sessions) a session id could read that conversation's content.
+
+    The ownership predicate is now part of the SAME query rather than a check
+    around it — there is no window in which the rows are loaded and then filtered,
+    and no code path that forgets. A session belonging to someone else is
+    indistinguishable from one that does not exist (404), so this cannot be used
+    as an existence oracle either.
     """
+    ctx = await tenant.require(request)
     stages = ["User", "Planner", "Memory", "Qdrant", "Neo4j", "Calendar",
               "Fusion", "Prompt", "LiteLLM", "Final Answer"]
     messages: list[dict] = []
     try:
+        import uuid as _uuid
+        try:
+            skey = str(_uuid.UUID(str(session_id)))
+        except (ValueError, TypeError):
+            return JSONResponse(status_code=404, content={"error": "not found"})
         from sqlalchemy import text
         from backend.db.base import engine
+        if ctx.is_admin:
+            own = "AND org_id = :tenant"
+            params = {"s": skey, "tenant": str(ctx.tenant_id)}
+        else:
+            own = "AND user_id = :uid AND org_id = :tenant"
+            params = {"s": skey, "uid": str(ctx.user_id), "tenant": str(ctx.tenant_id)}
         async with engine.connect() as c:
             rows = (await c.execute(text(
                 "SELECT role, left(content, 400) AS content, created_at FROM chat_messages "
-                "WHERE session_id = :s ORDER BY created_at LIMIT 50"),
-                {"s": session_id})).fetchall()
+                f"WHERE session_id = :s {own} ORDER BY created_at LIMIT 50"),
+                params)).fetchall()
+        if not rows:
+            # Either it does not exist or it is not the caller's. Same answer for
+            # both — do not leak which.
+            return JSONResponse(status_code=404, content={"error": "not found"})
         messages = [{"role": r[0], "content": r[1],
                      "at": r[2].isoformat() if r[2] else None} for r in rows]
     except Exception as e:  # noqa: BLE001

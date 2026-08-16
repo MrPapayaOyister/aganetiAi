@@ -56,11 +56,11 @@ def known_identities(s) -> list[str]:
         if u.supabase_uid:
             ids.add(str(u.supabase_uid))
         ids.add(str(u.id))
-    try:
-        from config.users import USERS
-        ids.update(USERS.keys())          # legacy aliases: user_1, user_2
-    except Exception:
-        pass
+    # Legacy aliases, inlined deliberately. Files written before identity was
+    # unified on the Supabase sub were named with these, and this backfill has to
+    # keep recognising them. They are historical facts about filenames on disk, not
+    # configuration — the registry that once defined them (config/users.py) is gone.
+    ids.update({"user_1", "user_2"})
     # _safe() rewrites non-alphanumerics, so match against the safe form too.
     import re
     safe = {re.sub(r"[^A-Za-z0-9_.-]", "_", i)[:80] for i in ids}

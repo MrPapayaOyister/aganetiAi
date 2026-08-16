@@ -21,10 +21,7 @@ from weasyprint import HTML
 from backend.services import llm as _llm
 from reports.pdf_generator import get_user_report_style
 
-try:
-    from config.users import USERS
-except Exception:
-    USERS = {}
+from backend.services import user_directory
 
 # doc_type -> (label, structural guidance handed to the model)
 DOC_TEMPLATES = {
@@ -90,8 +87,7 @@ def _assemble_context(user_id: str, includes: list[str], topic: str) -> str:
     if "agents" in inc or "delegations" in inc:
         try:
             from integrations.agent_inbox import get_pending_messages
-            from config.users import USERS as _U
-            agent_id = _U.get(user_id, {}).get("agent_id")
+            agent_id = (user_directory.snapshot().get(user_id) or {}).get("agent_id")
             if agent_id:
                 msgs = get_pending_messages(agent_id)
                 if msgs:
@@ -209,7 +205,9 @@ def draft_document(user_id: str, doc_type: str, topic: str,
     template = env.get_template("document_base.html")
 
     doc_title = title or (topic[:80] if topic else label)
-    user_name = USERS.get(user_id, {}).get("name", "User")
+    # Sync context: reads the cached directory and degrades to the id
+    # rather than blocking a PDF render on a query.
+    user_name = user_directory.name_for(user_id)
 
     html_content = template.render(
         doc_title=doc_title,

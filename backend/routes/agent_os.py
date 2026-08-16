@@ -62,12 +62,16 @@ async def _load_primary(user_id: str) -> tuple[dict, str]:
                 ag = await repo.get_primary_agent(s, user.id)
                 if ag:
                     perms = await repo.allowed_tools(s, ag.id)
-                    known = set(registry.all_names())
+                    known = set(registry.all_names()) | registry.all_permissions()
                     # An empty list is a DELIBERATE lockdown (user revoked all tools) —
                     # honor it verbatim; never re-inject the default toolset for an
                     # agent that exists (the no-agent fallback is the outer path).
+                    # Grants may be tool NAMES or permission strings; the boundary
+                    # (orchestrator/authz.grant_matches) understands both, so the
+                    # filter must not drop the latter.
                     tools = [t for t in perms if t in known]
                     agent = {"id": "primary", "tools": tools,
+                             "tenant_id": str(user.org_id) if user.org_id else "",
                              "model_key": ag.model_key, "fallback_models": ag.fallback_models or []}
                     prompt = ag.system_prompt or PRIMARY_PROMPT
                     if ag.persona:
@@ -75,6 +79,9 @@ async def _load_primary(user_id: str) -> tuple[dict, str]:
                     return agent, prompt
     except Exception:  # noqa: BLE001
         log.exception("DB primary-agent load failed for %s; using template", user_id)
+    # No DB agent: the in-code template, and NO tenant. The boundary refuses tool
+    # calls without one under AUTHZ_STRICT_TENANT, which is the correct outcome —
+    # a caller we cannot place in a tenant must not drive tools.
     return dict(DEFAULT_PRIMARY), PRIMARY_PROMPT
 
 
@@ -95,7 +102,10 @@ def _strip_images(messages: list) -> list:
 async def _sse(user_id: str, message: str, session_id: str, images: list | None = None):
     from backend.orchestrator import conversation as convo
     agent, prompt = await _load_primary(user_id)
-    history = convo.load(user_id, session_id)  # short-term memory of this thread
+    # mark_stale: the same treatment /chat gets. Both chat paths or neither —
+    # a fix that applied to one would leave :8000 answering mail questions
+    # from the transcript. See backend/chat/stale.py.
+    history = convo.load(user_id, session_id, mark_stale=True)
     # Long-term memory: facts recalled ACROSS threads. Time-boxed and fail-soft —
     # an empty string when unavailable, so a turn never waits on it.
     try:
@@ -109,7 +119,8 @@ async def _sse(user_id: str, message: str, session_id: str, images: list | None 
     try:
         async for ev in graph.astream_turn(user_id=user_id, agent=agent,
                                             user_message=message, session_id=session_id,
-                                            system_prompt=prompt, history=history, images=images):
+                                            system_prompt=prompt, history=history, images=images,
+                                            tenant_id=agent.get("tenant_id", "")):
             if ev["type"] == "final":
                 final = ev
                 continue
@@ -404,8 +415,12 @@ async def _resume(request: Request, aid: str, approved: bool):
     agent = json.loads(rec["agent"])
     messages = json.loads(rec["messages"])
     approval = json.loads(rec["approval"])
+    # Tenant comes from the OWNER's live user row, not from the persisted blob: an
+    # approval can outlive an org move, and the boundary must judge against the
+    # tenant the resource belongs to now.
     res = await graph.resume(user_id=rec["user_id"], agent=agent, messages=messages,
-                             approval=approval, approved=approved)
+                             approval=approval, approved=approved,
+                             tenant_id=str(ou.org_id) if ou.org_id else "")
     await store.set_result(aid, res.get("final") or "")
     if res["status"] == "awaiting_approval":
         new_aid = await store.create_approval(rec["user_id"], agent, res["messages"], res["approval"])
@@ -546,7 +561,7 @@ async def create_agent(request: Request):
             ag = await repo.create_agent(s, org_id=user.org_id, user_id=user.id, kind=kind, name=name,
                                          system_prompt=prompt, template_key=tkey,
                                          model_key=body.get("model_key"), config={"tools": tools})
-            known = set(registry.all_names())
+            known = set(registry.all_names()) | registry.all_permissions()
             await repo.set_permissions(s, org_id=user.org_id, agent_id=ag.id,
                                        permissions=[t for t in tools if t in known], granted_by=user.id)
             if kind == "primary":
@@ -593,7 +608,12 @@ async def set_agent_permissions(request: Request, agent_id: str):
         ag = await _get_owned(s, user, agent_id)
         if not ag:
             return JSONResponse({"error": "not found"}, status_code=404)
-        known = set(registry.all_names())
+        # Grants may name a TOOL ("list_emails") or a PERMISSION ("email.read").
+        # The permission form is what makes Tool.required_permission effective:
+        # one grant covers every tool declaring it, and one revocation removes them
+        # all. Unknown strings are still dropped, so a typo silently grants nothing
+        # rather than something.
+        known = set(registry.all_names()) | registry.all_permissions()
         await repo.set_permissions(s, org_id=user.org_id, agent_id=ag.id,
                                    permissions=[t for t in tools if t in known], granted_by=user.id)
         await s.commit()

@@ -223,11 +223,23 @@ export interface ProviderStatus {
   google: ProviderInfo
   microsoft: ProviderInfo
 }
-export const getProviderStatus = (user_id: string) =>
-  http.get<ProviderStatus>('/auth/provider/status', { params: { user_id } })
+// These three are ALWAYS self-scoped now. The backend derives the subject from the
+// bearer token (TenantContext) and ignores any user_id we send — it used to take it
+// from the query string while the routes were anonymous, which meant anyone could
+// read another user's connections or delete their stored OAuth credentials.
+// The parameter is kept in the signatures so existing call sites compile; it is not
+// transmitted, and passing someone else's id has no effect.
+export const getProviderStatus = (_user_id?: string) =>
+  http.get<ProviderStatus>('/auth/provider/status')
 
-export const disconnectProvider = (provider: string, user_id: string) =>
-  http.delete(`/auth/provider/${provider}`, { params: { user_id } })
+export const disconnectProvider = (provider: string, _user_id?: string) =>
+  http.delete(`/auth/provider/${provider}`)
+
+// Step 1 of the connect flow: fetch the consent URL WITH our bearer. The caller
+// then navigates to `authorize_url`. See SettingsPage.handleConnect.
+export const startProviderConnect = (provider: 'google' | 'microsoft', redirect_uri = '/settings') =>
+  http.get<{ authorize_url: string; provider: string }>(
+    `/auth/${provider}/connect`, { params: { redirect_uri } })
 
 // ── Health ────────────────────────────────────────────
 export const getHealth = () => http.get('/health')

@@ -65,7 +65,8 @@ def _frontmatter(text: str) -> dict[str, str]:
 # ── Qdrant ────────────────────────────────────────────────────────────────────
 
 def ingest_qdrant(files: list[Path]) -> dict[str, Any]:
-    from backend.ingest import ORG_OWNER, ensure_collection, get_client, ingest_file
+    from backend.ingest import (ORG_OWNER, SHARED_TENANT, ensure_collection,
+                                get_client, ingest_file)
     from config.settings import RAG_COLLECTION
 
     client = get_client()
@@ -80,7 +81,12 @@ def ingest_qdrant(files: list[Path]) -> dict[str, Any]:
             # source_type "file" matches what the CLI writes, so these chunks are
             # indistinguishable from hand-dropped documents at query time — which
             # is the point: the corpus must not be a privileged special case.
-            chunks += ingest_file(client, path, owner=ORG_OWNER, source_type="file")
+            # org_id=SHARED_TENANT for the same reason the graph half declares it:
+            # this corpus is org-wide. Without it these chunks land with org_id=None
+            # — the exact unstamped state the 966-chunk backfill just cleaned up, so
+            # an un-stamped run here would quietly re-create the problem.
+            chunks += ingest_file(client, path, owner=ORG_OWNER,
+                                  org_id=SHARED_TENANT, source_type="file")
         except Exception as e:  # noqa: BLE001 — one bad file must not lose the batch
             failed.append(f"{path.name}: {type(e).__name__}: {e}")
         if i % 50 == 0:
@@ -97,6 +103,7 @@ def ingest_qdrant(files: list[Path]) -> dict[str, Any]:
 def ingest_graph(files: list[Path], workers: int = 1, timeout: float = 300.0,
                  retries: int = 3, backoff: float = 3.0,
                  progress_every: int = 10) -> dict[str, Any]:
+    from backend.knowledge_graph.builder import SHARED_TENANT
     from backend.knowledge_graph.extractor import KnowledgeExtractor
     from backend.knowledge_graph.pipeline import KnowledgeGraphPipeline
     from backend.knowledge_graph.service import get_graph_service
@@ -117,7 +124,19 @@ def ingest_graph(files: list[Path], workers: int = 1, timeout: float = 300.0,
     # and raising the gateway's would change behaviour for every other consumer of
     # the shared proxy. So this runs sequentially by default and retries the
     # requests that still land on the wrong side of the 30s line.
+    # SHARED, stated rather than defaulted. This script ingests the org-wide
+    # enterprise corpus: documents that belong to no single tenant and are meant to
+    # be readable by all of them. That is the same claim `__shared__` already makes
+    # on the Qdrant side (backend/ingest.py::SHARED_TENANT), and the constant is
+    # imported from the graph builder rather than re-spelled, so a future change to
+    # the sentinel cannot leave this script writing a value nothing matches.
+    #
+    # Passing it explicitly matters even though it is also the builder's default:
+    # the default protects against forgetting, while this records that shared was
+    # CHOSEN. A reader of this script should not have to infer the tenancy of the
+    # corpus from a default three modules away.
     pipelines = [KnowledgeGraphPipeline(source="document",
+                                        tenant_id=SHARED_TENANT,
                                         extractor=KnowledgeExtractor(timeout=timeout))
                  for _ in range(max(1, workers))]
 

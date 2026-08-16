@@ -14,17 +14,27 @@ services:
   whisper_stt:
     image: onerahmet/openai-whisper-asr-webservice:latest
     container_name: whisper_stt
-    ports: ["5003:9000"]
+    # Bound to the TAILSCALE address, not 0.0.0.0. Neither this service nor
+    # piper has any authentication, and Docker's port publishing writes its own
+    # iptables rules that bypass ufw — published on 0.0.0.0 these would be open
+    # transcription/synthesis for anyone on the LAN. On the tailnet they are
+    # reachable only by this account's own devices.
+    ports: ["100.107.179.44:5003:9000"]
     environment:
-      - ASR_MODEL=base.en
+      - ASR_MODEL=small
+      - ASR_DEVICE=cuda
     restart: unless-stopped
 
   piper_tts:
-    image: ghcr.io/rhasspy/piper:latest
+    # NOT ghcr.io/rhasspy/piper — that path returns "denied" (it is not a public
+    # image), and the upstream piper image is a CLI that reads stdin, not an HTTP
+    # server, so `--port` would not have worked either.
+    image: artibex/piper-http:latest
     container_name: piper_tts
-    ports: ["5002:5002"]
+    ports: ["100.107.179.44:5002:5000"]
     volumes: ["./tts_models:/models"]
-    command: --model /models/en_US-lessac-medium.onnx --port 5002
+    environment:
+      - PIPER_MODEL=/models/en_US-lessac-medium.onnx
     restart: unless-stopped
 
   # ── Neo4j graph database for knowledge graph ───────────────

@@ -32,6 +32,8 @@ Adding a column would be a migration this phase does not need.
 """
 from __future__ import annotations
 
+import asyncio
+
 import logging
 import uuid
 from dataclasses import dataclass
@@ -164,10 +166,20 @@ async def store_document(*, data: bytes, filename: str, user_id: str, org_id: st
     try:
         # 2. write, then 3. VERIFY by reading metadata back. A PUT that returned
         #    200 is not proof the object is retrievable.
-        storage.put(key, data, content_type=content_type,
-                    metadata={"document-id": document_id, "filename": title,
-                              "owner": user_id, "scope": scope})
-        meta = storage.head(key)
+        #
+        # OFF THE EVENT LOOP. SeaweedFSStorage.put is a SYNCHRONOUS httpx call
+        # (object_store.py:178) and this is an `async def`, so calling it
+        # directly blocked the whole server for the duration of the upload —
+        # every other request, every SSE stream, every health check. With no
+        # size cap anywhere in the stack that meant one large file could stall
+        # the process for as long as the PUT took, and SigV4 hashes the payload
+        # a second time on top. to_thread keeps the loop free; the storage
+        # client stays synchronous, which is fine because it is now off-loop.
+        await asyncio.to_thread(
+            storage.put, key, data, content_type=content_type,
+            metadata={"document-id": document_id, "filename": title,
+                      "owner": user_id, "scope": scope})
+        meta = await asyncio.to_thread(storage.head, key)
         if meta.size != len(data):
             raise DocumentStorageError(
                 f"verification failed: stored {meta.size} bytes, expected {len(data)}")

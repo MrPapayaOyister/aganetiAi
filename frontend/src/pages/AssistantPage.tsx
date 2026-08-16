@@ -7,12 +7,15 @@ import {
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { type OrbMode } from '../components/OrbAnimation'
+import type { EmbedItem } from '../lib/embedWidget'
 import IntelligenceOrb from '../components/IntelligenceOrb'
 import { ConversationStream, type ChatMessage } from '../components/ConversationStream'
 import { VoiceButton } from '../components/VoiceButton'
+import ToolToggles from '../components/ToolToggles'
 import { ConversationMenu } from '../components/ConversationMenu'
 import { useConversations } from '../hooks/useConversations'
 import { useStream } from '../hooks/useStream'
+import { reduceAgentFrame, type AgentProcessData } from '../lib/agentProcess'
 import { useVoice } from '../hooks/useVoice'
 import { useLiveChat } from '../hooks/useLiveChat'
 import { useInitiatives } from '../hooks/useInitiatives'
@@ -74,6 +77,27 @@ function ActionLabel({ action, payload }: { action: string; payload: Record<stri
   return <span>{fn ? fn() : action.replace(/_/g, ' ')}</span>
 }
 
+/** A file attached to the current conversation, before the turn is sent. */
+interface PendingAttachment {
+  name: string
+  status: 'reading' | 'ready'
+  chars?: number
+  truncated?: boolean
+}
+
+/** An attachment that now belongs to a persisted turn.
+ *
+ *  Server-shaped and deliberately without the extracted text: that can be the
+ *  whole 48 KB budget, it is already in the model's context, and a chip only
+ *  needs a name and a size. See _attachment_chip in backend/main.py. */
+interface AttachmentChip {
+  filename: string
+  ext: string
+  size: number
+  total_chars: number
+  truncated: boolean
+}
+
 export default function AssistantPage() {
   const { userId, ttsEnabled, setTtsEnabled } = useAppContext()
   const { addToast } = useToast()
@@ -92,6 +116,20 @@ export default function AssistantPage() {
   const [thinkingMsg, setThinkingMsg] = useState<string | null>(null)
   const [actionCards, setActionCards] = useState<ActionCard[]>([])
   const [sourcesByMsg, setSourcesByMsg] = useState<Record<string, { source: string }[]>>({})
+  const [embedsByMsg, setEmbedsByMsg] = useState<Record<string, EmbedItem[]>>({})
+  // POC-3 agent execution, keyed like sources/embeds. Only populated when the
+  // turn actually emitted agent frames, which is what keeps the panel off
+  // ordinary conversations.
+  const [agentByMsg, setAgentByMsg] = useState<Record<string, AgentProcessData>>({})
+  /** Files attached to this conversation but not yet sent with a turn. Cleared
+   *  once a message goes out — the backend has them from that point. */
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([])
+  /** Attachments that belong to a persisted turn, keyed exactly like embeds and
+   *  sources. Without this the chips disappear on reload while the document is
+   *  still in the model's context — the conversation would keep answering about
+   *  a file the user can no longer see they attached. */
+  const [attachmentsByMsg, setAttachmentsByMsg] =
+    useState<Record<string, AttachmentChip[]>>({})
   const [errorFlash, setErrorFlash] = useState(false)
   const [networkOpen, setNetworkOpen] = useState(false)
   const convos = useConversations(userId)
@@ -184,29 +222,70 @@ export default function AssistantPage() {
     return () => clearInterval(id)
   }, [live.active, agentField])
 
-  // Load the active conversation's messages on switch: localStorage first,
-  // backend /chat/history as a fallback.
+  // Load the active conversation on switch: paint the localStorage cache
+  // immediately, then reconcile against the server.
+  //
+  // The server is the system of record — it survives a restart, follows the user
+  // to another browser or device, and is the only source that carries a real
+  // message id, which is what per-message extras (artifacts/embeds) key off.
+  // localStorage is a fast-paint cache in front of it, not the truth: it used to
+  // short-circuit the fetch entirely, so a cached browser never saw server state
+  // at all.
+  //
+  // First paint must not wait on the round-trip, hence cache-then-reconcile
+  // rather than a loading state.
   useEffect(() => {
     let cancelled = false
     let local: ChatMessage[] = []
     try { local = JSON.parse(localStorage.getItem(`aria_msgs_${sessionId}`) || '[]') } catch { /* noop */ }
-    if (local.length) { setMessages(local); return }
-    setMessages([])
-    apiFetch(`/api/chat/history?session_id=${encodeURIComponent(sessionId)}&limit=20`)
+    setMessages(local)                       // paint now, from cache
+
+    apiFetch(`/api/chat/history?session_id=${encodeURIComponent(sessionId)}` +
+             `&user_id=${encodeURIComponent(userId)}&limit=20`)
       .then(r => r.json())
       .then(data => {
-        if (!cancelled && Array.isArray(data.messages) && data.messages.length > 0) {
-          setMessages(data.messages.map((m: { role: string; content: string }) => ({
-            id: generateId(),
+        if (cancelled || !Array.isArray(data.messages) || data.messages.length === 0) return
+        // Rehydrate the widgets alongside the text. They are keyed by the SERVER
+        // message id, which is the same key a live turn adopts via onMessageId —
+        // so a reloaded picker and a freshly-streamed one are indistinguishable
+        // to the renderer. Embeds are never in localStorage (HTML would blow its
+        // quota), so this is the only path that brings them back.
+        const restored: Record<string, EmbedItem[]> = {}
+        const restoredAtt: Record<string, AttachmentChip[]> = {}
+        for (const m of data.messages as Array<{
+          id?: string; embeds?: EmbedItem[]; attachments?: AttachmentChip[]
+        }>) {
+          if (m.id && Array.isArray(m.embeds) && m.embeds.length) restored[m.id] = m.embeds
+          if (m.id && Array.isArray(m.attachments) && m.attachments.length) {
+            restoredAtt[m.id] = m.attachments
+          }
+        }
+        if (Object.keys(restored).length) {
+          setEmbedsByMsg(prev => ({ ...restored, ...prev }))  // live turns win
+        }
+        if (Object.keys(restoredAtt).length) {
+          setAttachmentsByMsg(prev => ({ ...restoredAtt, ...prev }))
+        }
+        setMessages(prev => {
+          // A turn started while the fetch was in flight — the live conversation
+          // is ahead of what the server knew, so leave it alone rather than
+          // clobbering the message being streamed.
+          if (prev.length > local.length) return prev
+          return data.messages.map((m: {
+            id?: string; role: string; content: string
+          }) => ({
+            // Prefer the SERVER id. generateId() is only for rows from the older
+            // stores, which have no id and therefore no extras to attach.
+            id: m.id || generateId(),
             role: m.role === 'assistant' ? 'assistant' : 'user',
             content: m.content,
             streaming: false,
-          })))
-        }
+          }))
+        })
       })
-      .catch(() => { /* fresh session */ })
+      .catch(() => { /* offline or fresh session — the cached paint stands */ })
     return () => { cancelled = true }
-  }, [sessionId])
+  }, [sessionId, userId])
 
   // Persist messages for the active conversation (skip while streaming).
   useEffect(() => {
@@ -367,6 +446,8 @@ export default function AssistantPage() {
   }, [voice])
 
   const handleSend = useCallback(async (text: string) => {
+    clearAttachments()
+
     if (!text.trim()) return
     // Allow interrupt while streaming or speaking — abort prior turn first.
     if (streaming) abort()
@@ -412,6 +493,60 @@ export default function AssistantPage() {
       },
       onSources: (srcs) => {
         if (srcs.length) setSourcesByMsg(prev => ({ ...prev, [assistantId]: srcs }))
+      },
+      onEmbeds: (embeds) => {
+        // Append: one turn may chain several widget-producing tool calls.
+        setEmbedsByMsg(prev => ({
+          ...prev, [assistantId]: [...(prev[assistantId] ?? []), ...embeds],
+        }))
+      },
+      onStage: (frame) => {
+        setAgentByMsg(prev => {
+          const next = reduceAgentFrame(prev[assistantId], frame)
+          return next ? { ...prev, [assistantId]: next } : prev
+        })
+      },
+      onArtifact: (frame) => {
+        setAgentByMsg(prev => {
+          const next = reduceAgentFrame(prev[assistantId], frame)
+          return next ? { ...prev, [assistantId]: next } : prev
+        })
+      },
+      onVerified: (frame) => {
+        setAgentByMsg(prev => {
+          const next = reduceAgentFrame(prev[assistantId], frame)
+          return next ? { ...prev, [assistantId]: next } : prev
+        })
+      },
+      onAttachments: (mid, chips) => {
+        // Keyed by the SERVER id, which the rekey block below also converges on.
+        // Arrives before `message`, so writing it here and re-keying there is
+        // safe in either order.
+        setAttachmentsByMsg(prev => ({ ...prev, [mid]: chips }))
+      },
+      onMessageId: (serverId) => {
+        // Adopt the server's id for this turn. The turn was rendered under a
+        // client-generated id (the server had nothing to name it by until it was
+        // persisted), but a reload will bring it back under the server id — so
+        // re-key everything now and the two paths share one key space.
+        // Arrives after the reply text, so nothing downstream still writes to
+        // the old key.
+        if (serverId === assistantId) return
+        setMessages(prev => prev.map(m => (m.id === assistantId ? { ...m, id: serverId } : m)))
+        const rekey = <T,>(prev: Record<string, T>): Record<string, T> => {
+          if (!(assistantId in prev)) return prev
+          const { [assistantId]: moved, ...rest } = prev
+          return { ...rest, [serverId]: moved }
+        }
+        setEmbedsByMsg(rekey)
+        setSourcesByMsg(rekey)
+        setAgentByMsg(rekey)
+        // Attachments key the same way. Omitting this was the whole bug: the
+        // chips stayed under the client-generated id while a reload brought them
+        // back under the server id, so they silently vanished.
+        setAttachmentsByMsg(rekey)
+        setActionCards(prev => prev.map(c =>
+          c.messageId === assistantId ? { ...c, messageId: serverId } : c))
       },
       onError: (msg) => {
         addToast(msg, 'error')
@@ -494,20 +629,52 @@ export default function AssistantPage() {
     }
   }
 
+  /**
+   * Attach a file to THIS conversation.
+   *
+   * What this replaced: a POST to /api/ingest/upload (the permanent knowledge
+   * base, not the conversation), a toast claiming "indexed" while indexing is
+   * asynchronous, and a synthesised chat message reading
+   *   I've uploaded "X" — please acknowledge.
+   * The model received the FILENAME and nothing else, so it acknowledged a
+   * document it had never seen, and the follow-up "what was in that document"
+   * correctly answered that it had no access. Both ends asserted success across
+   * a gap that did not exist in either direction.
+   *
+   * Now: the backend extracts the text, stores it against this session, and
+   * injects it into the next turn's message. Nothing is sent on the user's
+   * behalf — they type their own question. The chip shows what is attached, so
+   * "which happened" is visible rather than described.
+   */
+  // Sending a turn hands the attachments to the backend, which has had them
+  // since /chat/attach returned. Keeping the chips after that would imply they
+  // are still pending.
+  const clearAttachments = () => setAttachments([])
+
   const handleFileAttach = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
+    e.target.value = ''            // reset first: re-picking the same file must re-fire
     if (!file) return
+
+    const pending: PendingAttachment = { name: file.name, status: 'reading' }
+    setAttachments(prev => [...prev, pending])
     try {
       const form = new FormData()
       form.append('file', file)
-      form.append('user_id', userId)
-      await axios.post('/api/ingest/upload', form)
-      addToast(`${file.name} indexed`, 'success')
-      handleSend(`I've uploaded "${file.name}" — please acknowledge.`)
-    } catch {
-      addToast('Upload failed', 'error')
+      form.append('session_id', sessionId)
+      const { data } = await axios.post('/api/chat/attach', form)
+      setAttachments(prev => prev.map(a => a.name === file.name
+        ? { ...a, status: 'ready', chars: data.chars, truncated: data.truncated }
+        : a))
+    } catch (err) {
+      // The backend's reason is written for a person — show it verbatim rather
+      // than a generic "upload failed", which is what sent people looking in the
+      // wrong place last time.
+      const detail = (axios.isAxiosError(err) && err.response?.data?.detail)
+        || 'Could not read that file.'
+      setAttachments(prev => prev.filter(a => a.name !== file.name))
+      addToast(detail, 'error')
     }
-    e.target.value = ''
   }
 
   return (
@@ -681,6 +848,21 @@ export default function AssistantPage() {
                 streaming={streaming}
                 speakingMessageId={voice.isSpeaking ? lastAssistantId : null}
                 sourcesByMsg={sourcesByMsg}
+                // The picker commits by ASKING — the assistant re-validates every
+                // stream before storing it, so selection alone never writes.
+                onAddChannels={(names, kind) => {
+                  if (!names.length) return
+                  // The phrasing carries the library. "channels" routes to the TV
+                  // bulk-add and "stations" to the radio one; a shared wording
+                  // would let a radio pick be saved as a TV channel, where it
+                  // would then fail HLS validation and look like a bad station.
+                  handleSend(kind === 'radio'
+                    ? `Add these radio stations: ${names.join(', ')}`
+                    : `Add these channels: ${names.join(', ')}`)
+                }}
+                embedsByMsg={embedsByMsg}
+                attachmentsByMsg={attachmentsByMsg}
+                agentByMsg={agentByMsg}
                 agentMode={orbMode}
                 onPlay={(t) => voice.speak(t.replace(/[*_`#>[\]()]/g, '').slice(0, 600))}
                 onRegenerate={(id) => regenerate(id)}
@@ -777,6 +959,44 @@ export default function AssistantPage() {
 
       {/* Input bar — premium glass dock at the bottom */}
       <div className="shrink-0 px-3 pt-1.5 pb-3">
+        {/* Attachment tray. Present so "what is attached to this conversation"
+            is visible rather than asserted — the previous version said "indexed"
+            in a toast that vanished, and nothing on screen afterwards showed
+            whether the file had reached the model. */}
+        {attachments.length > 0 && (
+          <div className="max-w-3xl mx-auto mb-1.5 flex flex-wrap gap-1.5" data-testid="attach-tray">
+            {attachments.map(a => (
+              <span
+                key={a.name}
+                data-attachment={a.name}
+                className="inline-flex items-center gap-1.5 rounded-full border
+                           border-white/[0.08] bg-white/[0.04] px-2.5 py-1
+                           text-[11px] text-[#9AA7BD]"
+              >
+                <Paperclip size={10} className="shrink-0 text-[#00D4FF]" />
+                <span className="max-w-[180px] truncate">{a.name}</span>
+                {a.status === 'reading'
+                  ? <span className="text-[#6B7A91]">reading…</span>
+                  : <span className="text-[#34d399]">
+                      {a.chars ? `${a.chars.toLocaleString()} chars` : 'ready'}
+                      {a.truncated ? ' (trimmed)' : ''}
+                    </span>}
+                <button
+                  type="button"
+                  aria-label={`Remove ${a.name}`}
+                  // Measured at a 390px viewport, the glyph alone gave a 7x17px
+                  // hit area — under a sixth of the ~44px minimum a thumb needs.
+                  // The padding buys the target and the negative margin keeps the
+                  // chip the same size it was, so nothing reflows.
+                  className="ml-0.5 -my-1 -mr-1.5 px-1.5 py-1 flex items-center justify-center
+                             min-w-[28px] min-h-[28px] rounded-full
+                             text-[#4A6080] hover:text-[#E6EBF5] hover:bg-white/[0.06]"
+                  onClick={() => setAttachments(prev => prev.filter(x => x.name !== a.name))}
+                >×</button>
+              </span>
+            ))}
+          </div>
+        )}
         <div className="composer-dock rounded-[22px] flex items-center gap-1.5 px-2 py-2 max-w-3xl mx-auto
                         focus-within:shadow-[0_18px_50px_rgba(0,0,0,0.65),0_0_0_1px_rgba(0,212,255,0.25)]
                         transition-shadow"
@@ -794,10 +1014,17 @@ export default function AssistantPage() {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".pdf,.docx,.doc,.txt,.md"
+            // Mirrors backend ACCEPTED (services/attachments.py). A hint only —
+            // the backend re-checks by magic bytes, since accept= is bypassable.
+            accept=".pdf,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.odt,.ods,.odp,.rtf,.txt,.md,.csv,.png,.jpg,.jpeg,.webp"
             onChange={handleFileAttach}
             className="hidden"
           />
+
+          {/* Which tool groups this chat may use. The badge on this button is
+              how a user learns something is off — a disabled tool is absent from
+              the model's payload, so the assistant cannot tell them itself. */}
+          <ToolToggles userId={userId} sessionId={sessionId} />
 
           {/* Textarea */}
           <textarea

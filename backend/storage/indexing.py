@@ -46,6 +46,22 @@ STATUS_PROCESSING = "processing"
 STATUS_INDEXED = "indexed"
 STATUS_FAILED = "failed"
 
+# A document we stored, read, and got NOTHING USABLE out of.
+#
+# This exists because "indexed" used to mean "we tried". A .png, a .mp3, a
+# corrupt PDF, a scan the OCR could not read — every one of them produced zero
+# chunks and was then recorded status="indexed", chunks=0. The dashboard said
+# indexed, the API said indexed, and the document was silently absent from every
+# search. That is the failure shape this codebase keeps re-growing: a success
+# that is not one.
+#
+# Making it a separate STATUS rather than a flag on "indexed" is deliberate.
+# Anything that filters on status now has to decide what to do about this value,
+# instead of inheriting a wrong answer by default — and the retrieval guard in
+# backend/ingest.py can key on the absence of chunks rather than on a reader
+# remembering to add `AND chunks > 0`.
+STATUS_UNREADABLE = "unreadable"
+
 # A document is retried at most this many times before it is left `failed` for a
 # human. Retrying an unparseable file forever burns CPU and hides the problem.
 MAX_ATTEMPTS = 3
@@ -127,6 +143,31 @@ def _safe_error(exc: BaseException) -> str:
 
 # ── the indexing job itself ──────────────────────────────────────────────────
 
+
+def _unreadable_reason(meta: dict) -> str:
+    """A sentence a USER can act on, not a log line.
+
+    "no extractable text" is true of a .mp3, a scanned page the OCR could not
+    read, and a corrupt file, and the three call for different actions — so the
+    reason names which one it is where the extension makes that knowable.
+    """
+    from pathlib import Path as _P
+
+    title = str(meta.get("title") or meta.get("filename") or "")
+    ext = _P(title).suffix.lower()
+    if ext in {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".heic"}:
+        return ("this is an image, and images are not read as documents yet — "
+                "a PDF or Word file will work")
+    if ext in {".mp3", ".wav", ".m4a", ".ogg", ".webm", ".mp4", ".mov"}:
+        return "this is an audio or video file, which cannot be read as a document"
+    if ext == ".pdf":
+        return ("no text could be read from this PDF — it may be a scan the "
+                "reader could not make out, or the file may be damaged")
+    if ext:
+        return f"no text could be read from this {ext.lstrip('.')} file"
+    return "no text could be read from this file"
+
+
 async def index_document(document_id: str, *, force: bool = False) -> dict:
     """Index one document: object → temp file → existing Qdrant pipeline.
 
@@ -194,9 +235,27 @@ async def index_document(document_id: str, *, force: bool = False) -> dict:
 
         chunks = await asyncio.to_thread(_run)
         took = round((time.monotonic() - started) * 1000, 1)
+
+        # ZERO CHUNKS IS NOT SUCCESS. The bytes are safe and the pipeline ran,
+        # but nothing about this document is searchable, and calling that
+        # "indexed" is what made the failure invisible for so long.
+        if not chunks:
+            reason = _unreadable_reason(meta)
+            await _patch_meta(document_id, {
+                "status": STATUS_UNREADABLE, "indexed_at": _iso(), "chunks": 0,
+                "index_duration_ms": took, "extraction": "unreadable",
+                "extraction_reason": reason, "last_error": None,
+                "error_category": None})
+            log.warning("indexing produced no text document_id=%s owner=%s "
+                        "status=unreadable reason=%s duration_ms=%.0f",
+                        document_id, owner, reason, took)
+            return {"document_id": document_id, "status": STATUS_UNREADABLE,
+                    "chunks": 0, "reason": reason, "duration_ms": took}
+
         await _patch_meta(document_id, {
             "status": STATUS_INDEXED, "indexed_at": _iso(), "chunks": chunks,
-            "index_duration_ms": took, "last_error": None, "error_category": None})
+            "index_duration_ms": took, "extraction": "ok",
+            "extraction_reason": None, "last_error": None, "error_category": None})
         log.info("indexing ok document_id=%s owner=%s status=indexed attempt=%d "
                  "chunks=%d duration_ms=%.0f", document_id, owner, attempts + 1,
                  chunks, took)

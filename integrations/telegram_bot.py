@@ -28,7 +28,10 @@ from integrations.contacts import (
 # Resolve project root for settings import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TTS_ENABLED
-from config.users import get_user_by_telegram_id, USERS, get_user_name
+from backend.services import user_directory
+
+import logging
+log = logging.getLogger("aganeti.telegram")
 from integrations.agent_inbox import send_message, get_pending_messages, resolve_message, reject_message
 from tasks.store import find_task_by_title, create_task, get_conn
 from backend.service_auth import internal_headers  # Phase 0: auth for internal API self-calls
@@ -37,18 +40,17 @@ from backend.service_auth import internal_headers  # Phase 0: auth for internal 
 bot = Bot(token=TELEGRAM_BOT_TOKEN) if TELEGRAM_BOT_TOKEN else None
 
 async def send_message_to_user(user_id: str, text: str):
-    """Send a Telegram message to a user by their user_id."""
-    chat_id = None
-    try:
-        from config.users import USERS
-        chat_id = USERS.get(user_id, {}).get("telegram_chat_id")
-    except (ImportError, ModuleNotFoundError):
-        pass
-    
-    if not chat_id:
-        from config.settings import TELEGRAM_CHAT_ID
-        chat_id = TELEGRAM_CHAT_ID
-        
+    """Send a Telegram message to a user by their user_id.
+
+    NO global fallback. This used to drop back to config.settings.TELEGRAM_CHAT_ID
+    when the user had no chat linked, so a message composed for one person — their
+    tasks, their mail, their reminders — was delivered to whichever chat that env
+    var happened to name. Unlinked now means undelivered, which is visible and
+    harmless, rather than delivered to the wrong human.
+    """
+    entry = (await user_directory.get(user_id)) or {}
+    chat_id = entry.get("telegram_chat_id")
+
     if not chat_id:
         print(f"[WARN] No telegram_chat_id for {user_id}, cannot send message")
         return
@@ -72,17 +74,17 @@ UNAUTHORIZED_MSG = (
     "Contact the administrator to get access."
 )
 
-def resolve_user_id(chat_id: int) -> str | None:
+async def resolve_user_id(chat_id: int) -> str | None:
     """
     Identity gate: resolve a registered user_id from a Telegram chat id.
     Returns None for unknown chat ids — callers must block unauthorised users.
     """
-    user = get_user_by_telegram_id(chat_id)
+    user = await user_directory.by_telegram_id(chat_id)
     return user["user_id"] if user else None
 
-def is_authorized(chat_id: int) -> bool:
-    """Backwards-compatible check — now registry-based (any registered user is authorised)."""
-    return resolve_user_id(chat_id) is not None
+async def is_authorized(chat_id: int) -> bool:
+    """Any user who has linked this chat id is authorised; unknown ids are refused."""
+    return await resolve_user_id(chat_id) is not None
 
 @router.message(CommandStart())
 async def command_start_handler(message: Message) -> None:
@@ -90,7 +92,7 @@ async def command_start_handler(message: Message) -> None:
     Handles the /start command.
     Welcomes the user to the Workspace Assistant.
     """
-    user_id = resolve_user_id(message.chat.id)
+    user_id = await resolve_user_id(message.chat.id)
     if user_id is None:
         await message.answer(UNAUTHORIZED_MSG)
         return
@@ -102,7 +104,7 @@ async def tasks_command_handler(message: Message) -> None:
     Handles the /tasks command.
     Fetches the pending tasks summary from the backend and prints tasks with their short IDs.
     """
-    user_id = resolve_user_id(message.chat.id)
+    user_id = await resolve_user_id(message.chat.id)
     if user_id is None:
         await message.answer(UNAUTHORIZED_MSG)
         return
@@ -111,7 +113,7 @@ async def tasks_command_handler(message: Message) -> None:
     url_list = f"http://127.0.0.1:8000/tasks?status=pending&user_id={user_id}"
 
     try:
-        async with httpx.AsyncClient(headers=internal_headers()) as client:
+        async with httpx.AsyncClient(headers=internal_headers(user_id)) as client:
             res_summary = await client.get(url_summary)
             if res_summary.status_code != 200:
                 await message.answer(f"Error: Backend returned status code {res_summary.status_code}.")
@@ -153,7 +155,7 @@ async def addtask_command_handler(message: Message, command: CommandObject) -> N
     Handles the /addtask command.
     Allows creating new tasks directly with optional flags like due:YYYY-MM-DD and priority:high.
     """
-    user_id = resolve_user_id(message.chat.id)
+    user_id = await resolve_user_id(message.chat.id)
     if user_id is None:
         await message.answer(UNAUTHORIZED_MSG)
         return
@@ -194,7 +196,7 @@ async def addtask_command_handler(message: Message, command: CommandObject) -> N
     }
 
     try:
-        async with httpx.AsyncClient(headers=internal_headers()) as client:
+        async with httpx.AsyncClient(headers=internal_headers(user_id)) as client:
             response = await client.post(url, json=payload)
             if response.status_code == 201:
                 await message.answer(f"✅ Task added: **{title}**", parse_mode="Markdown")
@@ -209,7 +211,7 @@ async def done_command_handler(message: Message, command: CommandObject) -> None
     Handles the /done command.
     Marks a task as completed using its short ID cache or full UUID.
     """
-    user_id = resolve_user_id(message.chat.id)
+    user_id = await resolve_user_id(message.chat.id)
     if user_id is None:
         await message.answer(UNAUTHORIZED_MSG)
         return
@@ -228,7 +230,7 @@ async def done_command_handler(message: Message, command: CommandObject) -> None
     payload = {"status": "done"}
 
     try:
-        async with httpx.AsyncClient(headers=internal_headers()) as client:
+        async with httpx.AsyncClient(headers=internal_headers(user_id)) as client:
             response = await client.patch(url, json=payload)
             if response.status_code == 200:
                 await message.answer("✅ Task marked as done!")
@@ -245,7 +247,7 @@ async def telegram_voice_handler(message: Message) -> None:
     Handles voice messages by downloading, transcribing them off-thread,
     and routing the transcript text through the /chat LLM workflow.
     """
-    user_id = resolve_user_id(message.chat.id)
+    user_id = await resolve_user_id(message.chat.id)
     if user_id is None:
         await message.answer(UNAUTHORIZED_MSG)
         return
@@ -284,7 +286,7 @@ async def telegram_voice_handler(message: Message) -> None:
         token_count  = 0
 
         try:
-            async with httpx.AsyncClient(headers=internal_headers()) as client:
+            async with httpx.AsyncClient(headers=internal_headers(user_id)) as client:
                 async with client.stream("POST", url, json=payload, timeout=90.0) as resp:
                     if resp.status_code != 200:
                         collected = f"Error: Backend returned status code {resp.status_code}."
@@ -362,7 +364,7 @@ async def disable_digest_command_handler(message: Message) -> None:
     Handles /disable_digest or /disabledigest.
     Disables the daily scheduled email digest for the current user.
     """
-    user_id = resolve_user_id(message.chat.id)
+    user_id = await resolve_user_id(message.chat.id)
     if user_id is None:
         await message.answer(UNAUTHORIZED_MSG)
         return
@@ -379,7 +381,7 @@ async def enable_digest_command_handler(message: Message) -> None:
     Handles /enable_digest or /enabledigest.
     Enables the daily scheduled email digest for the current user.
     """
-    user_id = resolve_user_id(message.chat.id)
+    user_id = await resolve_user_id(message.chat.id)
     if user_id is None:
         await message.answer(UNAUTHORIZED_MSG)
         return
@@ -396,7 +398,7 @@ async def audio_meeting_handler(message: Message) -> None:
     Handles audio file uploads (not voice notes) as meeting recordings.
     Routes through /meeting/transcribe_path for full meeting-brief extraction.
     """
-    user_id = resolve_user_id(message.chat.id)
+    user_id = await resolve_user_id(message.chat.id)
     if user_id is None:
         await message.answer(UNAUTHORIZED_MSG)
         return
@@ -414,7 +416,7 @@ async def audio_meeting_handler(message: Message) -> None:
         file_info = await bot.get_file(audio.file_id)
         await bot.download_file(file_info.file_path, destination=temp_path)
 
-        async with httpx.AsyncClient(headers=internal_headers()) as client:
+        async with httpx.AsyncClient(headers=internal_headers(user_id)) as client:
             r = await client.post(
                 "http://127.0.0.1:8000/meeting/transcribe_path",
                 json={"user_id": user_id, "path": temp_path,
@@ -442,7 +444,7 @@ async def audio_meeting_handler(message: Message) -> None:
 
 @router.message(F.document | F.photo)
 async def document_message_handler(message: Message):
-    user_id = resolve_user_id(message.chat.id)
+    user_id = await resolve_user_id(message.chat.id)
     if user_id is None:
         await message.answer(UNAUTHORIZED_MSG)
         return
@@ -462,7 +464,7 @@ async def telegram_message_handler(message: Message) -> None:
     shows typing indicator, forwards the prompt to the backend /chat API,
     and returns the LLM response.
     """
-    user_id = resolve_user_id(message.chat.id)
+    user_id = await resolve_user_id(message.chat.id)
     if user_id is None:
         await message.answer(UNAUTHORIZED_MSG)
         return
@@ -547,7 +549,7 @@ async def telegram_message_handler(message: Message) -> None:
 
     # List schedules
     if any(t in msg_lower for t in SCHEDULE_LIST_TRIGGERS):
-        async with httpx.AsyncClient(headers=internal_headers()) as client:
+        async with httpx.AsyncClient(headers=internal_headers(user_id)) as client:
             r = await client.get(f"http://127.0.0.1:8000/schedule/list/{user_id}")
         await message.answer(r.json()["formatted"], parse_mode="Markdown")
         return
@@ -557,7 +559,7 @@ async def telegram_message_handler(message: Message) -> None:
         id_match = re.search(r'\b([a-f0-9]{8})\b', message.text)
         if id_match:
             sched_id = id_match.group(1)
-            async with httpx.AsyncClient(headers=internal_headers()) as client:
+            async with httpx.AsyncClient(headers=internal_headers(user_id)) as client:
                 r = await client.delete(f"http://127.0.0.1:8000/schedule/{user_id}/{sched_id}")
             result = r.json()
             if result["status"] == "deleted":
@@ -571,7 +573,7 @@ async def telegram_message_handler(message: Message) -> None:
     # Create schedule
     if any(t in msg_lower for t in SCHEDULE_CREATE_TRIGGERS):
         status_msg = await message.answer("⏰ Setting up your schedule...")
-        async with httpx.AsyncClient(headers=internal_headers()) as client:
+        async with httpx.AsyncClient(headers=internal_headers(user_id)) as client:
             r = await client.post(
                 "http://127.0.0.1:8000/schedule/create",
                 json={"user_id": user_id, "text": message.text}
@@ -798,12 +800,12 @@ async def telegram_message_handler(message: Message) -> None:
         task_fragment = _delegate_match.group(1).strip()
         target_name   = _delegate_match.group(2).strip().lower()
 
-        # Resolve target user by name
-        target_user_id = None
-        for uid, udata in USERS.items():
-            if target_name in udata.get("name", "").lower() or target_name in uid.lower():
-                target_user_id = uid
-                break
+        # Resolve the target by name against the live directory. find_by_name
+        # refuses when the fragment matches more than one person rather than taking
+        # the first hit — delegation moves a task and its notification to whoever is
+        # chosen, so an arbitrary tie-break hands one person's work to another.
+        _target = await user_directory.find_by_name(target_name)
+        target_user_id = _target["user_id"] if _target else None
 
         if not target_user_id or target_user_id == user_id:
             await message.answer("❓ I couldn't find that user. Try: 'delegate [task] to Akshay'")
@@ -818,8 +820,11 @@ async def telegram_message_handler(message: Message) -> None:
             )
             return
 
-        from_agent = USERS[user_id]["agent_id"]
-        to_agent   = USERS[target_user_id]["agent_id"]
+        from_agent = (user_directory.snapshot().get(user_id) or {}).get("agent_id")
+        to_agent   = (_target or {}).get("agent_id")
+        if not from_agent or not to_agent:
+            await message.answer("❓ Delegation is unavailable for that user right now.")
+            return
 
         send_message(
             from_agent = from_agent,
@@ -831,11 +836,11 @@ async def telegram_message_handler(message: Message) -> None:
                 "priority":  task["priority"],
                 "notes":     task.get("notes", ""),
                 "from_user": user_id,
-                "from_name": get_user_name(user_id)
+                "from_name": user_directory.name_for(user_id)
             }
         )
 
-        target_name_display = get_user_name(target_user_id)
+        target_name_display = user_directory.name_for(target_user_id)
         await message.answer(
             f"📤 Delegation request sent to {target_name_display}.\n"
             f"📋 Task: *{task['title']}*\n"
@@ -862,7 +867,7 @@ async def telegram_message_handler(message: Message) -> None:
     token_count  = 0
 
     try:
-        async with httpx.AsyncClient(headers=internal_headers()) as client:
+        async with httpx.AsyncClient(headers=internal_headers(user_id)) as client:
             async with client.stream("POST", url, json=payload, timeout=90.0) as resp:
                 if resp.status_code != 200:
                     collected = f"Error: Backend returned status code {resp.status_code}."
@@ -914,12 +919,15 @@ async def handle_delegation_callback(callback: CallbackQuery):
     data = callback.data or ""
 
     # ── Identity gate ───────────────────────────────────────────
-    user = get_user_by_telegram_id(callback.message.chat.id)
+    user = await user_directory.by_telegram_id(callback.message.chat.id)
     if not user:
         await callback.answer("⛔ Not authorised.")
         return
     user_id  = user["user_id"]
-    agent_id = USERS[user_id]["agent_id"]
+    agent_id = user.get("agent_id")
+    if not agent_id:
+        await callback.answer("⛔ No agent configured for your account.")
+        return
     # ── End identity gate ───────────────────────────────────────
 
     if data.startswith("delegate_accept:"):
@@ -951,10 +959,15 @@ async def handle_delegation_callback(callback: CallbackQuery):
         resolve_message(msg_id)
 
         # Send acceptance back to sender
-        from_user = payload.get("from_user") or (next(iter(USERS)) if USERS else "")
-        from_agent = USERS.get(from_user, {}).get("agent_id") if from_user else None
+        # The reply goes to whoever actually sent the delegation. This used to fall
+        # back to `next(iter(USERS))` — the first entry in the registry — so a payload
+        # missing from_user addressed the acknowledgement to an arbitrary person.
+        from_user = payload.get("from_user") or ""
+        from_agent = (user_directory.snapshot().get(from_user) or {}).get("agent_id")
         if not from_agent:
-            from_agent = next((u.get("agent_id") for u in USERS.values() if u.get("agent_id")), "")
+            log.warning("delegation reply has no resolvable sender (from_user=%r)", from_user)
+            await callback.answer("Couldn't notify the sender.")
+            return
         send_message(
             from_agent = agent_id,
             to_agent   = from_agent,
@@ -963,7 +976,7 @@ async def handle_delegation_callback(callback: CallbackQuery):
                 "task_id":   payload.get("task_id"),
                 "title":     payload["title"],
                 "from_user": user_id,
-                "from_name": get_user_name(user_id)
+                "from_name": user_directory.name_for(user_id)
             }
         )
 
@@ -991,10 +1004,15 @@ async def handle_delegation_callback(callback: CallbackQuery):
 
         reject_message(msg_id, reason="declined by recipient")
 
-        from_user  = payload.get("from_user") or (next(iter(USERS)) if USERS else "")
-        from_agent = USERS.get(from_user, {}).get("agent_id") if from_user else None
+        # The reply goes to whoever actually sent the delegation. This used to fall
+        # back to `next(iter(USERS))` — the first entry in the registry — so a payload
+        # missing from_user addressed the acknowledgement to an arbitrary person.
+        from_user = payload.get("from_user") or ""
+        from_agent = (user_directory.snapshot().get(from_user) or {}).get("agent_id")
         if not from_agent:
-            from_agent = next((u.get("agent_id") for u in USERS.values() if u.get("agent_id")), "")
+            log.warning("delegation reply has no resolvable sender (from_user=%r)", from_user)
+            await callback.answer("Couldn't notify the sender.")
+            return
         send_message(
             from_agent = agent_id,
             to_agent   = from_agent,
@@ -1004,7 +1022,7 @@ async def handle_delegation_callback(callback: CallbackQuery):
                 "title":     payload["title"],
                 "reason":    "declined by recipient",
                 "from_user": user_id,
-                "from_name": get_user_name(user_id)
+                "from_name": user_directory.name_for(user_id)
             }
         )
 

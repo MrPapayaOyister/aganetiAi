@@ -35,6 +35,13 @@ class GoldenCase:
     expected_qdrant_documents: list[str] = field(default_factory=list)
     expected_context_sources: list[str] = field(default_factory=list)  # provider names
     expected_answer_keywords: list[str] = field(default_factory=list)
+    # Terms the answer must NOT contain. Added in dataset v2 for false-premise
+    # cases: `negative=True` inverts the whole contract ("nothing should
+    # resolve"), which is wrong for a question like "Why did we migrate from
+    # Neo4j to MongoDB?" — Neo4j SHOULD resolve; what must not happen is the
+    # answer affirming a migration that no evidence supports. Those cases carried
+    # that intent only in prose `notes`, so nothing scored it.
+    forbidden_answer_keywords: list[str] = field(default_factory=list)
     expected_provider_order: list[str] = field(default_factory=list)
     expected_corroboration_count: Optional[int] = None
 

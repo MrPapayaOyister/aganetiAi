@@ -1,0 +1,86 @@
+{
+  "_comment": "Golden cases for the eval fixture graph. Seed with: python run_evals.py --seed",
+  "cases": [
+    {
+      "id": "graph-direct-usage",
+      "question": "How does Agentic AI use LiteLLM?",
+      "expected_entities": ["Agentic AI", "LiteLLM"],
+      "expected_graph_nodes": ["Agentic AI", "LiteLLM"],
+      "expected_relationships": ["agentic-ai|USES|litellm"],
+      "expected_context_sources": ["graph"],
+      "expected_answer_keywords": ["LiteLLM", "Agentic AI"],
+      "expected_provider_order": ["graph"],
+      "expected_corroboration_count": 2,
+      "tags": ["graph", "core"],
+      "notes": "Two sources assert this edge, so it must come back corroborated."
+    },
+    {
+      "id": "graph-two-hop-chain",
+      "question": "What does LiteLLM route requests to and where is that hosted?",
+      "expected_entities": ["LiteLLM"],
+      "expected_graph_nodes": ["LiteLLM", "qwen-fast", "vLLM"],
+      "expected_relationships": ["litellm|ROUTES_TO|qwen-fast", "qwen-fast|HOSTED_ON|vllm"],
+      "expected_context_sources": ["graph"],
+      "expected_answer_keywords": ["qwen-fast", "vLLM"],
+      "tags": ["graph", "multi-hop"],
+      "notes": "Requires depth>=2 traversal to reach vLLM."
+    },
+    {
+      "id": "alias-ms-graph",
+      "question": "What does Agentic AI use MS Graph for?",
+      "expected_entities": ["Microsoft Graph", "Agentic AI"],
+      "expected_graph_nodes": ["Microsoft Graph"],
+      "expected_context_sources": ["graph"],
+      "expected_answer_keywords": ["Microsoft Graph"],
+      "tags": ["graph", "alias"],
+      "notes": "Alias resolution: 'MS Graph' must resolve to the Microsoft Graph node."
+    },
+    {
+      "id": "alias-postgres",
+      "question": "Does the platform use Postgres?",
+      "expected_entities": ["PostgreSQL"],
+      "expected_graph_nodes": ["PostgreSQL"],
+      "expected_context_sources": ["graph"],
+      "expected_answer_keywords": ["PostgreSQL"],
+      "tags": ["graph", "alias"],
+      "notes": "Static alias map: Postgres -> PostgreSQL."
+    },
+    {
+      "id": "person-project",
+      "question": "Who works on Agentic AI?",
+      "expected_entities": ["Agentic AI"],
+      "expected_graph_nodes": ["Akshay", "Agentic AI"],
+      "expected_relationships": ["akshay|WORKS_ON|agentic-ai"],
+      "expected_context_sources": ["graph"],
+      "expected_answer_keywords": ["Akshay"],
+      "tags": ["graph", "core"]
+    },
+    {
+      "id": "tasks-only",
+      "question": "What are my pending tasks?",
+      "expected_context_sources": ["tasks"],
+      "expected_provider_order": ["tasks"],
+      "tags": ["providers", "structured"],
+      "notes": "Structured source must reach the final context on its own."
+    },
+    {
+      "id": "negative-unknown-entity",
+      "question": "What does Zorblatt Industries do with the Frobnicator?",
+      "expected_context_sources": [],
+      "tags": ["negative", "graph"],
+      "negative": true,
+      "notes": "Nothing in the graph. Must NOT invent a resolution."
+    },
+    {
+      "id": "mixed-graph-and-docs",
+      "question": "Which technologies does Agentic AI depend on?",
+      "expected_entities": ["Agentic AI"],
+      "expected_graph_nodes": ["Agentic AI", "LiteLLM", "Microsoft Graph", "PostgreSQL"],
+      "expected_context_sources": ["graph"],
+      "expected_answer_keywords": ["LiteLLM"],
+      "expected_corroboration_count": 2,
+      "tags": ["graph", "fusion"],
+      "notes": "Fan-out question; exercises entity collapsing in compression."
+    }
+  ]
+}

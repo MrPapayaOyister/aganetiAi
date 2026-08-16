@@ -89,8 +89,20 @@ class RunTrace:
     graph_relationships: list[str] = field(default_factory=list)   # "a|REL|b"
     graph_hops: dict[str, int] = field(default_factory=dict)
 
+    # Primary identity: the source filename, which is how the golden cases name
+    # documents. The storage UUID is kept alongside rather than instead of it —
+    # a case may legitimately state either, and collapsing to one identity is
+    # what made every Qdrant expectation unscoreable.
     qdrant_documents: list[str] = field(default_factory=list)
+    qdrant_document_ids: list[str] = field(default_factory=list)
     qdrant_scores: list[float] = field(default_factory=list)
+
+    @property
+    def qdrant_identities(self) -> "list[tuple[str, str]]":
+        """(source, document_id) per retrieved chunk, in rank order."""
+        ids = self.qdrant_document_ids
+        return [(s, ids[i] if i < len(ids) else "")
+                for i, s in enumerate(self.qdrant_documents)]
 
     bundle_items: int = 0
     provider_items: dict[str, int] = field(default_factory=dict)
@@ -151,6 +163,7 @@ class RunTrace:
             "graph_nodes": self.graph_nodes,
             "graph_relationships": self.graph_relationships,
             "qdrant_documents": self.qdrant_documents,
+            "qdrant_document_ids": self.qdrant_document_ids,
             "bundle_items": self.bundle_items,
             "provider_items": self.provider_items,
             "counts": {"fused": len(self.fused_items),
@@ -243,8 +256,42 @@ class EvaluationRunner:
         except Exception as e:  # noqa: BLE001
             trace.errors.append(f"graph_retrieval: {e}")
 
+    def _answer_path_providers(self) -> "Optional[list]":
+        """Providers for the ANSWER path, with the graph provider honouring RunnerConfig.
+
+        The runner retrieves the graph twice: `_stage_graph` measures it, and the
+        ContextBuilder's GraphProvider is what actually reaches the prompt. Those
+        were configured independently — `graph_top_k`/`graph_depth` reached only
+        the measurement — so a depth or top-k sweep changed the metrics while the
+        prompt stayed byte-identical, and every end-to-end reading came back
+        "no effect". Substituting the provider here is what makes the harness
+        causally truthful.
+
+        Returns None when nothing needs substituting, so the builder resolves the
+        registry exactly as production does and default runs keep the registry's
+        own provider *by identity*. Only the graph provider is ever replaced, and
+        the shared registry instance is never mutated.
+        """
+        if self.config.providers is not None:
+            return self.config.providers          # explicit override wins, untouched
+
+        from backend.context.providers import registry as provider_registry
+        provs = provider_registry.all_providers()
+        graph = next((p for p in provs if p.name == "graph"), None)
+        if graph is None:
+            return None
+        if (getattr(graph, "top_k", None) == self.config.graph_top_k
+                and getattr(graph, "depth", None) == self.config.graph_depth):
+            return None                            # already identical — change nothing
+
+        from backend.context.providers.graph import GraphProvider
+        replacement = GraphProvider(enabled=graph.enabled,
+                                    top_k=self.config.graph_top_k,
+                                    depth=self.config.graph_depth)
+        return [replacement if p.name == "graph" else p for p in provs]
+
     async def _stage_providers(self, case: GoldenCase, trace: RunTrace) -> ContextBundle:
-        builder = ContextBuilder(providers=self.config.providers)
+        builder = ContextBuilder(providers=self._answer_path_providers())
         t0 = time.perf_counter()
         bundle = await builder.build_context(case.user_id, case.question, case.session_id)
         trace.timing.providers_ms = (time.perf_counter() - t0) * 1000
@@ -256,8 +303,9 @@ class EvaluationRunner:
                 trace.errors.append(f"provider {name}: {stat.error}")
 
         corporate = bundle.get("corporate")
-        trace.qdrant_documents = [
-            (i.metadata.get("document_id") or i.source or "") for i in corporate]
+        trace.qdrant_documents = [(i.source or "") for i in corporate]
+        trace.qdrant_document_ids = [
+            str(i.metadata.get("document_id") or "") for i in corporate]
         trace.qdrant_scores = [i.score for i in corporate if i.score is not None]
         return bundle
 

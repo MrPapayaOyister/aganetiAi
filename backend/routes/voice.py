@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import hmac
 import tempfile
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -30,22 +31,44 @@ from backend.routes.agent_os import DEFAULT_PRIMARY, PRIMARY_PROMPT
 router = APIRouter()
 
 
-def _authed(token: str) -> str | None:
+async def _authed(token: str, declared_user: str = "") -> str | None:
+    """Resolve a voice-socket caller to a user id, or None to refuse.
+
+    WebSocket scopes never reach AuthEnforceMiddleware (it handles `type == "http"`
+    only), so this is the whole authentication check for the voice channel and has
+    to reach the same verdict the middleware would.
+
+    Two accepted callers, mirroring the middleware:
+      * the internal service token, which must NAME the user it acts for — it used
+        to resolve to a hardcoded "user_1", so anyone holding the token got a live
+        microphone onto the seeded admin's assistant;
+      * a Supabase JWT, which resolves to its own subject after the same
+        authorization check every HTTP request gets.
+    """
     if not token:
         return None
     try:
         from backend.service_auth import internal_token
         it = internal_token()
-        if it and token == it:
-            return "user_1"
-    except Exception:
+        if it and hmac.compare_digest(token, it):
+            return declared_user.strip() or None
+    except Exception:  # noqa: BLE001
         pass
     try:
         from backend.auth.jwt_verify import verify_supabase_jwt
-        from config.users import internal_user_for_sub
+        from backend.auth import identity as _identity
         claims = verify_supabase_jwt(token)
-        return internal_user_for_sub(str(claims.get("sub", "")))
-    except Exception:
+        sub = str(claims.get("sub", ""))
+        if not sub:
+            return None
+        # Same gate as HTTP: domain allowlist, disabled accounts, first-login
+        # provisioning. Without it a valid token for a revoked account would still
+        # open a voice session.
+        await _identity.resolve_or_provision(
+            sub, str(claims.get("email", "")),
+            (claims.get("user_metadata") or {}).get("full_name") or claims.get("name"))
+        return sub
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -82,7 +105,8 @@ async def _tts(text: str) -> bytes | None:
 
 @router.websocket("/ws/voice")
 async def voice_ws(ws: WebSocket):
-    user_id = _authed(ws.query_params.get("token", ""))
+    user_id = await _authed(ws.query_params.get("token", ""),
+                            ws.query_params.get("user_id", ""))
     await ws.accept()
     if not user_id:
         await ws.send_json({"type": "error", "message": "unauthorized"})

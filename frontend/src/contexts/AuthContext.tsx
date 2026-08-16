@@ -3,6 +3,7 @@ import {
 } from 'react'
 import type { Session, User } from '@supabase/supabase-js'
 import { supabase, REDIRECT_URL } from '../lib/supabase'
+import { clearUserScopedState, resetIfUserChanged } from '../lib/sessionReset'
 
 // ── LOCAL DEV ONLY: skip the Supabase login screen ──────────────────────────
 // Supabase only redirects OAuth back to origins allow-listed in the project, so
@@ -58,6 +59,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (s?.user) {
       // Use the real Supabase UUID — never derive from email.
       const id = s.user.id
+      // A DIFFERENT user signing in on this browser must not inherit the previous
+      // one's cached preferences, conversations or message bodies. Same user on a
+      // refresh keeps their cache — see resetIfUserChanged.
+      if (resetIfUserChanged(id)) {
+        // eslint-disable-next-line no-console
+        console.info('[auth] different user signed in — cleared cached state')
+      }
       setUserId(id)
       localStorage.setItem('aria_user_id', id)
     }
@@ -187,7 +195,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = async () => {
     await supabase.auth.signOut()
-    localStorage.removeItem('aria_user_id')
+    // Everything user-scoped, not just the id: leaving the caches behind is what
+    // let the next person to use this browser see the previous one's data before
+    // the first server response landed.
+    clearUserScopedState()
     setSession(null)
     setUser(null)
     setUserId('')

@@ -1,9 +1,12 @@
 import { NavLink } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { MessageSquare, BarChart2, LayoutDashboard, FolderOpen, Inbox, Mail, Settings, LogOut, Gauge } from 'lucide-react'
+// Nav icons now travel with their item in lib/navItems.ts; LogOut is the
+// sidebar's own control and stays here.
+import { LogOut } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useRef } from 'react'
 import { useAppContext } from '../App'
+import { SIDEBAR_ITEMS } from '../lib/navItems'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../hooks/useToast'
 import axios from 'axios'
@@ -12,18 +15,6 @@ const HEALTH_COLORS: Record<string, string> = {
   ok: '#00FF88', degraded: '#FFB800', down: '#FF4466',
 }
 
-const links = [
-  { to: '/',          icon: MessageSquare,    label: 'Assistant' },
-  { to: '/analytics', icon: BarChart2,        label: 'Analytics' },
-  // Engineering/admin view. Deliberately a SEPARATE entry from Analytics:
-  // that page stays the business dashboard, this one surfaces failures.
-  { to: '/observability', icon: Gauge,      label: 'Observability' },
-  { to: '/dashboard', icon: LayoutDashboard,  label: 'Dashboard' },
-  { to: '/files',     icon: FolderOpen,       label: 'Files'     },
-  { to: '/inbox',     icon: Inbox,         label: 'Inbox'     },
-  { to: '/drafts',    icon: Mail,          label: 'Drafts'    },
-  { to: '/settings',  icon: Settings,      label: 'Settings'  },
-]
 
 export default function Sidebar() {
   const { userId } = useAppContext()
@@ -74,7 +65,7 @@ export default function Sidebar() {
         </motion.div>
       </div>
 
-      {links.map(({ to, icon: Icon, label }) => {
+      {SIDEBAR_ITEMS.map(({ to, icon: Icon, label }) => {
         const badge = badgeCounts[to] ?? 0
         return (
           <NavLink

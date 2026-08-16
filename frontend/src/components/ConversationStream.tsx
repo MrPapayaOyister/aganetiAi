@@ -2,18 +2,44 @@ import { memo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Copy, Check, RefreshCw, Volume2, FileText } from 'lucide-react'
+import { Copy, Check, RefreshCw, Volume2, FileText, Paperclip } from 'lucide-react'
 import type { ChatMessage } from './MessageBubble'
+import ToolEmbeds from './ToolEmbeds'
+import AgentProcess from './AgentProcess'
+import type { AgentProcessData } from '../lib/agentProcess'
+import type { EmbedItem } from '../lib/embedWidget'
 
 export type { ChatMessage }
 
 export interface Source { source: string }
+
+/** Chip-shaped view of an attachment. Name and size only — never the extracted
+ *  text, which can be the full context budget. */
+export interface AttachmentChipItem {
+  filename: string
+  ext: string
+  size: number
+  total_chars: number
+  truncated: boolean
+}
 
 interface ConversationStreamProps {
   messages: ChatMessage[]
   streaming: boolean
   speakingMessageId?: string | null
   sourcesByMsg?: Record<string, Source[]>
+  /** Tool-produced widgets per message: sandboxed-iframe HTML + optional link. */
+  embedsByMsg?: Record<string, EmbedItem[]>
+  /** Files attached to a turn. Rendered as chips so "what does this
+   *  conversation have" stays answerable after a reload — the text is already
+   *  in the model's context whether or not the UI shows it, and a silent
+   *  attachment is worse than none. */
+  attachmentsByMsg?: Record<string, AttachmentChipItem[]>
+  /** POC-3 agent execution per message: stages, plan, evidence, verdict.
+   *  Absent for ordinary turns, which is what keeps the panel off them. */
+  agentByMsg?: Record<string, AgentProcessData>
+  /** Channel picker commit — sends a follow-up asking to add the selection. */
+  onAddChannels?: (names: string[], kind: string) => void
   renderActionCards?: (messageId: string) => React.ReactNode
   onPlay?: (text: string) => void
   onRegenerate?: (id: string) => void
@@ -38,8 +64,9 @@ interface ConversationStreamProps {
  *   ╰─────────────────────────────────────────────────────────────╯
  */
 function ConversationStreamBase({
-  messages, streaming, speakingMessageId, sourcesByMsg = {},
-  renderActionCards, onPlay, onRegenerate, agentMode = 'idle',
+  messages, streaming, speakingMessageId, sourcesByMsg = {}, embedsByMsg = {},
+  agentByMsg = {}, attachmentsByMsg = {},
+  renderActionCards, onPlay, onRegenerate, agentMode = 'idle', onAddChannels,
 }: ConversationStreamProps) {
   return (
     <div className="conv-surface conv-lane max-w-3xl mx-auto w-full px-4 sm:px-7 py-6 space-y-3">
@@ -51,6 +78,10 @@ function ConversationStreamBase({
             streaming={!!m.streaming && streaming}
             speaking={speakingMessageId === m.id}
             sources={sourcesByMsg[m.id]}
+            embeds={embedsByMsg[m.id]}
+            attachments={attachmentsByMsg[m.id]}
+            agent={agentByMsg[m.id]}
+            onAddChannels={onAddChannels}
             actionCards={renderActionCards?.(m.id)}
             onPlay={onPlay}
             onRegenerate={onRegenerate}
@@ -64,12 +95,17 @@ function ConversationStreamBase({
 }
 
 function ConvTurn({
-  msg, streaming, speaking, sources, actionCards, onPlay, onRegenerate, isFirst, agentMode,
+  msg, streaming, speaking, sources, embeds, attachments, agent, actionCards,
+  onPlay, onRegenerate, isFirst, agentMode, onAddChannels,
 }: {
   msg: ChatMessage
   streaming: boolean
   speaking: boolean
   sources?: Source[]
+  embeds?: EmbedItem[]
+  attachments?: AttachmentChipItem[]
+  agent?: AgentProcessData
+  onAddChannels?: (names: string[], kind: string) => void
   actionCards?: React.ReactNode
   onPlay?: (t: string) => void
   onRegenerate?: (id: string) => void
@@ -148,6 +184,37 @@ function ConvTurn({
           ) : null}
           {streaming && msg.content && (
             <span className="inline-block w-[2px] h-4 bg-[#38DBFF] cursor-blink ml-0.5 align-middle" />
+          )}
+
+          {/* What this turn was given. Rendered from the SERVER's record, so it
+              survives a reload — the extracted text stays in the model's context
+              either way, and a document the assistant can see but the user
+              cannot is the failure this replaces. */}
+          {attachments && attachments.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mt-2" data-testid="attach-chips">
+              {attachments.map((a, i) => (
+                <span key={i}
+                      data-attachment={a.filename}
+                      title={`${a.total_chars.toLocaleString()} characters`
+                             + (a.truncated ? ' (truncated)' : '')}
+                      className="flex items-center gap-1 px-2 py-0.5 rounded-full
+                                 bg-white/[0.04] border border-white/[0.06]
+                                 text-[11px] text-[#9AA7BD] max-w-[220px]">
+                  <Paperclip size={10} className="shrink-0 text-[#00D4FF]" />
+                  <span className="truncate">{a.filename}</span>
+                  {a.truncated && (
+                    <span className="shrink-0 text-[#F0B429]" title="Only part of this file was read">·</span>
+                  )}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* Tool widgets (YouTube player, …) — sandboxed iframes, never markdown */}
+          {agent && <AgentProcess data={agent} />}
+
+          {embeds && embeds.length > 0 && (
+            <ToolEmbeds embeds={embeds} onAddChannels={onAddChannels} />
           )}
 
           {/* Citations */}

@@ -11,6 +11,7 @@ import {
   Plus, Trash2, Loader2, Link2, Link2Off, CheckCircle,
 } from 'lucide-react'
 import {
+  http,
   getSchedules, createSchedule, deleteSchedule, getContacts,
   getProviderStatus, disconnectProvider,
 } from '../api/client'
@@ -216,8 +217,37 @@ function AccountSection() {
     onError: () => addToast('Failed to disconnect', 'error'),
   })
 
-  const handleConnect = (provider: 'google' | 'microsoft') => {
-    window.location.href = `/api/auth/${provider}/connect?user_id=${encodeURIComponent(userId)}&redirect_uri=/settings`
+  // Two steps, because /connect is authenticated now.
+  //
+  // It used to be a bare `window.location.href = .../connect?user_id=<me>`. A
+  // top-level navigation cannot carry the Supabase bearer, which is exactly why
+  // that route was anonymous and took the subject from the query string — and why
+  // an attacker could name someone else there and link their own Google account
+  // into that person's record.
+  //
+  // So: FETCH the consent URL with our token (the axios interceptor attaches it),
+  // then navigate to what the server hands back. The server decides whose account
+  // is being linked from our JWT; `user_id` is no longer sent and would be ignored.
+  // The provider redirect flow itself is unchanged.
+  const handleConnect = async (provider: 'google' | 'microsoft') => {
+    try {
+      const { data } = await http.get(`/auth/${provider}/connect`, {
+        params: { redirect_uri: '/settings' },
+      })
+      if (data?.authorize_url) window.location.href = data.authorize_url
+      else addToast(`Could not start ${provider} sign-in`, 'error')
+    } catch (e: any) {
+      const status = e?.response?.status
+      const body = e?.response?.data
+      if (status === 409 && body?.connected_provider) {
+        const other = body.connected_provider === 'microsoft' ? 'Microsoft 365' : 'Google'
+        addToast(`Disconnect ${other} first — only one account can be linked at a time.`, 'error')
+      } else if (status === 503) {
+        addToast(`${provider} sign-in is not configured on the server`, 'error')
+      } else {
+        addToast(`Could not start ${provider} sign-in`, 'error')
+      }
+    }
   }
 
   // The OAuth callback bounces back here with ?connected= or ?connect_error=.

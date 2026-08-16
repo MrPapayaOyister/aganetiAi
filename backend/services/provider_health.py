@@ -77,7 +77,7 @@ async def check_provider(user_id: str, provider: str, *, deep: bool = False) -> 
     """Health of one user's connection. Returns a dict; never raises."""
     from backend.services import provider_tokens as pt
     try:
-        row = await pt._fetch_connection(user_id, provider, live_fallback=False)
+        row = await pt._fetch_connection(user_id, provider)
     except Exception as e:  # noqa: BLE001
         return {"status": "unknown", "detail": f"store unavailable: {str(e)[:120]}"}
     if not row:

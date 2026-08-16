@@ -21,5 +21,9 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  /* Test files run under `npx tsx` with Node built-ins (node:assert), which
+     the app build has no types for and does not ship. Excluding them keeps
+     `npm run build` a pure app build without adding @types/node. */
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
 }

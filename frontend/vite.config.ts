@@ -7,8 +7,24 @@ export default defineConfig({
    server: {
     host: '0.0.0.0',
     port: 3000,
-    allowedHosts: ['papayaoyster.com', 'www.papayaoyster.com', '100.107.179.44',
-                   'localhost', '127.0.0.1'],
+    // Vite rejects requests whose Host header is not listed here — the defence
+    // against DNS-rebinding, where a hostile page resolves a domain it controls
+    // to 127.0.0.1 and reads this dev server through the victim's browser.
+    //
+    // A leading dot matches the domain AND all its subdomains. That form is
+    // required for quick tunnels: `cloudflared tunnel --url` mints a NEW random
+    // hostname on every run (evaluate-poet-enb-marsh.trycloudflare.com), so an
+    // exact entry would break the next time you start one.
+    //
+    // Extra hosts can be added without editing this file:
+    //   VITE_ALLOWED_HOSTS=.ngrok-free.app,my.host npm run dev
+    allowedHosts: [
+      'papayaoyster.com', 'www.papayaoyster.com', '100.107.179.44',
+      'localhost', '127.0.0.1',
+      '.trycloudflare.com',
+      ...(process.env.VITE_ALLOWED_HOSTS || '')
+        .split(',').map(h => h.trim()).filter(Boolean),
+    ],
     proxy: {
       '/api': {
         // Which backend `npm run dev` talks to. Defaults to the shared LAN

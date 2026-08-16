@@ -31,10 +31,18 @@ class CaseScore:
     # graph
     graph_node_precision: Optional[float] = None
     graph_node_recall: Optional[float] = None
+    graph_node_f1: Optional[float] = None
     graph_rel_precision: Optional[float] = None
     graph_rel_recall: Optional[float] = None
     graph_ndcg: Optional[float] = None
     hop_accuracy: Optional[float] = None
+    # How much of what the graph returned was actually wanted. Recorded even
+    # when the case states no expectation, because the depth experiment needs a
+    # size axis: at GRAPH_RETRIEVAL_DEPTH=2 a single seed reaches 340-450 of the
+    # 522 entities, and at depth 3 roughly 490 — i.e. the whole graph. Recall
+    # alone cannot tell "found the right thing" from "returned everything".
+    context_nodes: int = 0
+    graph_noise_ratio: Optional[float] = None
 
     # qdrant
     qdrant_precision_at_k: Optional[float] = None
@@ -61,6 +69,9 @@ class CaseScore:
     answer_keyword_coverage: Optional[float] = None
     groundedness: Optional[float] = None
     citation_coverage: float = 0.0
+    # True when a false-premise case was NOT affirmed; None when the case
+    # declares no forbidden keywords, so it never dilutes unrelated cases.
+    negative_premise_ok: "bool | None" = None
 
     latency_ms: float = 0.0
     errors: list[str] = field(default_factory=list)
@@ -71,9 +82,17 @@ class CaseScore:
         """Unweighted mean of every metric that this case could score.
 
         Unweighted on purpose: a weighted headline invites tuning the weights
-        instead of the system. Per-family numbers are what you act on."""
+        instead of the system. Per-family numbers are what you act on.
+
+        `graph_node_f1` rather than `graph_node_recall` (changed for the v3
+        benchmark). Averaging recall while ignoring precision makes "retrieve
+        more" a free win: at depth 2 one seed already reaches 65-86% of the
+        graph and at depth 3 about 94%, so a pure-recall headline would rank
+        depth 3 best on every graph case while the answer got worse. F1 makes
+        the depth experiment pay for the context it drags in. Entities already
+        used F1; graph now matches."""
         vals = [v for v in (
-            self.entity_f1, self.graph_node_recall, self.graph_rel_recall,
+            self.entity_f1, self.graph_node_f1, self.graph_rel_recall,
             self.qdrant_recall_at_k, self.source_recall,
             self.corroboration_accuracy, self.provider_order_correlation,
             self.answer_keyword_coverage, self.groundedness,
@@ -107,9 +126,16 @@ def score_case(case: GoldenCase, trace: RunTrace, *, k: int = 5) -> CaseScore:
             s.failures.append(f"entities not resolved: {sorted(missing)}")
 
     # ── graph ──
+    s.context_nodes = len(trace.graph_nodes or [])
     if case.expected_graph_nodes:
         p = M.prf(trace.graph_nodes, case.expected_graph_nodes)
-        s.graph_node_precision, s.graph_node_recall = p.precision, p.recall
+        s.graph_node_precision, s.graph_node_recall, s.graph_node_f1 = (
+            p.precision, p.recall, p.f1)
+        # Fraction of returned graph context that no expectation asked for. This
+        # is the context-explosion signal: it RISES as depth grows even while
+        # recall stays flat, which is exactly the trade a depth experiment has to
+        # see. 1 - precision, named for what it measures.
+        s.graph_noise_ratio = round(1.0 - p.precision, 4)
         # Graded relevance: expected nodes are 1, everything else 0 — so nDCG
         # rewards putting the expected ones FIRST, not merely retrieving them.
         s.graph_ndcg = M.ndcg(trace.graph_nodes,
@@ -134,14 +160,22 @@ def score_case(case: GoldenCase, trace: RunTrace, *, k: int = 5) -> CaseScore:
 
     # ── qdrant ──
     if case.expected_qdrant_documents:
+        # A retrieved chunk has two identities (source filename, storage UUID)
+        # and a case may name either. Resolve each hit to the identity the case
+        # uses BEFORE measuring, so the metrics compare like with like instead
+        # of scoring an identifier convention. Exact matching only.
+        ranked = M.resolve_document_identity(
+            getattr(trace, "qdrant_identities", None)
+            or [(d, "") for d in trace.qdrant_documents],
+            case.expected_qdrant_documents)
         s.qdrant_precision_at_k = round(
-            M.precision_at_k(trace.qdrant_documents, case.expected_qdrant_documents, k), 4)
+            M.precision_at_k(ranked, case.expected_qdrant_documents, k), 4)
         s.qdrant_recall_at_k = round(
-            M.recall_at_k(trace.qdrant_documents, case.expected_qdrant_documents, k), 4)
-        s.qdrant_mrr = round(M.mrr(trace.qdrant_documents, case.expected_qdrant_documents), 4)
+            M.recall_at_k(ranked, case.expected_qdrant_documents, k), 4)
+        s.qdrant_mrr = round(M.mrr(ranked, case.expected_qdrant_documents), 4)
         if s.qdrant_recall_at_k == 0.0:
             s.failures.append(
-                f"no expected document retrieved (got {trace.qdrant_documents[:3]})")
+                f"no expected document retrieved (got {ranked[:3]})")
 
     # ── fusion ──
     if case.expected_context_sources:
@@ -193,6 +227,19 @@ def score_case(case: GoldenCase, trace: RunTrace, *, k: int = 5) -> CaseScore:
                 f"{case.expected_answer_keywords}")
     if trace.answer:
         s.groundedness = round(M.groundedness(trace.answer, trace.context_texts), 4)
+
+    # ── false-premise guard ──────────────────────────────────────────────────
+    # Distinct from `negative`, which asserts nothing should resolve. Here the
+    # entities are real and MUST resolve; the failure mode is an answer that
+    # affirms an unsupported relationship. Only checked when an answer exists,
+    # so retrieval-only runs are unaffected.
+    if case.forbidden_answer_keywords and trace.answer:
+        low = trace.answer.lower()
+        affirmed = [k for k in case.forbidden_answer_keywords if k.lower() in low]
+        s.negative_premise_ok = not affirmed
+        if affirmed:
+            s.failures.append(
+                f"answer affirmed an unsupported premise: {affirmed}")
 
     # ── negative cases invert the contract ──
     if case.negative:

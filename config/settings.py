@@ -121,6 +121,32 @@ EMBED_DIM         = int(os.getenv("EMBED_DIM", "384"))
 # The legacy action-tag parser is retained as a fallback.
 NATIVE_TOOLS = os.getenv("NATIVE_TOOLS", "true").lower() == "true"
 
+# Load the sentence-embedding model at import time. Measured cost: ~0.23 GB RSS.
+# On a unified-memory host (CPU and GPU share one pool) that headroom is scarce,
+# and a dev instance running beside production never touches RAG — so dev turns
+# this off. Defaults to on so production behaviour is unchanged.
+LOAD_EMBED_MODEL = os.getenv("LOAD_EMBED_MODEL", "true").lower() == "true"
+
+# How long a rendered widget (chat_artifacts kind="embed") is kept before the
+# nightly prune soft-deletes it. Only embeds: charts/tables/PDFs are work
+# product and are never pruned by this. 0 disables the job entirely.
+EMBED_RETENTION_DAYS = int(os.getenv("EMBED_RETENTION_DAYS", "90"))
+
+# The browser-facing origin this app is served from. Embeds run in a srcdoc
+# iframe with an OPAQUE origin and no base URL, so any asset they load (the
+# vendored hls.js) must be referenced absolutely — a relative path cannot
+# resolve there. FRONTEND_URL is what scripts/dev_backend.sh already exports.
+APP_PUBLIC_ORIGIN = (os.getenv("APP_PUBLIC_ORIGIN")
+                     or os.getenv("FRONTEND_URL", "http://localhost:3000")).rstrip("/")
+
+# ── Web search: self-hosted SearXNG ──────────────────────────────────────────
+# Only SearXNG touches the public internet, so a user's query never goes to a
+# third-party search API — the same on-prem posture the orchestrator's
+# _web_search skill already assumes. Needs `json` in `search.formats` in the
+# instance's settings.yml (it is on by default in this deployment).
+SEARXNG_URL     = os.getenv("SEARXNG_URL", "http://localhost:5555").rstrip("/")
+SEARXNG_TIMEOUT = float(os.getenv("SEARXNG_TIMEOUT", "15"))
+
 # Background workers (APScheduler jobs + Telegram bot). Set RUN_BACKGROUND=false to
 # serve the HTTP API only — useful for local testing and for a web-dashboard host
 # that shouldn't also poll inboxes or drive the bot.
@@ -131,6 +157,45 @@ RUN_BACKGROUND = os.getenv("RUN_BACKGROUND", "true").lower() == "true"
 # already creates tasks on request, so this is off by default — it doubled chat
 # latency and produced noisy unsolicited prompts.
 PASSIVE_TASK_DETECT = os.getenv("PASSIVE_TASK_DETECT", "false").lower() == "true"
+
+# ── YouTube tools (backend/services/youtube.py) ──────────────────────────────
+# These replace the Valves the tool carried as an Open WebUI plugin; the tool is
+# a normal module here, so its settings are env vars like everything else.
+#
+# YOUTUBE_EMBED_PLAYER off (default) → a thumbnail card linking out to YouTube in
+#                            a new tab. This is the default because inline
+#                            playback does NOT work: the player iframe is nested
+#                            inside our sandboxed embed and inherits its sandbox,
+#                            so youtube.com's script fails with "writeEmbed is not
+#                            defined" and renders black. Verified in-browser; no
+#                            CSP change fixes it, and the fix that would
+#                            (allow-same-origin) is unacceptable for srcdoc — it
+#                            is same-origin with the app. Real inline playback
+#                            needs the embed served from a separate origin.
+#                      on  → the real youtube.com player. Only useful once that
+#                            separate-origin work exists.
+# YOUTUBE_CLICK_TO_PLAY on → thumbnail facade first; the player loads only after
+#                            the user clicks, so no connection to YouTube until
+#                            they opt in. Only applies when EMBED_PLAYER is on.
+YOUTUBE_EMBED_PLAYER    = os.getenv("YOUTUBE_EMBED_PLAYER", "false").lower() == "true"
+YOUTUBE_CLICK_TO_PLAY   = os.getenv("YOUTUBE_CLICK_TO_PLAY", "true").lower() == "true"
+# Privacy-enhanced mode is a separate, stricter host that returns "Video
+# unavailable" for some content that plays fine from youtube.com. Off by default.
+YOUTUBE_NOCOOKIE        = os.getenv("YOUTUBE_NOCOOKIE", "false").lower() == "true"
+# Optional public origin (e.g. https://aria.example.ae) passed to the player as
+# origin= so it validates the embed directly instead of inferring from the
+# referrer. Useful behind a proxy; blank omits the parameter.
+YOUTUBE_SITE_ORIGIN     = os.getenv("YOUTUBE_SITE_ORIGIN", "")
+YOUTUBE_REQUEST_TIMEOUT = int(os.getenv("YOUTUBE_REQUEST_TIMEOUT", "10"))
+
+# ── Weather ──────────────────────────────────────────────────────────────────
+# Fallback city when the user asks for "weather" without naming a place. UNSET by
+# default, and deliberately not derived from anything: APP_TIMEZONE would return
+# the wrong city for a travelling or non-local user, and inferring from system
+# context or IP is exactly what the tool's own parameter description forbids.
+# When set, the card says so visibly, so the assumption is correctable rather
+# than silent. When unset, the assistant asks which city.
+WEATHER_DEFAULT_LOCATION = os.getenv("WEATHER_DEFAULT_LOCATION", "").strip()
 
 # Pre-load heavy local models (Whisper, TTS) at startup in the background so the FIRST
 # voice message doesn't trigger a multi-second download/load that starves the bot.
@@ -210,3 +275,23 @@ REDIS_URL             = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/1")
 REDIS_CONNECT_TIMEOUT = float(os.getenv("REDIS_CONNECT_TIMEOUT", "2.0"))
 REDIS_DEFAULT_TTL     = int(os.getenv("REDIS_DEFAULT_TTL", "300"))
 REDIS_KEY_PREFIX      = os.getenv("REDIS_KEY_PREFIX", "aganeti")
+
+# ── P0 remediation: authorization boundary + runtime migration ────────────────
+# These are read at their point of use (backend/orchestrator/authz.py,
+# backend/runtime_flag.py, backend/guardrails.py) so a value can be changed and the
+# process restarted without touching this module. They are mirrored here as the one
+# place an operator can see the whole switchboard.
+#
+# AUTHZ_STRICT_TENANT — a tool call carrying no tenant_id is DENIED. Default true.
+#   Setting false reinstates the pre-P0 behaviour (tool calls with no isolation
+#   boundary) and is an emergency rollback only.
+AUTHZ_STRICT_TENANT   = os.getenv("AUTHZ_STRICT_TENANT", "true").lower() not in ("0", "false", "no")
+# AGANETI_DENIED_TOOLS — comma-separated kill switch, refused ahead of any grant.
+AGANETI_DENIED_TOOLS  = [t.strip() for t in os.getenv("AGANETI_DENIED_TOOLS", "").split(",") if t.strip()]
+# Runtime migration (see docs/runtime-migration.md). All default to "no traffic on
+# Runtime B", so an unset environment is byte-identical to pre-P0 behaviour.
+RUNTIME_B_ENABLED     = os.getenv("RUNTIME_B_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+RUNTIME_B_PERCENT     = int(os.getenv("RUNTIME_B_PERCENT", "0") or 0)
+RUNTIME_B_USERS       = [u.strip() for u in os.getenv("RUNTIME_B_USERS", "").split(",") if u.strip()]
+RUNTIME_B_SESSIONS    = [s.strip() for s in os.getenv("RUNTIME_B_SESSIONS", "").split(",") if s.strip()]
+RUNTIME_B_DENY_USERS  = [u.strip() for u in os.getenv("RUNTIME_B_DENY_USERS", "").split(",") if u.strip()]

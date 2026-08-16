@@ -63,3 +63,6 @@ neo4j/
 # churn without adding recoverability.
 data_vault/enterprise_corpus/
 reports/
+
+# Dev-backend PID file and attribution journal (scripts/dev_backend.sh).
+run/

@@ -1,0 +1,560 @@
+{
+  "_comment": "Dataset v3 — discriminating cases for the Step 7-12 experiments. v2 (core_retrieval.json + enterprise.json) is FROZEN and untouched; loading cases/ yields the v3 union. Every case here is grounded in a measurement recorded in docs/evaluation/graphrag_dataset_v3_changes.md: resolver similarities come from real fuzzy_candidates() probes, graph paths were verified to have no shorter shortcut, and cited documents were confirmed present in Qdrant. Cases tagged 'expected-fail' are known to fail today and exist to measure an experiment, not to be made green.",
+  "dataset_version": 3,
+  "cases": [
+    {
+      "id": "res-tp-0778-qdrant-typo",
+      "question": "What do we store in the Qdrant Databse?",
+      "expected_entities": ["Qdrant"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:resolver-threshold", "band:0.77-0.80", "typo", "expected-fail", "difficulty:medium"],
+      "notes": "MEASURED: 'Qdrant Databse' -> Qdrant similarity 0.7778, below the 0.82 threshold, so it does not resolve today. A plain transposition typo on a real alias ('Qdrant Vector Database'). Lower bound of the tuning band."
+    },
+    {
+      "id": "res-tp-0788-litellm-proxy-server",
+      "question": "What is the LiteLLM Proxy Server responsible for?",
+      "expected_entities": ["LiteLLM"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:resolver-threshold", "band:0.78-0.80", "expected-fail", "difficulty:medium"],
+      "notes": "MEASURED: 0.7879 -> LiteLLM. 'LiteLLM Proxy' IS a stored alias; appending the natural word 'Server' drops it below threshold. Discriminates whether the threshold tolerates a real alias plus one qualifier."
+    },
+    {
+      "id": "res-tp-0800-k8",
+      "question": "Do we run anything on K8?",
+      "expected_entities": ["Kubernetes"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:resolver-threshold", "band:0.80-0.82", "abbreviation", "expected-fail", "difficulty:difficult"],
+      "notes": "MEASURED: 0.8000 -> Kubernetes. 'K8s' is a stored alias but 'K8' is not. Sits exactly on the 0.80 line, which is the most likely candidate for a lowered threshold — pairs directly with res-tn-0800-db-collision, which must NOT resolve at the same value."
+    },
+    {
+      "id": "res-tp-0815-cctv-analysis",
+      "question": "What does CCTV Analysis do?",
+      "expected_entities": ["CCTV Analytics"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:resolver-threshold", "band:0.80-0.82", "expected-fail", "difficulty:medium"],
+      "notes": "MEASURED: 0.8148 -> CCTV Analytics. One-word inflection of a real project name."
+    },
+    {
+      "id": "res-tp-0818-tailscale-vpn",
+      "question": "How do we use the Tailscale VPN between sites?",
+      "expected_entities": ["Tailscale"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:resolver-threshold", "band:0.80-0.82", "expected-fail", "difficulty:medium"],
+      "notes": "MEASURED: 0.8182 -> Tailscale. The single most informative true positive in the dataset: it misses the 0.82 threshold by 0.0018. Any threshold reduction at all flips this case, so it marks the exact position of the decision boundary."
+    },
+    {
+      "id": "res-tp-0824-graph-database",
+      "question": "Which graph database do we operate in production?",
+      "expected_entities": ["Neo4j"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:resolver-threshold", "band:0.82-0.85", "difficulty:medium"],
+      "notes": "MEASURED: 'graph database' -> Neo4j 0.8235, ABOVE threshold, via the stored alias 'Neo4j Graph Database'. Documents that this phrasing is satisfied lexically, not semantically — the confound described in the v3 change log. Passes today; raising the threshold above 0.83 would break it."
+    },
+    {
+      "id": "res-tp-0833-qdrent",
+      "question": "What is Qdrent used for in the platform?",
+      "expected_entities": ["Qdrant"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:resolver-threshold", "band:0.82-0.85", "typo", "difficulty:medium"],
+      "notes": "MEASURED: 0.8333 -> Qdrant. Passes today. Lower guard rail for raising the threshold."
+    },
+    {
+      "id": "res-tp-0842-whisper-large-v3",
+      "question": "Where do we run the Whisper Large v3 model?",
+      "expected_entities": ["WhisperX Large-v3"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:resolver-threshold", "band:0.82-0.85", "difficulty:medium"],
+      "notes": "MEASURED: 0.8421 -> WhisperX Large-v3. Real product naming drift (Whisper vs WhisperX)."
+    },
+    {
+      "id": "res-tp-0870-ajman-polis",
+      "question": "What work are we doing for Ajman Polis?",
+      "expected_entities": ["Ajman Police"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:resolver-threshold", "band:0.85-0.90", "typo", "difficulty:easy"],
+      "notes": "MEASURED: 0.8696 -> Ajman Police. Transliteration variant of a real client name. Upper guard rail: a threshold above 0.87 loses a legitimate client match."
+    },
+    {
+      "id": "res-tp-0889-litellm-gate",
+      "question": "What does the LiteLLM Gate handle?",
+      "expected_entities": ["LiteLLM"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:resolver-threshold", "band:0.85-0.90", "difficulty:easy"],
+      "notes": "MEASURED: 0.8889 -> LiteLLM. Truncation of the stored alias 'LiteLLM Gateway'. Comfortably above threshold; anchors the top of the band."
+    },
+    {
+      "id": "res-tn-0857-vlm",
+      "question": "What is VLM used for?",
+      "expected_entities": [],
+      "expected_context_sources": ["corporate", "tasks", "calendar"],
+      "negative": true,
+      "tags": ["v3", "exp:resolver-threshold", "band:0.85-0.90", "true-negative", "expected-fail", "difficulty:difficult"],
+      "notes": "MEASURED: 'VLM' -> vLLM 0.8571, ABOVE the 0.82 threshold, so this resolves today and is WRONG. VLM means Vision-Language Model; vLLM is a serving engine. The highest-value case in the resolver family: it is the only measured false positive above threshold, and it caps how low the threshold can go. Fails today by design."
+    },
+    {
+      "id": "res-tn-0800-db-collision",
+      "question": "What is currently stored in the DB?",
+      "expected_entities": [],
+      "expected_context_sources": ["corporate", "tasks", "calendar"],
+      "negative": true,
+      "tags": ["v3", "exp:resolver-threshold", "band:0.80-0.82", "true-negative", "difficulty:difficult"],
+      "notes": "MEASURED: the bare token 'DB' produces top candidate 'Dar Al Ber Society' at similarity 0.8000. Correctly rejected today. This is the counterweight to res-tp-0800-k8: both sit at exactly 0.8000, one must resolve and one must not, so a threshold of 0.80 cannot satisfy both. Proves the boundary is a genuine trade-off rather than a free win."
+    },
+    {
+      "id": "res-tn-0750-graph-microsoft",
+      "question": "What is Graph Microsoft?",
+      "expected_entities": [],
+      "expected_context_sources": ["corporate", "tasks", "calendar"],
+      "negative": true,
+      "tags": ["v3", "exp:resolver-threshold", "band:0.72-0.78", "true-negative", "difficulty:medium"],
+      "notes": "MEASURED: 0.7500 -> 'Microsoft'. Word-order scramble of a real entity. Mid-band negative: a threshold drop to 0.75 would admit it."
+    },
+    {
+      "id": "res-tn-0696-vllm-engine",
+      "question": "Who maintains the vLLM Engine role?",
+      "expected_entities": [],
+      "expected_context_sources": ["corporate", "tasks", "calendar"],
+      "negative": true,
+      "tags": ["v3", "exp:resolver-threshold", "band:0.60-0.72", "true-negative", "difficulty:difficult"],
+      "notes": "MEASURED: top candidate is 'NLP Engineer' at 0.6957 — the full-text index matched on 'Engine'/'Engineer', not on vLLM at all. Documents that candidate generation can be actively misleading well below threshold, which is why the floor cannot simply be lowered to gain recall."
+    },
+
+    {
+      "id": "poll-docker-compose",
+      "question": "Do we use docker compose anywhere?",
+      "expected_entities": ["Docker"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:doc-pollution", "exp:resolver-threshold", "band:0.80-0.82", "expected-fail", "difficulty:difficult"],
+      "notes": "MEASURED: 'docker compose' returns the PURE Document node 'docker-compose.yml' as top candidate at 0.8125, ahead of the real Docker entity. The two experiments interact here: lowering the resolver threshold to 0.80 to win res-tp-0800-k8 would simultaneously start resolving a document as an entity. This is the single case that proves pollution and threshold cannot be tuned independently."
+    },
+    {
+      "id": "poll-compliance-matrix",
+      "question": "What compliance matrix do we maintain?",
+      "expected_entities": [],
+      "expected_context_sources": ["corporate", "tasks", "calendar"],
+      "negative": true,
+      "tags": ["v3", "exp:doc-pollution", "true-negative", "difficulty:difficult"],
+      "notes": "MEASURED: all 5 of 5 fuzzy candidates are :Document nodes (top 'Hermes Gateway — Compliance Matrix' 0.6667). No real entity is named 'compliance matrix', so the correct behaviour is no resolution — but a document must not be promoted into one either. Total-crowding case."
+    },
+    {
+      "id": "poll-environment-matrix",
+      "question": "Where is the environment matrix defined?",
+      "expected_entities": [],
+      "expected_context_sources": ["corporate", "tasks", "calendar"],
+      "negative": true,
+      "tags": ["v3", "exp:doc-pollution", "true-negative", "difficulty:difficult"],
+      "notes": "MEASURED: 5 of 5 candidates are :Document nodes, top 'Agentic AI — Environment Matrix' at 0.7347. Second total-crowding case at a HIGHER similarity than poll-compliance-matrix, so the two together show whether a pollution fix is similarity-sensitive or structural."
+    },
+    {
+      "id": "poll-architecture-overview",
+      "question": "Is there an architecture overview for the platform?",
+      "expected_entities": [],
+      "expected_context_sources": ["corporate", "tasks", "calendar"],
+      "negative": true,
+      "tags": ["v3", "exp:doc-pollution", "true-negative", "difficulty:medium"],
+      "notes": "MEASURED: 4 of 5 candidates are :Document nodes, top 'Agentic AI — Architecture Overview' at 0.7636 — the closest any document comes to the threshold on a generic phrase. The answer should come from retrieved documents, not from resolving one as an entity."
+    },
+    {
+      "id": "poll-hybrid-ajman-police",
+      "question": "What is Ajman Police to us?",
+      "expected_entities": ["Ajman Police"],
+      "expected_graph_nodes": ["ajman-police"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:doc-pollution", "hybrid-node", "difficulty:medium"],
+      "notes": "STRUCTURAL, not similarity-based: 'ajman-police' is one of 7 nodes carrying BOTH :Document and real entity labels (User, Project, Document, Organization, Company, Location, Service — 8 labels). Resolution is correct today, so any pollution fix that simply excludes :Document from candidate generation would BREAK this case. Guards against the obvious wrong fix."
+    },
+    {
+      "id": "poll-gateway-terse",
+      "question": "gateway",
+      "expected_entities": ["Hermes Gateway"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:doc-pollution", "terse", "expected-fail", "difficulty:difficult"],
+      "notes": "MEASURED: top candidate 'Hermes Gateway' at only 0.6667 with 2 of 5 slots taken by :Document nodes. A one-word mention with no sentence context — the weakest possible signal. Generalises the single v2 detector (syn-gateway) into an explicit terse-mention pollution case."
+    },
+
+    {
+      "id": "sem-embedding-model",
+      "question": "Which model turns our text into vectors?",
+      "expected_entities": ["BGE-small-en-v1.5"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:semantic-resolution", "requires:semantic-resolution", "expected-fail", "difficulty:difficult"],
+      "notes": "MEASURED: 'BGE small' -> BGE-small-en-v1.5 only 0.7619, and the conceptual phrasing here shares no substring with the entity at all. Unlike the v2 syn-* cases there is no long-form alias to match lexically, so this is a genuine conceptual-paraphrase case that no threshold change can satisfy."
+    },
+    {
+      "id": "sem-speech-to-text",
+      "question": "What do we use to transcribe audio recordings?",
+      "expected_entities": ["WhisperX Large-v3"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:semantic-resolution", "requires:semantic-resolution", "expected-fail", "difficulty:difficult"],
+      "notes": "MEASURED: 'speech to text' -> top candidate 'Tom Baker' at 0.3478, i.e. the lexical path is not merely weak but nonsensical. Clean conceptual-paraphrase case with zero lexical overlap."
+    },
+    {
+      "id": "sem-object-storage",
+      "question": "Where do uploaded files physically end up?",
+      "expected_entities": ["MinIO"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:semantic-resolution", "requires:semantic-resolution", "expected-fail", "difficulty:difficult"],
+      "notes": "MEASURED: 'object storage' returns NO candidates at all and 'MinIO storage' only reaches 0.5556. Distinct failure mode from the others: empty candidate set rather than a wrong one, so it separates 'retrieve better candidates' from 'rank candidates better'."
+    },
+    {
+      "id": "mext-generic-noun-suppressed",
+      "question": "What relational database do we use for application state?",
+      "expected_entities": ["PostgreSQL"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:mention-extraction", "requires:semantic-resolution", "expected-fail", "difficulty:difficult"],
+      "notes": "MEASURED: the mention extractor returns [] for this phrasing. The resolver prompt explicitly instructs 'Do NOT include ... generic nouns (the system, our database)', so the phrase never reaches the registry. Isolates a stage the v2 syn-* cases silently conflate: no resolver threshold and no semantic resolver can fix this, only the extraction prompt. Without this case the Step 9 semantic experiment would be measured against cases it structurally cannot move."
+    },
+
+    {
+      "id": "d1-litellm-routes-to",
+      "question": "Which models does LiteLLM route to?",
+      "expected_entities": ["LiteLLM"],
+      "expected_graph_nodes": ["litellm", "qwen-fast", "qwen3", "qwen3-vl", "gemma-3", "gemma-3-4b", "llama-3-3-70b"],
+      "expected_relationships": ["litellm|ROUTES_TO|qwen-fast", "litellm|ROUTES_TO|qwen3"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "expected_provider_order": ["graph", "corporate"],
+      "tags": ["v3", "exp:graph-depth", "exp:fusion", "depth:1", "graph-authoritative", "difficulty:easy"],
+      "notes": "VERIFIED 1-hop: litellm -ROUTES_TO-> 6 models. Depth-1 CONTROL: must already pass at GRAPH_RETRIEVAL_DEPTH=1, so if a depth experiment breaks it the change is a regression rather than a trade-off. Also a graph-authoritative fusion case: routing edges exist only in the graph."
+    },
+    {
+      "id": "d1-neo4j-hosted-on",
+      "question": "What is Neo4j hosted on?",
+      "expected_entities": ["Neo4j"],
+      "expected_graph_nodes": ["neo4j", "docker", "db-primary-01"],
+      "expected_relationships": ["neo4j|HOSTED_ON|docker", "neo4j|HOSTED_ON|db-primary-01"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "expected_provider_order": ["graph", "corporate"],
+      "tags": ["v3", "exp:graph-depth", "depth:1", "graph-authoritative", "difficulty:easy"],
+      "notes": "VERIFIED 1-hop: neo4j -HOSTED_ON-> db-primary-01, Docker. Depth-1 control with a small exact answer set — sensitive to precision loss, so it doubles as an explosion detector."
+    },
+    {
+      "id": "d1-joseph-works-on",
+      "question": "What does Joseph Mathew work on?",
+      "expected_entities": ["Joseph Mathew"],
+      "expected_graph_nodes": ["joseph-mathew", "ocr-pipeline", "neo4j", "cctv-analytics", "knowledge-graph", "context-engine", "hermes-gateway", "tender-automation", "nginx", "dar-al-ber-dashboard"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:graph-depth", "depth:1", "fan-out", "difficulty:medium"],
+      "notes": "VERIFIED 1-hop: joseph-mathew -WORKS_ON-> 9 projects. Deliberately wide at depth 1 (measured d1 neighbourhood = 33 nodes), so it distinguishes legitimate breadth from depth-induced explosion."
+    },
+    {
+      "id": "d2-agentic-ai-gateway-host",
+      "question": "Which server does the model gateway used by Agentic AI run on?",
+      "expected_entities": ["Agentic AI"],
+      "expected_graph_nodes": ["agentic-ai", "litellm", "db-primary-01"],
+      "expected_relationships": ["agentic-ai|USES|litellm", "litellm|DEPLOYED_ON|db-primary-01"],
+      "expected_answer_keywords": ["db-primary-01"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:graph-depth", "depth:2", "requires:depth-2", "multi-hop", "expected-fail", "difficulty:difficult"],
+      "notes": "VERIFIED TRUE 2-HOP: agentic-ai -USES-> litellm -DEPLOYED_ON-> db-primary-01, and NO direct agentic-ai -> db-primary-01 edge exists. The question never names LiteLLM, so the bridge must be discovered. Unanswerable at depth 1."
+    },
+    {
+      "id": "d2-joseph-graph-db-runtime",
+      "question": "What runtime does the graph database Joseph Mathew works on depend on?",
+      "expected_entities": ["Joseph Mathew"],
+      "expected_graph_nodes": ["joseph-mathew", "neo4j", "docker"],
+      "expected_relationships": ["joseph-mathew|WORKS_ON|neo4j", "neo4j|DEPENDS_ON|docker"],
+      "expected_answer_keywords": ["Docker"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:graph-depth", "depth:2", "requires:depth-2", "multi-hop", "expected-fail", "difficulty:difficult"],
+      "notes": "VERIFIED TRUE 2-HOP: joseph-mathew -WORKS_ON-> neo4j -DEPENDS_ON|HOSTED_ON-> docker, no shortcut edge. Person -> technology -> runtime."
+    },
+    {
+      "id": "d2-nazo-upstream-gpu",
+      "question": "Which GPU host does the platform that Nazo depends on run on?",
+      "expected_entities": ["Nazo"],
+      "expected_graph_nodes": ["nazo", "agentic-ai", "gpu-node-a"],
+      "expected_relationships": ["nazo|DEPENDS_ON|agentic-ai", "agentic-ai|DEPLOYED_ON|gpu-node-a"],
+      "expected_answer_keywords": ["gpu-node-a"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:graph-depth", "depth:2", "requires:depth-2", "multi-hop", "expected-fail", "difficulty:difficult"],
+      "notes": "VERIFIED TRUE 2-HOP: nazo -DEPENDS_ON-> agentic-ai -DEPLOYED_ON-> gpu-node-a, no shortcut. Project -> project -> host, a different edge shape from the other depth-2 cases."
+    },
+    {
+      "id": "d2-ocr-pipeline-storage",
+      "question": "Where does the OCR work Joseph Mathew is on keep its objects?",
+      "expected_entities": ["Joseph Mathew"],
+      "expected_graph_nodes": ["joseph-mathew", "ocr-pipeline", "minio"],
+      "expected_relationships": ["joseph-mathew|WORKS_ON|ocr-pipeline", "ocr-pipeline|STORES|minio"],
+      "expected_answer_keywords": ["MinIO"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:graph-depth", "depth:2", "requires:depth-2", "multi-hop", "expected-fail", "difficulty:difficult"],
+      "notes": "VERIFIED TRUE 2-HOP: joseph-mathew -WORKS_ON-> ocr-pipeline -STORES|USES-> minio, no shortcut. Note ocr-pipeline has 14+ USES edges, so this case also measures whether the correct branch survives a wide intermediate node."
+    },
+    {
+      "id": "d2-voice-assistant-host",
+      "question": "Which machine ultimately serves the Voice Assistant's inference?",
+      "expected_entities": ["Voice Assistant"],
+      "expected_graph_nodes": ["voice-assistant", "litellm", "db-primary-01"],
+      "expected_relationships": ["voice-assistant|DEPENDS_ON|litellm", "litellm|DEPLOYED_ON|db-primary-01"],
+      "expected_answer_keywords": ["db-primary-01"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:graph-depth", "depth:2", "requires:depth-2", "multi-hop", "expected-fail", "difficulty:difficult"],
+      "notes": "VERIFIED TRUE 2-HOP: voice-assistant -USES|DEPENDS_ON-> litellm -DEPLOYED_ON-> db-primary-01, no shortcut. Shares its second hop with d2-agentic-ai-gateway-host on purpose: db-primary-01 is reached from 12+ projects, so if depth-2 retrieval is working the two cases should behave identically."
+    },
+    {
+      "id": "d3-yusuf-mentioned-model",
+      "question": "Which models are mentioned in email written by the person Yusuf Ahmed reports to?",
+      "expected_entities": ["Yusuf Ahmed"],
+      "expected_graph_nodes": ["yusuf-ahmed", "ravi-shankar", "qwen", "whisperx-large-v3"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:graph-depth", "depth:3", "requires:depth-3", "multi-hop", "expected-fail", "difficulty:difficult"],
+      "notes": "VERIFIED TRUE 3-HOP: yusuf-ahmed -REPORTS_TO-> ravi-shankar -AUTHORED-> 'Email: Context Engine — action items' -MENTIONS-> Qwen / WhisperX Large-v3, with no shorter path. One of the few genuine 3-hop chains in the graph; person -> person -> artefact -> model."
+    },
+    {
+      "id": "d3-tanvi-mentioned-model",
+      "question": "What technology appears in correspondence from Tanvi Desai's manager?",
+      "expected_entities": ["Tanvi Desai"],
+      "expected_graph_nodes": ["tanvi-desai", "ravi-shankar", "qwen", "whisperx-large-v3"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:graph-depth", "depth:3", "requires:depth-3", "multi-hop", "expected-fail", "difficulty:difficult"],
+      "notes": "VERIFIED TRUE 3-HOP via the same ravi-shankar hub with a different seed. Paired with d3-yusuf-mentioned-model to distinguish 'depth-3 retrieval works' from 'this one seed happens to work'."
+    },
+
+    {
+      "id": "expl-vllm-narrow",
+      "question": "What is vLLM?",
+      "expected_entities": ["vLLM"],
+      "expected_graph_nodes": ["vllm"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:context-explosion", "depth:1", "precision-guard", "difficulty:easy"],
+      "notes": "MEASURED neighbourhood: depth 1 = 24 nodes, depth 2 = 340, depth 3 = 490 (of 522 entities) — a 14x jump at depth 2 and effectively the entire graph at depth 3. A definitional question needs one node. graph_node_precision and graph_noise_ratio must degrade sharply as depth rises; if `overall` improves here, the depth setting is being rewarded for flooding."
+    },
+    {
+      "id": "expl-msgraph-narrow",
+      "question": "What is Microsoft Graph used for?",
+      "expected_entities": ["Microsoft Graph"],
+      "expected_graph_nodes": ["microsoft-graph"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:context-explosion", "depth:1", "precision-guard", "difficulty:easy"],
+      "notes": "MEASURED: depth 1 = 27 nodes, depth 2 = 324, depth 3 = 488. Second narrow anchor with a different label mix (Technology/API/Service) so the guard is not tied to one node's topology."
+    },
+    {
+      "id": "expl-neo4j-narrow",
+      "question": "What is Neo4j?",
+      "expected_entities": ["Neo4j"],
+      "expected_graph_nodes": ["neo4j"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:context-explosion", "depth:1", "precision-guard", "difficulty:easy"],
+      "notes": "MEASURED: depth 1 = 25 nodes, depth 2 = 343, depth 3 = 490. Roughly 19-20% of every depth-2 neighbourhood measured is :Document nodes, so this case also reports how much of the explosion is document pollution rather than entity breadth."
+    },
+    {
+      "id": "expl-doc-share-at-depth",
+      "question": "What is Tailscale used for in our network?",
+      "expected_entities": ["Tailscale"],
+      "expected_graph_nodes": ["tailscale"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:context-explosion", "exp:doc-pollution", "depth:1", "precision-guard", "difficulty:easy"],
+      "notes": "MEASURED: depth 1 = 39, depth 2 = 399, depth 3 = 491, with ~20% of the depth-2 neighbourhood being :Document nodes. Links the explosion and pollution experiments: if excluding documents from traversal is the pollution fix, the depth-2 node count here should drop by about a fifth."
+    },
+    {
+      "id": "expl-budget-under-depth",
+      "question": "Give me a short summary of what Qdrant does for us.",
+      "expected_entities": ["Qdrant"],
+      "expected_graph_nodes": ["qdrant"],
+      "expected_answer_keywords": ["Qdrant"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:context-explosion", "budget", "groundedness", "difficulty:medium"],
+      "notes": "MEASURED: qdrant depth 1 = 37, depth 2 = 391, depth 3 = 492. The question explicitly asks for a SHORT answer, so tokens_used, compression_ratio and groundedness are the metrics of record. Detects the failure mode where deeper retrieval fills the budget with unrelated branches and the grounded answer gets worse — the case §9 of the spec exists for."
+    },
+
+    {
+      "id": "fus-graph-better-deployment",
+      "question": "Where is LiteLLM deployed?",
+      "expected_entities": ["LiteLLM"],
+      "expected_graph_nodes": ["litellm", "db-primary-01", "gpu-node-a"],
+      "expected_relationships": ["litellm|DEPLOYED_ON|db-primary-01", "litellm|DEPLOYED_ON|gpu-node-a"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "expected_provider_order": ["graph", "corporate"],
+      "tags": ["v3", "exp:fusion", "exp:ranking", "graph-authoritative", "depth:1", "difficulty:medium"],
+      "notes": "VERIFIED: DEPLOYED_ON edges exist in the graph. Deployment topology is a relationship, which documents state only incidentally — graph must rank above corporate. Asserted via expected_provider_order (rank_correlation compares only shared items) rather than a narrow expected_context_sources, which would wrongly punish the always-on providers."
+    },
+    {
+      "id": "fus-qdrant-better-benchmark",
+      "question": "What throughput did qwen-fast reach on an RTX PRO 6000 at concurrency 1?",
+      "expected_entities": ["qwen-fast"],
+      "expected_qdrant_documents": ["emd-0293-gpu_benchmark-gpu-benchmark-qwen-fast-on-rtx-pro-6000-int4-awq.md"],
+      "expected_answer_keywords": ["492"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "expected_provider_order": ["corporate", "graph"],
+      "tags": ["v3", "exp:fusion", "exp:provenance", "qdrant-authoritative", "rag", "difficulty:difficult"],
+      "notes": "VERIFIED in corpus and confirmed present in Qdrant (3 chunks): emd-0293 records 492 tokens/s at concurrency 1 on RTX PRO 6000, INT4 (AWQ). The graph has a qwen-fast node but no throughput numbers of any kind, so corporate MUST outrank graph. The clean inverse of fus-graph-better-deployment."
+    },
+    {
+      "id": "fus-qdrant-better-incident",
+      "question": "How long did incident INC-1259 on Context Engine last?",
+      "expected_entities": ["Context Engine"],
+      "expected_qdrant_documents": ["emd-0107-incident_report-incident-report-inc-1259-context-engine-sev3.md"],
+      "expected_answer_keywords": ["288"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "expected_provider_order": ["corporate", "graph"],
+      "tags": ["v3", "exp:fusion", "exp:provenance", "qdrant-authoritative", "rag", "difficulty:difficult"],
+      "notes": "VERIFIED in corpus and present in Qdrant (3 chunks): INC-1259, duration 288 minutes, commander Ayesha Khan. Incident duration is a document-only fact. Second qdrant-authoritative case with a different document type, so the result is not an artefact of one document's chunking."
+    },
+    {
+      "id": "fus-corroborated-litellm-vllm",
+      "question": "What does LiteLLM depend on for inference?",
+      "expected_entities": ["LiteLLM"],
+      "expected_graph_nodes": ["litellm", "vllm"],
+      "expected_relationships": ["litellm|DEPENDS_ON|vllm"],
+      "expected_corroboration_count": 2,
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:fusion", "corroboration", "depth:1", "difficulty:medium"],
+      "notes": "VERIFIED: litellm -DEPENDS_ON-> vllm exists in the graph, and the serving stack is described in corpus architecture documents. Genuine independent corroboration between graph and documents, unlike the v2 corroboration cases which are meta-questions about corroboration itself."
+    },
+    {
+      "id": "fus-graph-plausible-but-irrelevant",
+      "question": "What VRAM did the Huawei Ascend 910B peak at during the qwen-fast benchmark?",
+      "expected_entities": ["qwen-fast"],
+      "expected_qdrant_documents": ["emd-0293-gpu_benchmark-gpu-benchmark-qwen-fast-on-rtx-pro-6000-int4-awq.md"],
+      "expected_answer_keywords": ["80 GB"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "expected_provider_order": ["corporate", "graph"],
+      "tags": ["v3", "exp:fusion", "graph-irrelevant", "rag", "difficulty:difficult"],
+      "notes": "VERIFIED: emd-0293 records Huawei Ascend 910B peaking at 80 GB at concurrency 85. Seeding on qwen-fast pulls in LiteLLM routing edges and sibling models — all real, all topically plausible, and none of it answers the question. Tests whether fusion can down-rank confidently-retrieved but useless graph context."
+    },
+    {
+      "id": "fus-qdrant-semantically-near-miss",
+      "question": "Who was the incident commander for INC-1259?",
+      "expected_entities": ["Context Engine"],
+      "expected_qdrant_documents": ["emd-0107-incident_report-incident-report-inc-1259-context-engine-sev3.md"],
+      "expected_answer_keywords": ["Ayesha Khan"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:fusion", "qdrant-irrelevant", "rag", "difficulty:difficult"],
+      "notes": "VERIFIED: the corpus holds 24 incident_report documents sharing near-identical structure and vocabulary ('incident commander', 'Detected', 'Timeline'). Vector search will surface many highly similar wrong documents; only emd-0107 is correct. Measures precision-at-k against a dense field of near-duplicates, which no v2 rag-* case does."
+    },
+    {
+      "id": "fus-cross-source-complementary",
+      "question": "Who works on the OCR Pipeline and what has been benchmarked for it?",
+      "expected_entities": ["OCR Pipeline"],
+      "expected_graph_nodes": ["ocr-pipeline", "joseph-mathew"],
+      "expected_qdrant_documents": ["emd-0211-model_comparison-model-comparison-ocr-post-correction-ocr-pipeline.md"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "expected_corroboration_count": 2,
+      "tags": ["v3", "exp:fusion", "cross-source", "difficulty:difficult"],
+      "notes": "VERIFIED: graph holds joseph-mathew -WORKS_ON-> ocr-pipeline; emd-0211 (present in Qdrant, 2 chunks, authored by Joseph Mathew) holds the model comparison. Neither source can answer both halves, so a correct answer REQUIRES both — a genuine complementary cross-source case rather than a redundant one."
+    },
+
+    {
+      "id": "rank-low-centrality-relevant",
+      "question": "What is Gemma-3-4B?",
+      "expected_entities": ["Gemma-3-4B"],
+      "expected_graph_nodes": ["gemma-3-4b"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:ranking", "centrality", "precision-guard", "difficulty:medium"],
+      "notes": "MEASURED centrality contrast: the correct answer is a low-degree leaf, while its immediate neighbour LiteLLM has a 42-node depth-1 neighbourhood and Agentic AI has 74. The `importance` ranking signal is degree-based, so this case detects the failure where a high-centrality hub outranks the low-centrality node the question actually named."
+    },
+    {
+      "id": "rank-hop-distance-penalty",
+      "question": "What does Agentic AI use directly?",
+      "expected_entities": ["Agentic AI"],
+      "expected_graph_nodes": ["agentic-ai", "litellm"],
+      "expected_relationships": ["agentic-ai|USES|litellm"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:ranking", "exp:context-explosion", "depth:1", "difficulty:medium"],
+      "notes": "The word 'directly' makes 1-hop evidence correct and 2-hop evidence wrong, even though both are retrievable. score_node applies a hop penalty; this case is the only one that isolates whether that penalty actually orders evidence. Agentic AI's depth-1 neighbourhood is 74 nodes and depth-2 is 437, so a failure is unmissable."
+    },
+    {
+      "id": "rank-corroborated-over-single",
+      "question": "What is the most strongly evidenced fact about the OCR Pipeline?",
+      "expected_entities": ["OCR Pipeline"],
+      "expected_graph_nodes": ["ocr-pipeline"],
+      "expected_corroboration_count": 2,
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:ranking", "corroboration", "difficulty:difficult"],
+      "notes": "OCR Pipeline is asserted by graph edges AND by multiple corpus documents (model_comparison, project_documentation, ocr_document). Exercises the `corroboration` ranking signal on an entity with genuinely multi-source support, using real provider output rather than synthetic confidence metadata."
+    },
+    {
+      "id": "rank-provenance-authoritative-doc",
+      "question": "What is the documented architecture of the Evaluation Framework?",
+      "expected_entities": ["Evaluation Framework"],
+      "expected_qdrant_documents": ["emd-0045-architecture-evaluation-framework-architecture-overview.md"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "expected_provider_order": ["corporate", "graph"],
+      "tags": ["v3", "exp:ranking", "exp:provenance", "provenance", "rag", "difficulty:difficult"],
+      "notes": "VERIFIED: emd-0045 is the architecture document for this project; the corpus also holds meeting_minutes and deployment_guide documents naming it. An architecture question should rank the architecture document above minutes discussing it. Tests source-type provenance using real doc_type metadata rather than invented reliability scores."
+    },
+    {
+      "id": "rank-freshness-recent-benchmark",
+      "question": "What is our most recent GPU benchmark result for qwen-fast?",
+      "expected_entities": ["qwen-fast"],
+      "expected_qdrant_documents": ["emd-0293-gpu_benchmark-gpu-benchmark-qwen-fast-on-rtx-pro-6000-int4-awq.md"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:ranking", "freshness", "temporal", "rag", "difficulty:difficult"],
+      "notes": "The corpus holds 18 gpu_benchmark documents carrying real `date` frontmatter. 'Most recent' makes freshness the discriminating signal while relevance is held roughly constant across the candidates — the v2 dataset has exactly one freshness-tagged case and it is a graph case, so this is the only document-side freshness discriminator."
+    },
+
+    {
+      "id": "negp-unsupported-migration",
+      "question": "Why did we move Neo4j off Docker and onto Kubernetes?",
+      "expected_entities": ["Neo4j", "Docker", "Kubernetes"],
+      "forbidden_answer_keywords": ["moved neo4j", "migrated neo4j", "off docker", "onto kubernetes"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:negative-premise", "negative-premise", "adversarial", "difficulty:difficult"],
+      "notes": "VERIFIED: all three entities are real and neo4j -HOSTED_ON-> docker exists; Kubernetes is also a real node. No migration is recorded anywhere. Harder than adv-leading-false because every component of the premise is individually true and only the transition is invented — all three MUST resolve while the move must be refused."
+    },
+    {
+      "id": "negp-wrong-person-role",
+      "question": "Why did Karthik Iyer take over as incident commander for INC-1259?",
+      "expected_entities": ["Karthik Iyer"],
+      "forbidden_answer_keywords": ["karthik iyer took over", "karthik iyer was the incident commander", "karthik iyer became"],
+      "expected_answer_keywords": ["Ayesha Khan"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:negative-premise", "exp:provenance", "negative-premise", "adversarial", "difficulty:difficult"],
+      "notes": "VERIFIED: emd-0107 names Ayesha Khan as incident commander for INC-1259; Karthik Iyer is a real person in the corpus (author of emd-0293) but had no such role. Tests grounded CORRECTION rather than refusal — the retrieved document contains the right answer, so a good system should both decline the premise and supply the actual commander. No v2 case requires that."
+    },
+    {
+      "id": "negp-unsupported-auth-relation",
+      "question": "How does Tailscale authenticate against Microsoft Entra ID?",
+      "expected_entities": ["Tailscale", "Microsoft Entra ID"],
+      "forbidden_answer_keywords": ["tailscale authenticates against", "tailscale uses microsoft entra", "sso integration between"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:negative-premise", "negative-premise", "adversarial", "difficulty:difficult"],
+      "notes": "VERIFIED: both entities exist; no edge connects them. Distinct from adv-invented-rel because the invented relationship is highly plausible (Tailscale genuinely supports Entra SSO in the real world), so the model's prior actively pushes toward fabrication. Tests grounding against world knowledge, not just against absence."
+    },
+
+    {
+      "id": "prov-graph-only-claim",
+      "question": "Which GPU host is Agentic AI deployed on?",
+      "expected_entities": ["Agentic AI"],
+      "expected_graph_nodes": ["agentic-ai", "gpu-node-a"],
+      "expected_relationships": ["agentic-ai|DEPLOYED_ON|gpu-node-a"],
+      "expected_answer_keywords": ["gpu-node-a"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "expected_provider_order": ["graph", "corporate"],
+      "tags": ["v3", "exp:provenance", "provenance", "graph-authoritative", "depth:1", "difficulty:medium"],
+      "notes": "VERIFIED: agentic-ai -DEPLOYED_ON-> gpu-node-a. Single-source claim that must be attributable to the graph. Baseline for citation_coverage when only one provider supports the answer."
+    },
+    {
+      "id": "prov-document-only-claim",
+      "question": "At what concurrency does the qwen-fast benchmark say KV cache becomes the constraint?",
+      "expected_entities": ["qwen-fast"],
+      "expected_qdrant_documents": ["emd-0293-gpu_benchmark-gpu-benchmark-qwen-fast-on-rtx-pro-6000-int4-awq.md"],
+      "expected_answer_keywords": ["15"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "expected_provider_order": ["corporate", "graph"],
+      "tags": ["v3", "exp:provenance", "provenance", "qdrant-authoritative", "rag", "difficulty:difficult"],
+      "notes": "VERIFIED in emd-0293: 'Throughput scales close to linearly up to concurrency 15, after which the KV cache becomes the constraint.' Document-only claim in prose rather than in a table, so it also checks that chunking preserved the narrative section."
+    },
+    {
+      "id": "prov-two-source-claim",
+      "question": "What does the OCR Pipeline use, and who is responsible for it?",
+      "expected_entities": ["OCR Pipeline"],
+      "expected_graph_nodes": ["ocr-pipeline", "joseph-mathew"],
+      "expected_qdrant_documents": ["emd-0211-model_comparison-model-comparison-ocr-post-correction-ocr-pipeline.md"],
+      "expected_corroboration_count": 2,
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:provenance", "provenance", "cross-source", "difficulty:difficult"],
+      "notes": "VERIFIED across both stores. A two-claim answer where the claims come from different providers, so citation_coverage must be per-claim rather than per-answer. Distinguishes 'cited something' from 'cited the right thing for each claim'."
+    },
+    {
+      "id": "prov-omit-unsupported-claim",
+      "question": "For the Evaluation Framework, tell me its architecture, its owner, and its published SLA.",
+      "expected_entities": ["Evaluation Framework"],
+      "expected_qdrant_documents": ["emd-0045-architecture-evaluation-framework-architecture-overview.md"],
+      "forbidden_answer_keywords": ["sla is", "sla of", "service level agreement is", "uptime guarantee of"],
+      "expected_context_sources": ["graph", "corporate", "tasks", "calendar"],
+      "tags": ["v3", "exp:provenance", "exp:negative-premise", "provenance", "adversarial", "difficulty:difficult"],
+      "notes": "VERIFIED: architecture and ownership are recoverable, but the corpus publishes no SLA for this project. A three-part question where exactly one part is unsupported — the correct behaviour is to answer two and explicitly omit the third. This is the only case that scores partial-answer discipline, which §13 of the Step 5 spec requires and no v2 case provides."
+    }
+  ]
+}

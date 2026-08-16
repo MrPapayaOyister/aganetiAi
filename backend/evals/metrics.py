@@ -85,6 +85,36 @@ def mrr(ranked: Sequence[str], expected: Iterable[str]) -> float:
     return 0.0
 
 
+def resolve_document_identity(
+        retrieved: "Sequence[tuple[str, str]]", expected: Iterable[str]) -> list[str]:
+    """Pick, per retrieved document, the identifier the dataset addresses it by.
+
+    A retrieved chunk carries two identities — the source filename
+    (`emd-0293-….md`) and a storage UUID (`347c5512-…`) — and a case may state
+    either. The runner used to emit only the UUID, so a case naming the filename
+    scored zero recall even when that exact document was retrieved and ranked
+    first. Every case declaring `expected_qdrant_documents` was affected, which
+    made the whole Qdrant metric family a measure of identifier convention
+    rather than of retrieval.
+
+    Each `retrieved` entry is `(source, document_id)`. If EITHER identity is an
+    exact normalised match for something expected, that expected string is
+    emitted, so the downstream metrics compare like with like. Otherwise the
+    document's own primary identity is emitted and simply will not match.
+
+    Matching stays exact on purpose: a filename is never compared against a UUID
+    and no substring or fuzzy rule is applied, so this can only recognise a
+    document the retriever genuinely returned — it cannot invent a hit.
+    """
+    want = norm_set(expected)
+    out: list[str] = []
+    for source, document_id in retrieved:
+        hit = next((alias for alias in (source, document_id)
+                    if alias and norm(alias) in want), None)
+        out.append(hit or source or document_id or "")
+    return out
+
+
 def dcg(relevances: Sequence[float]) -> float:
     return sum(r / math.log2(i + 2) for i, r in enumerate(relevances))
 
