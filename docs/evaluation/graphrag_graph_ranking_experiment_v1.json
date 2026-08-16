@@ -1,0 +1,743 @@
+{
+  "experiment": "graph_ranking_topk_hopdecay",
+  "version": "v1",
+  "dataset_version": 3,
+  "correction_version": "v3.1",
+  "case_count": 174,
+  "baseline_artifact": "docs/evaluation/graphrag_baseline_v3_corrected.json",
+  "prior": "docs/evaluation/graphrag_depth_experiment_v1.json",
+  "production": {
+    "graph_top_k": 8,
+    "hop_decay": 0.55,
+    "graph_depth": 1,
+    "max_nodes": 100
+  },
+  "production_changed": false,
+  "topk_curve": {
+    "4": {
+      "precision": 0.2375,
+      "recall": 0.5696,
+      "f1": 0.313,
+      "noise": 0.7625,
+      "context_nodes": 3.36,
+      "cases": 100,
+      "median_expected_rank": 1.0,
+      "hit_at": {
+        "1": 71,
+        "3": 77,
+        "4": 77,
+        "5": 77,
+        "8": 78
+      },
+      "found_any": 82
+    },
+    "6": {
+      "precision": 0.1617,
+      "recall": 0.572,
+      "f1": 0.2363,
+      "noise": 0.8383,
+      "context_nodes": 5.04,
+      "cases": 100,
+      "median_expected_rank": 1.0,
+      "hit_at": {
+        "1": 71,
+        "3": 77,
+        "5": 77,
+        "6": 77,
+        "8": 78
+      },
+      "found_any": 82
+    },
+    "8": {
+      "precision": 0.1263,
+      "recall": 0.5845,
+      "f1": 0.1955,
+      "noise": 0.8738,
+      "context_nodes": 6.7,
+      "cases": 100,
+      "median_expected_rank": 1.0,
+      "hit_at": {
+        "1": 71,
+        "3": 77,
+        "5": 77,
+        "8": 78
+      },
+      "found_any": 82
+    },
+    "10": {
+      "precision": 0.107,
+      "recall": 0.603,
+      "f1": 0.1719,
+      "noise": 0.893,
+      "context_nodes": 8.34,
+      "cases": 100,
+      "median_expected_rank": 1.0,
+      "hit_at": {
+        "1": 71,
+        "3": 77,
+        "5": 77,
+        "8": 78,
+        "10": 78
+      },
+      "found_any": 82
+    },
+    "12": {
+      "precision": 0.0992,
+      "recall": 0.6429,
+      "f1": 0.1632,
+      "noise": 0.9008,
+      "context_nodes": 9.98,
+      "cases": 100,
+      "median_expected_rank": 1.0,
+      "hit_at": {
+        "1": 71,
+        "3": 77,
+        "5": 77,
+        "8": 78,
+        "12": 80
+      },
+      "found_any": 82
+    },
+    "16": {
+      "precision": 0.0825,
+      "recall": 0.6857,
+      "f1": 0.1409,
+      "noise": 0.9175,
+      "context_nodes": 13.26,
+      "cases": 100,
+      "median_expected_rank": 1.0,
+      "hit_at": {
+        "1": 71,
+        "3": 77,
+        "5": 77,
+        "8": 78,
+        "16": 80
+      },
+      "found_any": 82
+    },
+    "20": {
+      "precision": 0.0675,
+      "recall": 0.6957,
+      "f1": 0.1186,
+      "noise": 0.9325,
+      "context_nodes": 16.54,
+      "cases": 100,
+      "median_expected_rank": 1.0,
+      "hit_at": {
+        "1": 71,
+        "3": 77,
+        "5": 77,
+        "8": 78,
+        "20": 80
+      },
+      "found_any": 82
+    }
+  },
+  "hop_decay_curve": {
+    "0.35": {
+      "precision": 0.1263,
+      "recall": 0.5845,
+      "f1": 0.1955,
+      "noise": 0.8738,
+      "context_nodes": 6.7,
+      "cases": 100,
+      "median_expected_rank": 1.0,
+      "hit_at": {
+        "1": 71,
+        "3": 77,
+        "5": 77,
+        "8": 78
+      },
+      "found_any": 82
+    },
+    "0.45": {
+      "precision": 0.1263,
+      "recall": 0.5845,
+      "f1": 0.1955,
+      "noise": 0.8738,
+      "context_nodes": 6.7,
+      "cases": 100,
+      "median_expected_rank": 1.0,
+      "hit_at": {
+        "1": 71,
+        "3": 77,
+        "5": 77,
+        "8": 78
+      },
+      "found_any": 82
+    },
+    "0.55": {
+      "precision": 0.1263,
+      "recall": 0.5845,
+      "f1": 0.1955,
+      "noise": 0.8738,
+      "context_nodes": 6.7,
+      "cases": 100,
+      "median_expected_rank": 1.0,
+      "hit_at": {
+        "1": 71,
+        "3": 77,
+        "5": 77,
+        "8": 78
+      },
+      "found_any": 82
+    },
+    "0.65": {
+      "precision": 0.1263,
+      "recall": 0.5845,
+      "f1": 0.1955,
+      "noise": 0.8738,
+      "context_nodes": 6.7,
+      "cases": 100,
+      "median_expected_rank": 1.0,
+      "hit_at": {
+        "1": 71,
+        "3": 77,
+        "5": 77,
+        "8": 78
+      },
+      "found_any": 82
+    },
+    "0.75": {
+      "precision": 0.1263,
+      "recall": 0.5845,
+      "f1": 0.1955,
+      "noise": 0.8738,
+      "context_nodes": 6.7,
+      "cases": 100,
+      "median_expected_rank": 1.0,
+      "hit_at": {
+        "1": 71,
+        "3": 77,
+        "5": 77,
+        "8": 78
+      },
+      "found_any": 82
+    }
+  },
+  "depth_cohort_topk": {
+    "4": {
+      "precision": 0.2639,
+      "recall": 0.3472,
+      "f1": 0.297,
+      "noise": 0.7361,
+      "context_nodes": 4,
+      "cases": 18,
+      "median_expected_rank": 1.0,
+      "hit_at": {
+        "1": 15,
+        "3": 15,
+        "4": 15,
+        "5": 15,
+        "8": 15
+      },
+      "found_any": 18
+    },
+    "6": {
+      "precision": 0.1759,
+      "recall": 0.3472,
+      "f1": 0.2315,
+      "noise": 0.8241,
+      "context_nodes": 6,
+      "cases": 18,
+      "median_expected_rank": 1.0,
+      "hit_at": {
+        "1": 15,
+        "3": 15,
+        "5": 15,
+        "6": 15,
+        "8": 15
+      },
+      "found_any": 18
+    },
+    "8": {
+      "precision": 0.1319,
+      "recall": 0.3472,
+      "f1": 0.1897,
+      "noise": 0.8681,
+      "context_nodes": 8,
+      "cases": 18,
+      "median_expected_rank": 1.0,
+      "hit_at": {
+        "1": 15,
+        "3": 15,
+        "5": 15,
+        "8": 15
+      },
+      "found_any": 18
+    },
+    "10": {
+      "precision": 0.1333,
+      "recall": 0.4444,
+      "f1": 0.2031,
+      "noise": 0.8667,
+      "context_nodes": 10,
+      "cases": 18,
+      "median_expected_rank": 1.0,
+      "hit_at": {
+        "1": 15,
+        "3": 15,
+        "5": 15,
+        "8": 15,
+        "10": 15
+      },
+      "found_any": 18
+    },
+    "12": {
+      "precision": 0.1389,
+      "recall": 0.5602,
+      "f1": 0.2207,
+      "noise": 0.8611,
+      "context_nodes": 12,
+      "cases": 18,
+      "median_expected_rank": 1.0,
+      "hit_at": {
+        "1": 15,
+        "3": 15,
+        "5": 15,
+        "8": 15,
+        "12": 17
+      },
+      "found_any": 18
+    },
+    "16": {
+      "precision": 0.1181,
+      "recall": 0.6343,
+      "f1": 0.1976,
+      "noise": 0.8819,
+      "context_nodes": 16,
+      "cases": 18,
+      "median_expected_rank": 1.0,
+      "hit_at": {
+        "1": 15,
+        "3": 15,
+        "5": 15,
+        "8": 15,
+        "16": 17
+      },
+      "found_any": 18
+    },
+    "20": {
+      "precision": 0.1,
+      "recall": 0.6713,
+      "f1": 0.173,
+      "noise": 0.9,
+      "context_nodes": 20,
+      "cases": 18,
+      "median_expected_rank": 1.0,
+      "hit_at": {
+        "1": 15,
+        "3": 15,
+        "5": 15,
+        "8": 15,
+        "20": 17
+      },
+      "found_any": 18
+    }
+  },
+  "depth_cohort_ranks": [
+    {
+      "case": "adv-very-long-question",
+      "first_expected_rank": 38,
+      "all_expected_ranks": [
+        38,
+        39,
+        40
+      ],
+      "k_needed_for_full_recall": null,
+      "expected_found": 3,
+      "expected_total": 5,
+      "retrieved": 75
+    },
+    {
+      "case": "d2-agentic-ai-gateway-host",
+      "first_expected_rank": 1,
+      "all_expected_ranks": [
+        1,
+        42
+      ],
+      "k_needed_for_full_recall": null,
+      "expected_found": 2,
+      "expected_total": 3,
+      "retrieved": 75
+    },
+    {
+      "case": "d2-joseph-graph-db-runtime",
+      "first_expected_rank": 1,
+      "all_expected_ranks": [
+        1,
+        2,
+        20
+      ],
+      "k_needed_for_full_recall": 20,
+      "expected_found": 3,
+      "expected_total": 3,
+      "retrieved": 53
+    },
+    {
+      "case": "d2-nazo-upstream-gpu",
+      "first_expected_rank": 1,
+      "all_expected_ranks": [
+        1,
+        29
+      ],
+      "k_needed_for_full_recall": null,
+      "expected_found": 2,
+      "expected_total": 3,
+      "retrieved": 93
+    },
+    {
+      "case": "d2-ocr-pipeline-storage",
+      "first_expected_rank": 1,
+      "all_expected_ranks": [
+        1,
+        12
+      ],
+      "k_needed_for_full_recall": null,
+      "expected_found": 2,
+      "expected_total": 3,
+      "retrieved": 34
+    },
+    {
+      "case": "d2-voice-assistant-host",
+      "first_expected_rank": 1,
+      "all_expected_ranks": [
+        1,
+        19
+      ],
+      "k_needed_for_full_recall": null,
+      "expected_found": 2,
+      "expected_total": 3,
+      "retrieved": 49
+    },
+    {
+      "case": "d3-tanvi-mentioned-model",
+      "first_expected_rank": 1,
+      "all_expected_ranks": [
+        1,
+        12
+      ],
+      "k_needed_for_full_recall": null,
+      "expected_found": 2,
+      "expected_total": 4,
+      "retrieved": 38
+    },
+    {
+      "case": "d3-yusuf-mentioned-model",
+      "first_expected_rank": 1,
+      "all_expected_ranks": [
+        1,
+        9
+      ],
+      "k_needed_for_full_recall": null,
+      "expected_found": 2,
+      "expected_total": 4,
+      "retrieved": 31
+    },
+    {
+      "case": "hop2-akshay-stack",
+      "first_expected_rank": 12,
+      "all_expected_ranks": [
+        12
+      ],
+      "k_needed_for_full_recall": null,
+      "expected_found": 1,
+      "expected_total": 3,
+      "retrieved": 57
+    },
+    {
+      "case": "hop2-from-postgres",
+      "first_expected_rank": 1,
+      "all_expected_ranks": [
+        1,
+        9
+      ],
+      "k_needed_for_full_recall": 9,
+      "expected_found": 2,
+      "expected_total": 2,
+      "retrieved": 33
+    },
+    {
+      "case": "hop2-inference-chain",
+      "first_expected_rank": 1,
+      "all_expected_ranks": [
+        1,
+        23,
+        42
+      ],
+      "k_needed_for_full_recall": null,
+      "expected_found": 3,
+      "expected_total": 4,
+      "retrieved": 75
+    },
+    {
+      "case": "hop2-model-behind",
+      "first_expected_rank": 1,
+      "all_expected_ranks": [
+        1,
+        11,
+        14
+      ],
+      "k_needed_for_full_recall": 14,
+      "expected_found": 3,
+      "expected_total": 3,
+      "retrieved": 43
+    },
+    {
+      "case": "hop2-serving-stack",
+      "first_expected_rank": 11,
+      "all_expected_ranks": [
+        11,
+        14
+      ],
+      "k_needed_for_full_recall": 14,
+      "expected_found": 2,
+      "expected_total": 2,
+      "retrieved": 43
+    },
+    {
+      "case": "hop3-blast-radius",
+      "first_expected_rank": 1,
+      "all_expected_ranks": [
+        1,
+        9
+      ],
+      "k_needed_for_full_recall": 9,
+      "expected_found": 2,
+      "expected_total": 2,
+      "retrieved": 33
+    },
+    {
+      "case": "hop3-impact",
+      "first_expected_rank": 1,
+      "all_expected_ranks": [
+        1,
+        10,
+        14
+      ],
+      "k_needed_for_full_recall": null,
+      "expected_found": 3,
+      "expected_total": 4,
+      "retrieved": 25
+    },
+    {
+      "case": "hop3-reverse",
+      "first_expected_rank": 1,
+      "all_expected_ranks": [
+        1,
+        10,
+        14
+      ],
+      "k_needed_for_full_recall": null,
+      "expected_found": 3,
+      "expected_total": 4,
+      "retrieved": 25
+    },
+    {
+      "case": "hop3-shared-dependency",
+      "first_expected_rank": 1,
+      "all_expected_ranks": [
+        1,
+        2,
+        12
+      ],
+      "k_needed_for_full_recall": 12,
+      "expected_found": 3,
+      "expected_total": 3,
+      "retrieved": 63
+    },
+    {
+      "case": "multi-entity-3",
+      "first_expected_rank": 1,
+      "all_expected_ranks": [
+        1,
+        2,
+        3
+      ],
+      "k_needed_for_full_recall": 3,
+      "expected_found": 3,
+      "expected_total": 3,
+      "retrieved": 100
+    }
+  ],
+  "marginal_value_per_slot": {
+    "1-4": {
+      "expected": 95,
+      "other": 241,
+      "marginal_precision": 0.2827
+    },
+    "5-6": {
+      "expected": 2,
+      "other": 166,
+      "marginal_precision": 0.0119
+    },
+    "7-8": {
+      "expected": 4,
+      "other": 162,
+      "marginal_precision": 0.0241
+    },
+    "9-10": {
+      "expected": 6,
+      "other": 158,
+      "marginal_precision": 0.0366
+    },
+    "11-12": {
+      "expected": 12,
+      "other": 152,
+      "marginal_precision": 0.0732
+    },
+    "13-16": {
+      "expected": 13,
+      "other": 315,
+      "marginal_precision": 0.0396
+    },
+    "17-20": {
+      "expected": 3,
+      "other": 325,
+      "marginal_precision": 0.0091
+    }
+  },
+  "end_to_end": {
+    "4": {
+      "overall": 0.6333,
+      "graph_f1": 0.31303246753246755,
+      "graph_precision": 0.2375,
+      "graph_recall": 0.569595238095238,
+      "noise": 0.7625,
+      "context_nodes": 2.4367816091954024,
+      "tokens": 1281.33908045977,
+      "answer_kw": 0.39473684210526316,
+      "groundedness": 0.6430390804597701,
+      "citation": 1.0,
+      "graph_ms": 46.22,
+      "passed": 65
+    },
+    "8": {
+      "overall": 0.6213,
+      "graph_f1": 0.19416594516594515,
+      "graph_precision": 0.125,
+      "graph_recall": 0.5830238095238095,
+      "noise": 0.875,
+      "context_nodes": 4.85632183908046,
+      "tokens": 1281.33908045977,
+      "answer_kw": 0.39473684210526316,
+      "groundedness": 0.6430390804597701,
+      "citation": 1.0,
+      "graph_ms": 43.98,
+      "passed": 66
+    },
+    "12": {
+      "overall": 0.6211,
+      "graph_f1": 0.16217085399980136,
+      "graph_precision": 0.09833333333333333,
+      "graph_recall": 0.641452380952381,
+      "noise": 0.901677,
+      "context_nodes": 7.212643678160919,
+      "tokens": 1281.33908045977,
+      "answer_kw": 0.39473684210526316,
+      "groundedness": 0.6430390804597701,
+      "citation": 1.0,
+      "graph_ms": 42.11,
+      "passed": 68
+    }
+  },
+  "hop_decay_finding": {
+    "result": "bit-identical metrics at 0.35/0.45/0.55/0.65/0.75",
+    "reason": "combine() applies base * hop_decay**hop; at depth=1 every hop-1 node receives the same multiplier, so the relative order within the hop-1 set cannot change. hop_decay can only matter at depth>=2, which Step 10 showed contributes nothing under max_nodes=100.",
+    "joint_experiment": "degenerate at depth 1 \u2014 any top_k x hop_decay grid collapses onto the top_k curve, so no grid was run (spec \u00a710/\u00a711)"
+  },
+  "ranking_diagnostic": {
+    "within_case_signal_stdev_top12": {
+      "confidence": 0.0047,
+      "corroboration": 0.0134,
+      "freshness": 0.1809,
+      "importance": 0.0475,
+      "frequency": 0.0039
+    },
+    "mean_score_spread_top12": 0.0535,
+    "conclusion": "3 of 5 signals are effectively constant inside one neighbourhood; ranking is driven almost entirely by freshness, with weak importance. Expected nodes lose on freshness, not relevance.",
+    "examples": [
+      {
+        "case": "hop2-serving-stack",
+        "rank": 11,
+        "node": "qwen-fast",
+        "signals": {
+          "confidence": 1.0,
+          "corroboration": 1.0,
+          "freshness": 0.03656757639211622,
+          "importance": 1.0,
+          "frequency": 1.0
+        },
+        "score": 0.476062,
+        "hop": 1
+      },
+      {
+        "case": "hop2-model-behind",
+        "rank": 11,
+        "node": "qwen-fast",
+        "signals": {
+          "confidence": 1.0,
+          "corroboration": 1.0,
+          "freshness": 0.03656757688500257,
+          "importance": 1.0,
+          "frequency": 1.0
+        },
+        "score": 0.476062,
+        "hop": 1
+      },
+      {
+        "case": "hop3-blast-radius",
+        "rank": 9,
+        "node": "Agentic AI",
+        "signals": {
+          "confidence": 1.0,
+          "corroboration": 1.0,
+          "freshness": 0.036567557508903975,
+          "importance": 1.0,
+          "frequency": 1.0
+        },
+        "score": 0.476062,
+        "hop": 1
+      },
+      {
+        "case": "d3-yusuf-mentioned-model",
+        "rank": 9,
+        "node": "Ravi Shankar",
+        "signals": {
+          "confidence": 1.0,
+          "corroboration": 1.0,
+          "freshness": 0.03656761050207675,
+          "importance": 1.0,
+          "frequency": 1.0
+        },
+        "score": 0.476062,
+        "hop": 1
+      }
+    ]
+  },
+  "max_nodes_diagnostic": {
+    "depth": 3,
+    "sample_cases": 8,
+    "results": {
+      "100": {
+        "mean_nodes": 100,
+        "hops": {
+          "0": 9,
+          "1": 407,
+          "2": 384
+        }
+      },
+      "400": {
+        "mean_nodes": 400,
+        "hops": {
+          "0": 9,
+          "1": 407,
+          "2": 1776,
+          "3": 1008
+        }
+      }
+    },
+    "conclusion": "max_nodes=100 is a hidden architectural ceiling: 0 hop-3 nodes at 100, 1008 at 400. Depth 3 is unreachable without raising it."
+  },
+  "caveat": "mean expected_graph_nodes per case is ~2.1, so F1 structurally favours small k. The robust findings are that RAISING k does not help and that hop_decay is inert."
+}

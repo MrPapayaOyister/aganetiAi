@@ -1,0 +1,1691 @@
+{
+  "experiment": "graph_retrieval_depth",
+  "version": "v1",
+  "dataset_version": 3,
+  "correction_version": "v3.1",
+  "case_count": 174,
+  "baseline_artifact": "docs/evaluation/graphrag_baseline_v3_corrected.json",
+  "production_depth": 1,
+  "production_changed": false,
+  "depths_tested": [
+    1,
+    2,
+    3
+  ],
+  "summary": {
+    "1": {
+      "graph_precision": 0.125,
+      "graph_recall": 0.583,
+      "graph_f1": 0.1942,
+      "noise": 0.875,
+      "context_nodes": 4.86,
+      "tokens": 1281.3,
+      "graph_ms_mean": 45.1,
+      "answer_kw": 0.3947,
+      "groundedness": 0.6432,
+      "overall": 0.6213,
+      "e2e_p50": 591.6885609040037,
+      "e2e_p95": 2726.538825139869,
+      "took_s": 163.8
+    },
+    "2": {
+      "graph_precision": 0.125,
+      "graph_recall": 0.583,
+      "graph_f1": 0.1942,
+      "noise": 0.875,
+      "context_nodes": 4.87,
+      "tokens": 1281.3,
+      "graph_ms_mean": 139.6,
+      "answer_kw": 0.3947,
+      "groundedness": 0.6421,
+      "overall": 0.6211,
+      "e2e_p50": 695.0308760278858,
+      "e2e_p95": 3208.158320048824,
+      "took_s": 182.6
+    },
+    "3": {
+      "graph_precision": 0.125,
+      "graph_recall": 0.583,
+      "graph_f1": 0.1942,
+      "noise": 0.875,
+      "context_nodes": 4.87,
+      "tokens": 1281.3,
+      "graph_ms_mean": 150.1,
+      "answer_kw": 0.3947,
+      "groundedness": 0.6429,
+      "overall": 0.6213,
+      "e2e_p50": 705.1239649299532,
+      "e2e_p95": 2757.378385111224,
+      "took_s": 181.1
+    }
+  },
+  "depth_cohort": {
+    "1": {
+      "cases": 18,
+      "passed": 0,
+      "graph_f1": 0.1897,
+      "noise": 0.8681,
+      "context_nodes": 8
+    },
+    "2": {
+      "cases": 18,
+      "passed": 0,
+      "graph_f1": 0.1897,
+      "noise": 0.8681,
+      "context_nodes": 8
+    },
+    "3": {
+      "cases": 18,
+      "passed": 0,
+      "graph_f1": 0.1897,
+      "noise": 0.8681,
+      "context_nodes": 8
+    }
+  },
+  "cohort_definition": {
+    "tagged_requires_depth": 21,
+    "no_graph_seed": 3,
+    "no_seed_cases": [
+      "hop3-full-chain",
+      "long-full-arch",
+      "long-onboarding"
+    ],
+    "evaluable": 18,
+    "expected_nodes_reachable_within_depth_3": "all; 0 unreachable, 0 missing from graph",
+    "cases_whose_expected_nodes_are_all_reachable_at_depth_1": 6
+  },
+  "node_origin": {
+    "depth1": {
+      "hop0": 23,
+      "hop1": 922,
+      "hop2": 0,
+      "hop3": 0,
+      "mean_retrieved": 52.5
+    },
+    "depth2": {
+      "hop0": 23,
+      "hop1": 922,
+      "hop2": 855,
+      "hop3": 0,
+      "mean_retrieved": 100.0
+    },
+    "depth3": {
+      "hop0": 23,
+      "hop1": 922,
+      "hop2": 855,
+      "hop3": 0,
+      "mean_retrieved": 100.0
+    },
+    "kept_in_top_k_8": {
+      "depth1": {
+        "hop0": 23,
+        "hop1": 121
+      },
+      "depth2": {
+        "hop0": 23,
+        "hop1": 121
+      },
+      "depth3": {
+        "hop0": 23,
+        "hop1": 121
+      }
+    },
+    "note": "no hop-2 node survives top_k=8 at any depth; max_nodes=100 is exhausted at depth 2 so hop 3 is never reached, making depth 3 structurally identical to depth 2"
+  },
+  "marginal_value": {
+    "depth1_to_depth2": {
+      "additional_retrieved_nodes": 855,
+      "additional_relevant_kept": 0,
+      "additional_context_nodes": 0.01,
+      "graph_latency_ms": 94.5,
+      "graph_latency_pct": 209.5
+    },
+    "depth2_to_depth3": {
+      "additional_retrieved_nodes": 0,
+      "additional_relevant_kept": 0,
+      "additional_context_nodes": 0.0,
+      "graph_latency_ms": 10.5,
+      "graph_latency_pct": 7.5
+    }
+  },
+  "ranking_interaction": {
+    "median_expected_node_rank": {
+      "depth1": 9,
+      "depth2": 10,
+      "depth3": 10
+    },
+    "graph_top_k": 8,
+    "cases_with_expected_node_retrieved": {
+      "depth1": 18,
+      "depth2": 18,
+      "depth3": 18
+    },
+    "cases_with_expected_node_in_top8": {
+      "depth1": 15,
+      "depth2": 15,
+      "depth3": 15
+    }
+  },
+  "identical_node_sets_across_depths": "172/174 cases",
+  "per_case_attribution": {
+    "adv-very-long-question": {
+      "1": "fail",
+      "2": "fail",
+      "3": "fail"
+    },
+    "d2-agentic-ai-gateway-host": {
+      "1": "fail",
+      "2": "fail",
+      "3": "fail"
+    },
+    "d2-joseph-graph-db-runtime": {
+      "1": "fail",
+      "2": "fail",
+      "3": "fail"
+    },
+    "d2-nazo-upstream-gpu": {
+      "1": "fail",
+      "2": "fail",
+      "3": "fail"
+    },
+    "d2-ocr-pipeline-storage": {
+      "1": "fail",
+      "2": "fail",
+      "3": "fail"
+    },
+    "d2-voice-assistant-host": {
+      "1": "fail",
+      "2": "fail",
+      "3": "fail"
+    },
+    "d3-tanvi-mentioned-model": {
+      "1": "fail",
+      "2": "fail",
+      "3": "fail"
+    },
+    "d3-yusuf-mentioned-model": {
+      "1": "fail",
+      "2": "fail",
+      "3": "fail"
+    },
+    "hop2-akshay-stack": {
+      "1": "fail",
+      "2": "fail",
+      "3": "fail"
+    },
+    "hop2-from-postgres": {
+      "1": "fail",
+      "2": "fail",
+      "3": "fail"
+    },
+    "hop2-inference-chain": {
+      "1": "fail",
+      "2": "fail",
+      "3": "fail"
+    },
+    "hop2-model-behind": {
+      "1": "fail",
+      "2": "fail",
+      "3": "fail"
+    },
+    "hop2-serving-stack": {
+      "1": "fail",
+      "2": "fail",
+      "3": "fail"
+    },
+    "hop3-blast-radius": {
+      "1": "fail",
+      "2": "fail",
+      "3": "fail"
+    },
+    "hop3-impact": {
+      "1": "fail",
+      "2": "fail",
+      "3": "fail"
+    },
+    "hop3-reverse": {
+      "1": "fail",
+      "2": "fail",
+      "3": "fail"
+    },
+    "hop3-shared-dependency": {
+      "1": "fail",
+      "2": "fail",
+      "3": "fail"
+    },
+    "multi-entity-3": {
+      "1": "fail",
+      "2": "fail",
+      "3": "fail"
+    }
+  },
+  "expected_node_ranks": [
+    {
+      "depth": 1,
+      "case": "d2-agentic-ai-gateway-host",
+      "retrieved": 75,
+      "expected_ranks": [
+        [
+          1,
+          "Agentic AI",
+          0
+        ],
+        [
+          42,
+          "LiteLLM",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Agentic AI",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 1,
+      "case": "d2-joseph-graph-db-runtime",
+      "retrieved": 53,
+      "expected_ranks": [
+        [
+          1,
+          "Joseph Mathew",
+          0
+        ],
+        [
+          2,
+          "Neo4j",
+          0
+        ],
+        [
+          20,
+          "Docker",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Joseph Mathew",
+          0
+        ],
+        [
+          2,
+          "Neo4j",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 1,
+      "case": "d2-nazo-upstream-gpu",
+      "retrieved": 93,
+      "expected_ranks": [
+        [
+          1,
+          "Nazo",
+          0
+        ],
+        [
+          29,
+          "Agentic AI",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Nazo",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 1,
+      "case": "d2-ocr-pipeline-storage",
+      "retrieved": 34,
+      "expected_ranks": [
+        [
+          1,
+          "Joseph Mathew",
+          0
+        ],
+        [
+          12,
+          "OCR Pipeline",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Joseph Mathew",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 1,
+      "case": "d2-voice-assistant-host",
+      "retrieved": 49,
+      "expected_ranks": [
+        [
+          1,
+          "Voice Assistant",
+          0
+        ],
+        [
+          19,
+          "LiteLLM",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Voice Assistant",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 1,
+      "case": "d3-yusuf-mentioned-model",
+      "retrieved": 31,
+      "expected_ranks": [
+        [
+          1,
+          "Yusuf Ahmed",
+          0
+        ],
+        [
+          9,
+          "Ravi Shankar",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Yusuf Ahmed",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 1,
+      "case": "d3-tanvi-mentioned-model",
+      "retrieved": 38,
+      "expected_ranks": [
+        [
+          1,
+          "Tanvi Desai",
+          0
+        ],
+        [
+          12,
+          "Ravi Shankar",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Tanvi Desai",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 1,
+      "case": "hop2-model-behind",
+      "retrieved": 43,
+      "expected_ranks": [
+        [
+          1,
+          "LiteLLM",
+          0
+        ],
+        [
+          11,
+          "qwen-fast",
+          1
+        ],
+        [
+          14,
+          "vLLM",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "LiteLLM",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 1,
+      "case": "hop2-serving-stack",
+      "retrieved": 43,
+      "expected_ranks": [
+        [
+          11,
+          "qwen-fast",
+          1
+        ],
+        [
+          14,
+          "vLLM",
+          1
+        ]
+      ],
+      "in_top8": []
+    },
+    {
+      "depth": 1,
+      "case": "hop2-akshay-stack",
+      "retrieved": 57,
+      "expected_ranks": [
+        [
+          12,
+          "Agentic AI",
+          1
+        ]
+      ],
+      "in_top8": []
+    },
+    {
+      "depth": 1,
+      "case": "hop2-inference-chain",
+      "retrieved": 75,
+      "expected_ranks": [
+        [
+          1,
+          "Agentic AI",
+          0
+        ],
+        [
+          23,
+          "qwen-fast",
+          1
+        ],
+        [
+          42,
+          "LiteLLM",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Agentic AI",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 1,
+      "case": "hop2-from-postgres",
+      "retrieved": 33,
+      "expected_ranks": [
+        [
+          1,
+          "PostgreSQL",
+          0
+        ],
+        [
+          9,
+          "Agentic AI",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "PostgreSQL",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 1,
+      "case": "hop3-reverse",
+      "retrieved": 25,
+      "expected_ranks": [
+        [
+          1,
+          "vLLM",
+          0
+        ],
+        [
+          10,
+          "qwen-fast",
+          1
+        ],
+        [
+          14,
+          "LiteLLM",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "vLLM",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 1,
+      "case": "hop3-shared-dependency",
+      "retrieved": 63,
+      "expected_ranks": [
+        [
+          1,
+          "Microsoft Graph",
+          0
+        ],
+        [
+          2,
+          "LiteLLM",
+          0
+        ],
+        [
+          12,
+          "Agentic AI",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Microsoft Graph",
+          0
+        ],
+        [
+          2,
+          "LiteLLM",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 1,
+      "case": "hop3-impact",
+      "retrieved": 25,
+      "expected_ranks": [
+        [
+          1,
+          "vLLM",
+          0
+        ],
+        [
+          10,
+          "qwen-fast",
+          1
+        ],
+        [
+          14,
+          "LiteLLM",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "vLLM",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 1,
+      "case": "hop3-blast-radius",
+      "retrieved": 33,
+      "expected_ranks": [
+        [
+          1,
+          "PostgreSQL",
+          0
+        ],
+        [
+          9,
+          "Agentic AI",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "PostgreSQL",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 1,
+      "case": "multi-entity-3",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "Akshay",
+          0
+        ],
+        [
+          2,
+          "Agentic AI",
+          0
+        ],
+        [
+          3,
+          "LiteLLM",
+          0
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Akshay",
+          0
+        ],
+        [
+          2,
+          "Agentic AI",
+          0
+        ],
+        [
+          3,
+          "LiteLLM",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 1,
+      "case": "adv-very-long-question",
+      "retrieved": 75,
+      "expected_ranks": [
+        [
+          38,
+          "LiteLLM",
+          1
+        ],
+        [
+          39,
+          "Neo4j",
+          1
+        ],
+        [
+          40,
+          "PostgreSQL",
+          1
+        ]
+      ],
+      "in_top8": []
+    },
+    {
+      "depth": 2,
+      "case": "d2-agentic-ai-gateway-host",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "Agentic AI",
+          0
+        ],
+        [
+          42,
+          "LiteLLM",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Agentic AI",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 2,
+      "case": "d2-joseph-graph-db-runtime",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "Joseph Mathew",
+          0
+        ],
+        [
+          2,
+          "Neo4j",
+          0
+        ],
+        [
+          20,
+          "Docker",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Joseph Mathew",
+          0
+        ],
+        [
+          2,
+          "Neo4j",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 2,
+      "case": "d2-nazo-upstream-gpu",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "Nazo",
+          0
+        ],
+        [
+          29,
+          "Agentic AI",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Nazo",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 2,
+      "case": "d2-ocr-pipeline-storage",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "Joseph Mathew",
+          0
+        ],
+        [
+          12,
+          "OCR Pipeline",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Joseph Mathew",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 2,
+      "case": "d2-voice-assistant-host",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "Voice Assistant",
+          0
+        ],
+        [
+          19,
+          "LiteLLM",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Voice Assistant",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 2,
+      "case": "d3-yusuf-mentioned-model",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "Yusuf Ahmed",
+          0
+        ],
+        [
+          9,
+          "Ravi Shankar",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Yusuf Ahmed",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 2,
+      "case": "d3-tanvi-mentioned-model",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "Tanvi Desai",
+          0
+        ],
+        [
+          12,
+          "Ravi Shankar",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Tanvi Desai",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 2,
+      "case": "hop2-model-behind",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "LiteLLM",
+          0
+        ],
+        [
+          11,
+          "qwen-fast",
+          1
+        ],
+        [
+          14,
+          "vLLM",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "LiteLLM",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 2,
+      "case": "hop2-serving-stack",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          11,
+          "qwen-fast",
+          1
+        ],
+        [
+          14,
+          "vLLM",
+          1
+        ]
+      ],
+      "in_top8": []
+    },
+    {
+      "depth": 2,
+      "case": "hop2-akshay-stack",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          12,
+          "Agentic AI",
+          1
+        ]
+      ],
+      "in_top8": []
+    },
+    {
+      "depth": 2,
+      "case": "hop2-inference-chain",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "Agentic AI",
+          0
+        ],
+        [
+          23,
+          "qwen-fast",
+          1
+        ],
+        [
+          42,
+          "LiteLLM",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Agentic AI",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 2,
+      "case": "hop2-from-postgres",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "PostgreSQL",
+          0
+        ],
+        [
+          9,
+          "Agentic AI",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "PostgreSQL",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 2,
+      "case": "hop3-reverse",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "vLLM",
+          0
+        ],
+        [
+          10,
+          "qwen-fast",
+          1
+        ],
+        [
+          14,
+          "LiteLLM",
+          1
+        ],
+        [
+          37,
+          "Agentic AI",
+          2
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "vLLM",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 2,
+      "case": "hop3-shared-dependency",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "Microsoft Graph",
+          0
+        ],
+        [
+          2,
+          "LiteLLM",
+          0
+        ],
+        [
+          12,
+          "Agentic AI",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Microsoft Graph",
+          0
+        ],
+        [
+          2,
+          "LiteLLM",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 2,
+      "case": "hop3-impact",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "vLLM",
+          0
+        ],
+        [
+          10,
+          "qwen-fast",
+          1
+        ],
+        [
+          14,
+          "LiteLLM",
+          1
+        ],
+        [
+          37,
+          "Agentic AI",
+          2
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "vLLM",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 2,
+      "case": "hop3-blast-radius",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "PostgreSQL",
+          0
+        ],
+        [
+          9,
+          "Agentic AI",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "PostgreSQL",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 2,
+      "case": "multi-entity-3",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "Akshay",
+          0
+        ],
+        [
+          2,
+          "Agentic AI",
+          0
+        ],
+        [
+          3,
+          "LiteLLM",
+          0
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Akshay",
+          0
+        ],
+        [
+          2,
+          "Agentic AI",
+          0
+        ],
+        [
+          3,
+          "LiteLLM",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 2,
+      "case": "adv-very-long-question",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          38,
+          "LiteLLM",
+          1
+        ],
+        [
+          39,
+          "Neo4j",
+          1
+        ],
+        [
+          40,
+          "PostgreSQL",
+          1
+        ]
+      ],
+      "in_top8": []
+    },
+    {
+      "depth": 3,
+      "case": "d2-agentic-ai-gateway-host",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "Agentic AI",
+          0
+        ],
+        [
+          42,
+          "LiteLLM",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Agentic AI",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 3,
+      "case": "d2-joseph-graph-db-runtime",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "Joseph Mathew",
+          0
+        ],
+        [
+          2,
+          "Neo4j",
+          0
+        ],
+        [
+          20,
+          "Docker",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Joseph Mathew",
+          0
+        ],
+        [
+          2,
+          "Neo4j",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 3,
+      "case": "d2-nazo-upstream-gpu",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "Nazo",
+          0
+        ],
+        [
+          29,
+          "Agentic AI",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Nazo",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 3,
+      "case": "d2-ocr-pipeline-storage",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "Joseph Mathew",
+          0
+        ],
+        [
+          12,
+          "OCR Pipeline",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Joseph Mathew",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 3,
+      "case": "d2-voice-assistant-host",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "Voice Assistant",
+          0
+        ],
+        [
+          19,
+          "LiteLLM",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Voice Assistant",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 3,
+      "case": "d3-yusuf-mentioned-model",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "Yusuf Ahmed",
+          0
+        ],
+        [
+          9,
+          "Ravi Shankar",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Yusuf Ahmed",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 3,
+      "case": "d3-tanvi-mentioned-model",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "Tanvi Desai",
+          0
+        ],
+        [
+          12,
+          "Ravi Shankar",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Tanvi Desai",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 3,
+      "case": "hop2-model-behind",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "LiteLLM",
+          0
+        ],
+        [
+          11,
+          "qwen-fast",
+          1
+        ],
+        [
+          14,
+          "vLLM",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "LiteLLM",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 3,
+      "case": "hop2-serving-stack",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          11,
+          "qwen-fast",
+          1
+        ],
+        [
+          14,
+          "vLLM",
+          1
+        ]
+      ],
+      "in_top8": []
+    },
+    {
+      "depth": 3,
+      "case": "hop2-akshay-stack",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          12,
+          "Agentic AI",
+          1
+        ]
+      ],
+      "in_top8": []
+    },
+    {
+      "depth": 3,
+      "case": "hop2-inference-chain",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "Agentic AI",
+          0
+        ],
+        [
+          23,
+          "qwen-fast",
+          1
+        ],
+        [
+          42,
+          "LiteLLM",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Agentic AI",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 3,
+      "case": "hop2-from-postgres",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "PostgreSQL",
+          0
+        ],
+        [
+          9,
+          "Agentic AI",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "PostgreSQL",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 3,
+      "case": "hop3-reverse",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "vLLM",
+          0
+        ],
+        [
+          10,
+          "qwen-fast",
+          1
+        ],
+        [
+          14,
+          "LiteLLM",
+          1
+        ],
+        [
+          37,
+          "Agentic AI",
+          2
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "vLLM",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 3,
+      "case": "hop3-shared-dependency",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "Microsoft Graph",
+          0
+        ],
+        [
+          2,
+          "LiteLLM",
+          0
+        ],
+        [
+          12,
+          "Agentic AI",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Microsoft Graph",
+          0
+        ],
+        [
+          2,
+          "LiteLLM",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 3,
+      "case": "hop3-impact",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "vLLM",
+          0
+        ],
+        [
+          10,
+          "qwen-fast",
+          1
+        ],
+        [
+          14,
+          "LiteLLM",
+          1
+        ],
+        [
+          37,
+          "Agentic AI",
+          2
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "vLLM",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 3,
+      "case": "hop3-blast-radius",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "PostgreSQL",
+          0
+        ],
+        [
+          9,
+          "Agentic AI",
+          1
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "PostgreSQL",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 3,
+      "case": "multi-entity-3",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          1,
+          "Akshay",
+          0
+        ],
+        [
+          2,
+          "Agentic AI",
+          0
+        ],
+        [
+          3,
+          "LiteLLM",
+          0
+        ]
+      ],
+      "in_top8": [
+        [
+          1,
+          "Akshay",
+          0
+        ],
+        [
+          2,
+          "Agentic AI",
+          0
+        ],
+        [
+          3,
+          "LiteLLM",
+          0
+        ]
+      ]
+    },
+    {
+      "depth": 3,
+      "case": "adv-very-long-question",
+      "retrieved": 100,
+      "expected_ranks": [
+        [
+          38,
+          "LiteLLM",
+          1
+        ],
+        [
+          39,
+          "Neo4j",
+          1
+        ],
+        [
+          40,
+          "PostgreSQL",
+          1
+        ]
+      ],
+      "in_top8": []
+    }
+  ]
+}

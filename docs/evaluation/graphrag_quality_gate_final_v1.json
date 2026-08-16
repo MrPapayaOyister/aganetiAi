@@ -1,0 +1,282 @@
+{
+  "experiment": "graphrag_quality_gate_final",
+  "version": "v1",
+  "status": "CLOSED",
+  "dataset_version": 3,
+  "correction_version": "v3.1",
+  "case_count": 174,
+  "dataset_file_sha256_16": {
+    "core_retrieval.json": "cc9e9f2ddf118785",
+    "enterprise.json": "26435e37ec9f4d71",
+    "discrimination.json": "ce0cb2992228971f"
+  },
+  "harness": "corrected provider path (Step 11.6); graph_top_k verified to reach the answer-path GraphProvider",
+  "repeated_runs": {
+    "design": "6 full 174-case runs, interleaved A,B,A,B,A,B so drift affects both equally",
+    "table": {
+      "Overall": {
+        "k8": [
+          0.5867,
+          0.5867,
+          0.5867
+        ],
+        "k12": [
+          0.5916,
+          0.5916,
+          0.5916
+        ],
+        "k8_mean": 0.5867,
+        "k12_mean": 0.5916,
+        "delta": 0.0049,
+        "k8_spread": 0.0,
+        "k12_spread": 0.0
+      },
+      "Groundedness": {
+        "k8": [
+          0.6267097701149426,
+          0.6267097701149426,
+          0.6267097701149426
+        ],
+        "k12": [
+          0.6139396551724138,
+          0.6139396551724138,
+          0.6138816091954022
+        ],
+        "k8_mean": 0.6267,
+        "k12_mean": 0.6139,
+        "delta": -0.0128,
+        "k8_spread": 0.0,
+        "k12_spread": 5.8e-05
+      },
+      "Answer coverage": {
+        "k8": [
+          0.39473684210526316,
+          0.39473684210526316,
+          0.39473684210526316
+        ],
+        "k12": [
+          0.4473684210526316,
+          0.4473684210526316,
+          0.4473684210526316
+        ],
+        "k8_mean": 0.3947,
+        "k12_mean": 0.4474,
+        "delta": 0.0526,
+        "k8_spread": 0.0,
+        "k12_spread": 0.0
+      },
+      "Citation": {
+        "k8": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "k12": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "k8_mean": 1.0,
+        "k12_mean": 1.0,
+        "delta": 0.0,
+        "k8_spread": 0.0,
+        "k12_spread": 0.0
+      },
+      "Negative premise": {
+        "k8": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "k12": [
+          0.8571428571428571,
+          0.8571428571428571,
+          0.8571428571428571
+        ],
+        "k8_mean": 1.0,
+        "k12_mean": 0.8571,
+        "delta": -0.1429,
+        "k8_spread": 0.0,
+        "k12_spread": 0.0
+      },
+      "Graph F1 (diag)": {
+        "k8": [
+          0.19416594516594515,
+          0.19416594516594515,
+          0.19416594516594515
+        ],
+        "k12": [
+          0.16217085399980136,
+          0.16217085399980136,
+          0.16217085399980136
+        ],
+        "k8_mean": 0.1942,
+        "k12_mean": 0.1622,
+        "delta": -0.032,
+        "k8_spread": 0.0,
+        "k12_spread": 0.0
+      },
+      "Graph noise (diag)": {
+        "k8": [
+          0.875,
+          0.875,
+          0.875
+        ],
+        "k12": [
+          0.901677,
+          0.901677,
+          0.901677
+        ],
+        "k8_mean": 0.875,
+        "k12_mean": 0.9017,
+        "delta": 0.0267,
+        "k8_spread": 0.0,
+        "k12_spread": 0.0
+      },
+      "Context tokens": {
+        "k8": [
+          824.316091954023,
+          824.316091954023,
+          824.316091954023
+        ],
+        "k12": [
+          837.8620689655172,
+          837.8620689655172,
+          837.8620689655172
+        ],
+        "k8_mean": 824.3161,
+        "k12_mean": 837.8621,
+        "delta": 13.546,
+        "k8_spread": 0.0,
+        "k12_spread": 0.0
+      },
+      "p50 latency ms": {
+        "k8": [
+          566.9262830051593,
+          562.286204949487,
+          569.3848410155624
+        ],
+        "k12": [
+          570.9618089604191,
+          584.1249868972227,
+          604.1671860148199
+        ],
+        "k8_mean": 566.1991,
+        "k12_mean": 586.418,
+        "delta": 20.2189,
+        "k8_spread": 7.098636,
+        "k12_spread": 33.205377
+      },
+      "p95 latency ms": {
+        "k8": [
+          2780.6830589543097,
+          2701.9202799419872,
+          2755.098870024085
+        ],
+        "k12": [
+          2766.1215330008417,
+          2746.1763949831948,
+          3028.164707997348
+        ],
+        "k8_mean": 2745.9007,
+        "k12_mean": 2846.8209,
+        "delta": 100.9201,
+        "k8_spread": 78.762779,
+        "k12_spread": 281.988313
+      }
+    },
+    "within_session_variance": {
+      "k8_overall_spread": 0.0,
+      "k12_overall_spread": 0.0,
+      "answers_differing_across_identical_repeats": {
+        "k8": 0,
+        "k12": "0 and 2 of 174"
+      }
+    },
+    "cross_session_observations": {
+      "k8": [
+        0.5822,
+        0.5794,
+        0.5867,
+        0.5867,
+        0.5867
+      ],
+      "k12": [
+        0.5881,
+        0.5916,
+        0.5916,
+        0.5916
+      ],
+      "k8_range": 0.0073,
+      "k12_range": 0.0035,
+      "separated": true
+    }
+  },
+  "decision": {
+    "candidate": "graph_top_k=12",
+    "verdict": "REJECTED \u2014 keep 8",
+    "criteria": {
+      "1_consistent_improvement": "PASS (+0.49pp overall, every k=12 observation exceeds every k=8 observation)",
+      "2_exceeds_noise": "PARTIAL (0 within-session variance, but cross-session k=8 spread 0.73pp > the 0.49pp effect)",
+      "3_not_a_tiny_number_of_cases": "FAIL \u2014 the +5.26pp answer-coverage gain comes from 3 of 38 cases",
+      "4_groundedness_no_material_regression": "FAIL \u2014 -1.28pp; 26 of 68 differing cases worse",
+      "5_negative_premise_stable": "UNMEASURABLE \u2014 the 1.0->0.857 drop is a scorer artifact, not a behaviour change",
+      "6_latency_acceptable": "PASS (p50 +20ms, p95 +101ms)",
+      "7_reproducible": "PASS within session; cross-session observations separated"
+    },
+    "outcome": "fails criteria 3 and 4 -> KEEP graph_top_k = 8"
+  },
+  "negative_premise_artifact": {
+    "case": "negp-unsupported-migration",
+    "k8_answer": "I do not know.",
+    "k12_answer": "I do not know why Neo4j was moved off Docker and onto Kubernetes. The provided context does not contain information about such a move.",
+    "forbidden_keywords": [
+      "moved neo4j",
+      "migrated neo4j",
+      "off docker",
+      "onto kubernetes"
+    ],
+    "analysis": "Both answers are correct refusals. The k=12 answer restates the premise while denying it, so the Step 4 substring check fires on 'off docker'/'onto kubernetes'. This is a FALSE POSITIVE of the forbidden-keyword check, not a safety regression. The Step 4 change log already recorded substring matching as an accepted limit; this is that limit firing in the opposite direction.",
+    "recommendation": "if the negative-premise metric is ever used to decide a production change, the check needs negation awareness first"
+  },
+  "final_production_configuration": {
+    "resolver_threshold": 0.82,
+    "graph_depth": 1,
+    "graph_top_k": 8,
+    "hop_decay": 0.55,
+    "fusion_threshold": 0.6,
+    "max_nodes": 100,
+    "changed_by_quality_gate": false
+  },
+  "known_limitations": [
+    "Generic-noun entity attractors: the graph contains entities literally named 'API' and 'Model'",
+    "DB / Dar Al Ber Society ambiguity \u2014 identical similarity 0.8000 to K8/Kubernetes",
+    "VLM / vLLM false positive at 0.8571, above threshold",
+    "Conceptual semantic references suppressed at mention extraction (15 cases never reach the resolver)",
+    "Graph ranking is freshness-dominated; 3 of 5 signals are near-constant within a neighbourhood",
+    "Graph candidates are often near-tied (mean top-12 score spread 0.0535)",
+    "Qdrant has near-duplicate documents and imperfect recall (R@5 0.2857)",
+    "Conflict cohort is small \u2014 only 2-3 cases carry genuine two-sided evidence",
+    "LLM answer nondeterminism exists at temperature 0 and is session-state dependent",
+    "Graph and Qdrant compete with other providers for context allocation",
+    "tasks consumes ~59% of context tokens in every case",
+    "Graph retrieval is weak by standalone F1 (0.194) yet demonstrably improves answers",
+    "Graph F1 is ANTI-correlated with end-to-end answer quality",
+    "forbidden-keyword scoring is substring-based and can false-positive on refusals that restate the premise"
+  ],
+  "artifacts_preserved": {
+    "graphrag_dataset_audit_v1": "md only",
+    "graphrag_dataset_v2_changes": "md only",
+    "graphrag_dataset_v3_changes": "md only",
+    "graphrag_baseline_v3": "0558e623743f47b7",
+    "graphrag_baseline_v3_corrected": "993520c44c8379a2",
+    "graphrag_resolver_threshold_experiment_v1": "db68c766c6905ce0",
+    "graphrag_candidate_quality_experiment_v1": "cbfaec559490a70a",
+    "graphrag_mention_semantic_experiment_v1": "5e64c73ba56cda2e",
+    "graphrag_depth_experiment_v1": "860da8540cd5bcf6",
+    "graphrag_graph_ranking_experiment_v1": "55d3365426bdaf6d",
+    "graphrag_context_path_diagnostic_v1": "7be34b751c65fec0",
+    "graphrag_context_path_harness_fix_v1": "f9f1f3fc9982dc40",
+    "graphrag_fusion_experiment_v1": "3a89d40d5c26bfd8"
+  }
+}

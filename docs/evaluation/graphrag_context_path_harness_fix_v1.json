@@ -1,0 +1,325 @@
+{
+  "experiment": "evaluation_harness_provider_path_fix",
+  "version": "v1",
+  "type": "harness correctness fix \u2014 NOT a tuning experiment",
+  "production_changed": false,
+  "defect": {
+    "summary": "EvaluationRunner retrieved the graph twice. _stage_graph used RunnerConfig.graph_depth/graph_top_k and fed only trace.graph_* (metrics). The prompt was built from ContextBuilder's GraphProvider, which took top_k=8 from its own constructor default and depth from settings.GRAPH_RETRIEVAL_DEPTH. RunnerConfig.providers is None, so the runner never configured it.",
+    "consequence": "graph_top_k / graph_depth sweeps moved the metrics while the prompt stayed byte-identical, so every end-to-end answer reading was 'no effect'."
+  },
+  "fix": {
+    "file": "backend/evals/runner.py",
+    "method": "EvaluationRunner._answer_path_providers() substitutes ONLY the graph provider into the registry's provider list, constructing a new GraphProvider(enabled=<registry value>, top_k=config.graph_top_k, depth=config.graph_depth). Returns None when the config already matches the registry, so default runs use the registry by identity and are unchanged by construction. The shared registry instance is never mutated; an explicit config.providers override is passed through.",
+    "not_changed": [
+      "graph ranking",
+      "fusion",
+      "budget",
+      "resolver",
+      "mention extraction",
+      "Neo4j",
+      "Qdrant",
+      "dataset",
+      "production settings"
+    ]
+  },
+  "provider_invariant": {
+    "registry_providers": [
+      "corporate",
+      "memory",
+      "graph",
+      "calendar",
+      "tasks",
+      "sql",
+      "history"
+    ],
+    "verified": "non-graph providers preserved by object identity; order and membership unchanged; registry graph instance not mutated",
+    "live_check_provider_sets_identical": true
+  },
+  "live_validation_topk": {
+    "d1-neo4j-hosted-on": {
+      "graph_items": [
+        3,
+        5,
+        8
+      ],
+      "context_changed": true,
+      "prompt_changed": true,
+      "answer_changed": true,
+      "prompt_hashes": [
+        "36ad1df12b6fd7bc",
+        "f4a8e887146f6d44",
+        "59628ba9172ed2ee"
+      ],
+      "context_chars": [
+        2073,
+        2138,
+        2240
+      ],
+      "tokens": [
+        1281,
+        1295,
+        1317
+      ]
+    },
+    "d1-litellm-routes-to": {
+      "graph_items": [
+        3,
+        6,
+        8
+      ],
+      "context_changed": true,
+      "prompt_changed": true,
+      "answer_changed": true,
+      "prompt_hashes": [
+        "21493cf478f51e8d",
+        "d239e13b810dec77",
+        "d3bd1c444440d3d8"
+      ],
+      "context_chars": [
+        2134,
+        2236,
+        2322
+      ],
+      "tokens": [
+        1296,
+        1319,
+        1337
+      ]
+    },
+    "fus-qdrant-better-benchmark": {
+      "graph_items": [
+        3,
+        4,
+        7
+      ],
+      "context_changed": true,
+      "prompt_changed": true,
+      "answer_changed": false,
+      "prompt_hashes": [
+        "7397c1dcc782d6f9",
+        "b076c67b886a3e8b",
+        "68ecb1a4215704c6"
+      ],
+      "context_chars": [
+        1772,
+        1867,
+        2042
+      ],
+      "tokens": [
+        1206,
+        1229,
+        1269
+      ]
+    },
+    "tasks-urgent": {
+      "graph_items": [
+        0,
+        0,
+        0
+      ],
+      "context_changed": false,
+      "prompt_changed": false,
+      "answer_changed": false,
+      "prompt_hashes": [
+        "447a3813f8e70711",
+        "447a3813f8e70711",
+        "447a3813f8e70711"
+      ],
+      "context_chars": [
+        1862,
+        1862,
+        1862
+      ],
+      "tokens": [
+        1249,
+        1249,
+        1249
+      ]
+    },
+    "temporal-today": {
+      "graph_items": [
+        0,
+        0,
+        0
+      ],
+      "context_changed": false,
+      "prompt_changed": false,
+      "answer_changed": true,
+      "prompt_hashes": [
+        "270ad39bb5671b17",
+        "270ad39bb5671b17",
+        "270ad39bb5671b17"
+      ],
+      "context_chars": [
+        2058,
+        2058,
+        2058
+      ],
+      "tokens": [
+        1298,
+        1298,
+        1298
+      ]
+    },
+    "conflict-graph-vs-rag": {
+      "graph_items": [
+        1,
+        4,
+        6
+      ],
+      "context_changed": true,
+      "prompt_changed": true,
+      "answer_changed": true,
+      "prompt_hashes": [
+        "2dccc10583b2414a",
+        "15595c5bbddd2241",
+        "8526863019c08bf7"
+      ],
+      "context_chars": [
+        2196,
+        2288,
+        2412
+      ],
+      "tokens": [
+        1315,
+        1334,
+        1364
+      ]
+    },
+    "long-full-arch": {
+      "graph_items": [
+        0,
+        0,
+        0
+      ],
+      "context_changed": false,
+      "prompt_changed": false,
+      "answer_changed": false,
+      "prompt_hashes": [
+        "ddcf58b749ea42cb",
+        "ddcf58b749ea42cb",
+        "ddcf58b749ea42cb"
+      ],
+      "context_chars": [
+        624,
+        624,
+        624
+      ],
+      "tokens": [
+        940,
+        940,
+        940
+      ]
+    },
+    "kb-uses-litellm": {
+      "graph_items": [
+        4,
+        3,
+        5
+      ],
+      "context_changed": true,
+      "prompt_changed": true,
+      "answer_changed": false,
+      "prompt_hashes": [
+        "3205402c9f87d9da",
+        "71b86721bdbb6ace",
+        "19f347c73d712f79"
+      ],
+      "context_chars": [
+        2265,
+        2267,
+        2366
+      ],
+      "tokens": [
+        1328,
+        1330,
+        1353
+      ]
+    }
+  },
+  "live_validation_depth": {
+    "d1-neo4j-hosted-on": {
+      "graph_items": [
+        5,
+        5
+      ],
+      "context_changed": false,
+      "prompt_changed": false
+    },
+    "d1-litellm-routes-to": {
+      "graph_items": [
+        6,
+        6
+      ],
+      "context_changed": false,
+      "prompt_changed": false
+    },
+    "fus-qdrant-better-benchmark": {
+      "graph_items": [
+        4,
+        4
+      ],
+      "context_changed": false,
+      "prompt_changed": false
+    },
+    "tasks-urgent": {
+      "graph_items": [
+        0,
+        0
+      ],
+      "context_changed": false,
+      "prompt_changed": false
+    },
+    "temporal-today": {
+      "graph_items": [
+        0,
+        0
+      ],
+      "context_changed": false,
+      "prompt_changed": false
+    },
+    "conflict-graph-vs-rag": {
+      "graph_items": [
+        4,
+        4
+      ],
+      "context_changed": false,
+      "prompt_changed": false
+    },
+    "long-full-arch": {
+      "graph_items": [
+        0,
+        0
+      ],
+      "context_changed": false,
+      "prompt_changed": false
+    },
+    "kb-uses-litellm": {
+      "graph_items": [
+        3,
+        3
+      ],
+      "context_changed": false,
+      "prompt_changed": false
+    }
+  },
+  "llm_nondeterminism": {
+    "case": "temporal-today",
+    "prompt_hash": "270ad39bb5671b17",
+    "note": "identical prompt produced two different 'I do not know' phrasings at temperature=0, so answer-level metrics retain a small noise floor (consistent with the 0.6% measured in the corrected baseline)."
+  },
+  "withdrawn_conclusions": [
+    "Step 10/11: 'changing graph context produces zero answer change'",
+    "Step 11: 'top_k=4 delivers no answer benefit'",
+    "any end-to-end answer conclusion that varied _stage_graph while _stage_providers stayed fixed"
+  ],
+  "still_valid_conclusions": [
+    "depth 2/3 does not improve graph retrieval metrics",
+    "depth 3 is blocked by max_nodes=100",
+    "graph_top_k > 8 worsens graph F1",
+    "hop_decay is inert at depth 1",
+    "graph ranking is freshness-dominated",
+    "expected graph candidates often rank poorly; graph noise is high"
+  ],
+  "historical_artifacts": "none overwritten; Steps 6-11.5 artifacts left byte-identical"
+}

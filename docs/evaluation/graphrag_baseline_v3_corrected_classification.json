@@ -1,0 +1,697 @@
+{
+  "dataset_version": 3,
+  "case_count": 174,
+  "counts": {
+    "pass": 66,
+    "unexpected": 51,
+    "expected": 40,
+    "latent-inference": 9,
+    "infrastructure": 8
+  },
+  "families": {
+    "resolver": {
+      "total": 15,
+      "passed": 8,
+      "expected": 6,
+      "infra": 0,
+      "unexpected": 0,
+      "score": 0.6864,
+      "latent": 1
+    },
+    "document pollution": {
+      "total": 7,
+      "passed": 5,
+      "expected": 2,
+      "infra": 0,
+      "unexpected": 0,
+      "score": 0.7584,
+      "latent": 0
+    },
+    "semantic/extraction": {
+      "total": 12,
+      "passed": 0,
+      "expected": 12,
+      "infra": 0,
+      "unexpected": 0,
+      "score": 0.3116,
+      "latent": 0
+    },
+    "graph depth": {
+      "total": 24,
+      "passed": 0,
+      "expected": 21,
+      "infra": 0,
+      "unexpected": 3,
+      "score": 0.5509,
+      "latent": 0
+    },
+    "context explosion": {
+      "total": 6,
+      "passed": 5,
+      "expected": 0,
+      "infra": 0,
+      "unexpected": 1,
+      "score": 0.6944,
+      "latent": 0
+    },
+    "fusion": {
+      "total": 20,
+      "passed": 4,
+      "expected": 0,
+      "infra": 0,
+      "unexpected": 10,
+      "score": 0.5933,
+      "latent": 6
+    },
+    "ranking": {
+      "total": 13,
+      "passed": 3,
+      "expected": 0,
+      "infra": 0,
+      "unexpected": 8,
+      "score": 0.6012,
+      "latent": 2
+    },
+    "negative premise": {
+      "total": 20,
+      "passed": 8,
+      "expected": 1,
+      "infra": 0,
+      "unexpected": 11,
+      "score": 0.7143,
+      "latent": 0
+    },
+    "provenance": {
+      "total": 10,
+      "passed": 3,
+      "expected": 0,
+      "infra": 0,
+      "unexpected": 6,
+      "score": 0.6951,
+      "latent": 1
+    }
+  },
+  "verdicts": {
+    "graph-direct-usage": "pass",
+    "graph-two-hop-chain": "unexpected",
+    "alias-ms-graph": "pass",
+    "alias-postgres": "unexpected",
+    "person-project": "unexpected",
+    "tasks-only": "pass",
+    "negative-unknown-entity": "pass",
+    "mixed-graph-and-docs": "unexpected",
+    "res-tp-0778-qdrant-typo": "expected",
+    "res-tp-0788-litellm-proxy-server": "expected",
+    "res-tp-0800-k8": "expected",
+    "res-tp-0815-cctv-analysis": "expected",
+    "res-tp-0818-tailscale-vpn": "pass",
+    "res-tp-0824-graph-database": "latent-inference",
+    "res-tp-0833-qdrent": "pass",
+    "res-tp-0842-whisper-large-v3": "pass",
+    "res-tp-0870-ajman-polis": "pass",
+    "res-tp-0889-litellm-gate": "pass",
+    "res-tn-0857-vlm": "expected",
+    "res-tn-0800-db-collision": "pass",
+    "res-tn-0750-graph-microsoft": "pass",
+    "res-tn-0696-vllm-engine": "pass",
+    "poll-docker-compose": "expected",
+    "poll-compliance-matrix": "pass",
+    "poll-environment-matrix": "pass",
+    "poll-architecture-overview": "pass",
+    "poll-hybrid-ajman-police": "pass",
+    "poll-gateway-terse": "expected",
+    "sem-embedding-model": "expected",
+    "sem-speech-to-text": "expected",
+    "sem-object-storage": "expected",
+    "mext-generic-noun-suppressed": "expected",
+    "d1-litellm-routes-to": "unexpected",
+    "d1-neo4j-hosted-on": "unexpected",
+    "d1-joseph-works-on": "unexpected",
+    "d2-agentic-ai-gateway-host": "expected",
+    "d2-joseph-graph-db-runtime": "expected",
+    "d2-nazo-upstream-gpu": "expected",
+    "d2-ocr-pipeline-storage": "expected",
+    "d2-voice-assistant-host": "expected",
+    "d3-yusuf-mentioned-model": "expected",
+    "d3-tanvi-mentioned-model": "expected",
+    "expl-vllm-narrow": "pass",
+    "expl-msgraph-narrow": "pass",
+    "expl-neo4j-narrow": "pass",
+    "expl-doc-share-at-depth": "pass",
+    "expl-budget-under-depth": "pass",
+    "fus-graph-better-deployment": "unexpected",
+    "fus-qdrant-better-benchmark": "pass",
+    "fus-qdrant-better-incident": "pass",
+    "fus-corroborated-litellm-vllm": "unexpected",
+    "fus-graph-plausible-but-irrelevant": "unexpected",
+    "fus-qdrant-semantically-near-miss": "latent-inference",
+    "fus-cross-source-complementary": "unexpected",
+    "rank-low-centrality-relevant": "pass",
+    "rank-hop-distance-penalty": "unexpected",
+    "rank-corroborated-over-single": "pass",
+    "rank-provenance-authoritative-doc": "unexpected",
+    "rank-freshness-recent-benchmark": "unexpected",
+    "negp-unsupported-migration": "pass",
+    "negp-wrong-person-role": "unexpected",
+    "negp-unsupported-auth-relation": "unexpected",
+    "prov-graph-only-claim": "unexpected",
+    "prov-document-only-claim": "unexpected",
+    "prov-two-source-claim": "unexpected",
+    "prov-omit-unsupported-claim": "unexpected",
+    "kb-uses-litellm": "pass",
+    "kb-routes-to": "unexpected",
+    "kb-hosted-on": "pass",
+    "kb-who-works-on": "unexpected",
+    "kb-stores-postgres": "unexpected",
+    "kb-uses-qdrant": "pass",
+    "kb-uses-neo4j": "pass",
+    "kb-uses-msgraph": "pass",
+    "tasks-pending": "pass",
+    "tasks-urgent": "pass",
+    "tasks-overdue": "pass",
+    "tasks-count": "pass",
+    "rag-ocr": "unexpected",
+    "rag-phase2": "unexpected",
+    "rag-portfolio": "unexpected",
+    "rag-ministry": "unexpected",
+    "rag-findings": "unexpected",
+    "alias-ms-graph-usage": "pass",
+    "alias-postgres-platform": "unexpected",
+    "alias-msgraph-nospace": "pass",
+    "alias-litellm-proxy": "pass",
+    "alias-qwen-fast-spaced": "pass",
+    "neg-google-founder": "unexpected",
+    "neg-zorblatt": "unexpected",
+    "neg-mars": "unexpected",
+    "neg-competitor": "unexpected",
+    "neg-unknown-person": "unexpected",
+    "case-upper": "pass",
+    "case-lower": "pass",
+    "case-mixed": "pass",
+    "short-query-litellm": "pass",
+    "short-query-neo4j": "pass",
+    "hop2-model-behind": "expected",
+    "hop2-serving-stack": "expected",
+    "hop2-akshay-stack": "expected",
+    "hop2-inference-chain": "expected",
+    "hop2-from-postgres": "expected",
+    "fanout-technologies": "unexpected",
+    "fanout-datastores": "latent-inference",
+    "fanout-everything-agentic": "unexpected",
+    "typo-litellm": "unexpected",
+    "typo-msgraph": "pass",
+    "typo-postgre": "pass",
+    "typo-agentic": "pass",
+    "typo-qdrant": "pass",
+    "typo-neo4j": "unexpected",
+    "syn-vector-db": "expected",
+    "syn-graph-db": "expected",
+    "syn-gateway": "expected",
+    "syn-relational": "expected",
+    "syn-mail-api": "expected",
+    "temporal-tomorrow": "pass",
+    "temporal-after-tomorrow": "infrastructure",
+    "temporal-this-week": "infrastructure",
+    "temporal-next-due": "pass",
+    "temporal-overdue-week": "unexpected",
+    "temporal-today": "infrastructure",
+    "memory-neo4j-decision": "infrastructure",
+    "memory-preference-currency": "infrastructure",
+    "memory-reporting-style": "infrastructure",
+    "memory-past-project": "pass",
+    "memory-team-pref": "infrastructure",
+    "rag-multi-ocr": "unexpected",
+    "rag-kpi": "unexpected",
+    "rag-audio": "unexpected",
+    "rag-testing": "unexpected",
+    "rag-budget": "pass",
+    "rag-handbook": "unexpected",
+    "cross-akshay-doc": "unexpected",
+    "cross-stack-doc": "latent-inference",
+    "cross-corroborated": "unexpected",
+    "abbrev-llm": "expected",
+    "abbrev-db": "expected",
+    "abbrev-api": "expected",
+    "email-recent": "infrastructure",
+    "email-from-person": "pass",
+    "conflict-doc-vs-memory": "latent-inference",
+    "conflict-graph-vs-rag": "pass",
+    "conflict-stale-fact": "latent-inference",
+    "conflict-two-owners": "unexpected",
+    "hop3-full-chain": "expected",
+    "hop3-reverse": "expected",
+    "hop3-shared-dependency": "expected",
+    "hop3-impact": "expected",
+    "hop3-blast-radius": "expected",
+    "ambig-graph-word": "pass",
+    "ambig-model": "latent-inference",
+    "ambig-platform": "pass",
+    "ambig-it": "pass",
+    "adv-leading-false": "unexpected",
+    "adv-leading-person": "unexpected",
+    "adv-invented-rel": "unexpected",
+    "adv-mixed-known-unknown": "pass",
+    "adv-injection": "pass",
+    "long-full-arch": "expected",
+    "long-compare-stores": "pass",
+    "long-onboarding": "expected",
+    "long-everything": "pass",
+    "multi-entity-3": "expected",
+    "multi-entity-alias-mix": "pass",
+    "corrob-strongest": "latent-inference",
+    "corrob-single-source": "latent-inference",
+    "provenance-cite": "pass",
+    "unicode-entity": "unexpected",
+    "punct-heavy": "pass",
+    "empty-ish": "pass",
+    "adv-repeated-entity": "pass",
+    "adv-very-long-question": "expected"
+  },
+  "unexpected_failures": [
+    {
+      "case_id": "typo-neo4j",
+      "overall": 0.25,
+      "failures": [
+        "entities not resolved: ['neo4j']",
+        "graph nodes missing: ['neo4j']",
+        "providers contributed nothing: ['graph']",
+        "provider order ['calendar', 'tasks', 'corporate'] vs expected ['graph', 'corporate', 'tasks']"
+      ]
+    },
+    {
+      "case_id": "rag-handbook",
+      "overall": 0.25,
+      "failures": [
+        "no expected document retrieved (got ['\u9080\u8bf7\u5355\u4f4d\u516c\u53f8\u8425\u4e1a\u6267\u7167.pdf'])",
+        "provider order ['corporate', 'calendar', 'tasks'] vs expected ['tasks', 'corporate']"
+      ]
+    },
+    {
+      "case_id": "conflict-two-owners",
+      "overall": 0.31,
+      "failures": [
+        "entities not resolved: ['agentic ai']",
+        "graph nodes missing: ['agentic ai', 'akshay']",
+        "providers contributed nothing: ['graph']",
+        "provider order ['tasks', 'corporate', 'calendar'] vs expected ['graph', 'corporate', 'tasks']"
+      ]
+    },
+    {
+      "case_id": "neg-google-founder",
+      "overall": 0.3333,
+      "failures": [
+        "provider order ['graph', 'calendar', 'tasks', 'corporate'] vs expected ['tasks', 'corporate']",
+        "negative case matched anyway: ['Google']"
+      ]
+    },
+    {
+      "case_id": "rag-phase2",
+      "overall": 0.3571,
+      "failures": [
+        "no expected document retrieved (got ['emd-0228-tender_document-tender-response-tnd-2024-566-dar-al-ber-society.md'])",
+        "provider order ['corporate', 'calendar', 'tasks'] vs expected ['tasks', 'corporate']"
+      ]
+    },
+    {
+      "case_id": "rag-ministry",
+      "overall": 0.4276,
+      "failures": [
+        "no expected document retrieved (got ['emd-0203-ocr_document-ocr-circular-578-2024-ministry-of-economy-tourism.md'])",
+        "provider order ['corporate', 'graph', 'calendar', 'tasks'] vs expected ['tasks', 'corporate']"
+      ]
+    },
+    {
+      "case_id": "kb-routes-to",
+      "overall": 0.4286,
+      "failures": [
+        "graph nodes missing: ['qwen fast']",
+        "relationships missing: ['litellm|routes to|qwen fast']",
+        "provider order ['tasks', 'corporate', 'graph', 'calendar'] vs expected ['graph', 'corporate', 'tasks']",
+        "keyword coverage 0% for ['qwen-fast']"
+      ]
+    },
+    {
+      "case_id": "graph-two-hop-chain",
+      "overall": 0.4394,
+      "failures": [
+        "graph nodes missing: ['qwen fast', 'vllm']",
+        "relationships missing: ['litellm|routes to|qwen fast', 'qwen fast|hosted on|vllm']",
+        "keyword coverage 0% for ['qwen-fast', 'vLLM']"
+      ]
+    },
+    {
+      "case_id": "fus-graph-better-deployment",
+      "overall": 0.4398,
+      "failures": [
+        "graph nodes missing: ['db primary 01', 'gpu node a']",
+        "relationships missing: ['litellm|deployed on|db primary 01', 'litellm|deployed on|gpu node a']",
+        "provider order ['corporate', 'graph', 'calendar', 'tasks'] vs expected ['graph', 'corporate']"
+      ]
+    },
+    {
+      "case_id": "rag-portfolio",
+      "overall": 0.45,
+      "failures": [
+        "no expected document retrieved (got ['emd-0133-project_documentation-knowledge-graph-project-documentation.md'])",
+        "provider order ['corporate', 'calendar', 'tasks'] vs expected ['tasks', 'corporate']"
+      ]
+    },
+    {
+      "case_id": "unicode-entity",
+      "overall": 0.45,
+      "failures": [
+        "entities not resolved: ['neo4j']",
+        "graph nodes missing: ['neo4j']",
+        "providers contributed nothing: ['graph']"
+      ]
+    },
+    {
+      "case_id": "rag-multi-ocr",
+      "overall": 0.4643,
+      "failures": [
+        "no expected document retrieved (got ['emd-0204-ocr_document-ocr-circular-625-2025-sharjah-airport-authority.md'])",
+        "provider order ['corporate', 'calendar', 'tasks'] vs expected ['tasks', 'corporate']"
+      ]
+    },
+    {
+      "case_id": "d1-litellm-routes-to",
+      "overall": 0.4889,
+      "failures": [
+        "graph nodes missing: ['gemma 3', 'gemma 3 4b', 'llama 3 3 70b', 'qwen fast', 'qwen3']",
+        "relationships missing: ['litellm|routes to|qwen fast', 'litellm|routes to|qwen3']",
+        "provider order ['tasks', 'corporate', 'graph', 'calendar'] vs expected ['graph', 'corporate']"
+      ]
+    },
+    {
+      "case_id": "adv-leading-person",
+      "overall": 0.4978,
+      "failures": [
+        "entities not resolved: ['agentic ai']",
+        "provider order ['tasks', 'corporate', 'graph', 'calendar'] vs expected ['graph', 'corporate', 'tasks']"
+      ]
+    },
+    {
+      "case_id": "neg-zorblatt",
+      "overall": 0.5,
+      "failures": [
+        "provider order ['calendar', 'tasks', 'corporate'] vs expected ['tasks', 'corporate']"
+      ]
+    },
+    {
+      "case_id": "neg-mars",
+      "overall": 0.5,
+      "failures": [
+        "provider order ['corporate', 'calendar', 'tasks'] vs expected ['tasks', 'corporate']"
+      ]
+    },
+    {
+      "case_id": "neg-competitor",
+      "overall": 0.5,
+      "failures": [
+        "provider order ['calendar', 'tasks', 'corporate'] vs expected ['tasks', 'corporate']"
+      ]
+    },
+    {
+      "case_id": "rag-testing",
+      "overall": 0.5,
+      "failures": [
+        "no expected document retrieved (got ['Phase 2 -  EDIT.pdf'])"
+      ]
+    },
+    {
+      "case_id": "kb-who-works-on",
+      "overall": 0.5082,
+      "failures": [
+        "graph nodes missing: ['akshay']",
+        "relationships missing: ['akshay|works on|agentic ai']",
+        "keyword coverage 0% for ['Akshay']"
+      ]
+    },
+    {
+      "case_id": "person-project",
+      "overall": 0.5095,
+      "failures": [
+        "graph nodes missing: ['akshay']",
+        "relationships missing: ['akshay|works on|agentic ai']",
+        "keyword coverage 0% for ['Akshay']"
+      ]
+    },
+    {
+      "case_id": "kb-stores-postgres",
+      "overall": 0.5179,
+      "failures": [
+        "graph nodes missing: ['postgresql']",
+        "relationships missing: ['agentic ai|stores|postgresql']",
+        "keyword coverage 0% for ['PostgreSQL']"
+      ]
+    },
+    {
+      "case_id": "adv-invented-rel",
+      "overall": 0.53,
+      "failures": [
+        "provider order ['corporate', 'tasks', 'graph', 'calendar'] vs expected ['graph', 'corporate', 'tasks']"
+      ]
+    },
+    {
+      "case_id": "d1-neo4j-hosted-on",
+      "overall": 0.5303,
+      "failures": [
+        "graph nodes missing: ['db primary 01', 'docker']",
+        "relationships missing: ['neo4j|hosted on|db primary 01', 'neo4j|hosted on|docker']",
+        "provider order ['corporate', 'graph', 'calendar', 'tasks'] vs expected ['graph', 'corporate']"
+      ]
+    },
+    {
+      "case_id": "fus-graph-plausible-but-irrelevant",
+      "overall": 0.5417,
+      "failures": [
+        "no expected document retrieved (got ['emd-0294-gpu_benchmark-gpu-benchmark-yolov8-on-huawei-ascend-910b-int8.md'])",
+        "keyword coverage 0% for ['80 GB']"
+      ]
+    },
+    {
+      "case_id": "prov-graph-only-claim",
+      "overall": 0.5429,
+      "failures": [
+        "graph nodes missing: ['gpu node a']",
+        "relationships missing: ['agentic ai|deployed on|gpu node a']",
+        "provider order ['corporate', 'graph', 'calendar', 'tasks'] vs expected ['graph', 'corporate']"
+      ]
+    },
+    {
+      "case_id": "rank-provenance-authoritative-doc",
+      "overall": 0.5571,
+      "failures": [
+        "no expected document retrieved (got ['emd-0139-project_documentation-evaluation-framework-project-documentation.md'])",
+        "provider order ['graph', 'corporate', 'calendar', 'tasks'] vs expected ['corporate', 'graph']"
+      ]
+    },
+    {
+      "case_id": "rag-findings",
+      "overall": 0.5625,
+      "failures": [
+        "no expected document retrieved (got ['test_upload.txt'])"
+      ]
+    },
+    {
+      "case_id": "typo-litellm",
+      "overall": 0.5744,
+      "failures": [
+        "provider order ['calendar', 'tasks', 'corporate', 'graph'] vs expected ['graph', 'corporate', 'tasks']"
+      ]
+    },
+    {
+      "case_id": "alias-postgres",
+      "overall": 0.5778,
+      "failures": [
+        "keyword coverage 0% for ['PostgreSQL']"
+      ]
+    },
+    {
+      "case_id": "cross-akshay-doc",
+      "overall": 0.5829,
+      "failures": [
+        "graph nodes missing: ['agentic ai']",
+        "provider order ['tasks', 'corporate', 'graph', 'calendar'] vs expected ['graph', 'corporate', 'tasks']"
+      ]
+    },
+    {
+      "case_id": "alias-postgres-platform",
+      "overall": 0.5857,
+      "failures": [
+        "keyword coverage 0% for ['PostgreSQL']"
+      ]
+    },
+    {
+      "case_id": "rank-hop-distance-penalty",
+      "overall": 0.59,
+      "failures": [
+        "graph nodes missing: ['litellm']",
+        "relationships missing: ['agentic ai|uses|litellm']"
+      ]
+    },
+    {
+      "case_id": "prov-document-only-claim",
+      "overall": 0.5952,
+      "failures": [
+        "no expected document retrieved (got ['emd-0300-gpu_benchmark-gpu-benchmark-qwen3-vl-on-edge-node-ajman-02-fp16.md'])",
+        "keyword coverage 0% for ['15']"
+      ]
+    },
+    {
+      "case_id": "rank-freshness-recent-benchmark",
+      "overall": 0.6,
+      "failures": [
+        "no expected document retrieved (got ['emd-0309-gpu_benchmark-gpu-benchmark-qwen3-vl-on-gpu-node-a-fp8.md'])"
+      ]
+    },
+    {
+      "case_id": "temporal-overdue-week",
+      "overall": 0.6111,
+      "failures": [
+        "provider order ['calendar', 'tasks', 'corporate'] vs expected ['tasks', 'corporate']"
+      ]
+    },
+    {
+      "case_id": "fanout-technologies",
+      "overall": 0.6225,
+      "failures": [
+        "graph nodes missing: ['litellm', 'microsoft graph', 'neo4j', 'postgresql', 'qdrant']",
+        "keyword coverage 0% for ['LiteLLM']"
+      ]
+    },
+    {
+      "case_id": "fus-cross-source-complementary",
+      "overall": 0.6394,
+      "failures": [
+        "graph nodes missing: ['joseph mathew']",
+        "no expected document retrieved (got ['emd-0096-email-re-ocr-pipeline-performance-numbers.md'])"
+      ]
+    },
+    {
+      "case_id": "mixed-graph-and-docs",
+      "overall": 0.6468,
+      "failures": [
+        "graph nodes missing: ['litellm', 'microsoft graph', 'postgresql']",
+        "keyword coverage 0% for ['LiteLLM']"
+      ]
+    },
+    {
+      "case_id": "fus-corroborated-litellm-vllm",
+      "overall": 0.6583,
+      "failures": [
+        "graph nodes missing: ['vllm']",
+        "relationships missing: ['litellm|depends on|vllm']"
+      ]
+    },
+    {
+      "case_id": "rag-audio",
+      "overall": 0.6786,
+      "failures": [
+        "provider order ['corporate', 'calendar', 'tasks'] vs expected ['tasks', 'corporate']"
+      ]
+    },
+    {
+      "case_id": "cross-corroborated",
+      "overall": 0.6865,
+      "failures": [
+        "provider order ['calendar', 'tasks', 'corporate', 'graph'] vs expected ['graph', 'corporate', 'tasks']"
+      ]
+    },
+    {
+      "case_id": "prov-two-source-claim",
+      "overall": 0.6907,
+      "failures": [
+        "graph nodes missing: ['joseph mathew']",
+        "no expected document retrieved (got ['emd-0144-project_documentation-ocr-pipeline-project-documentation.md'])"
+      ]
+    },
+    {
+      "case_id": "adv-leading-false",
+      "overall": 0.6944,
+      "failures": [
+        "provider order ['corporate', 'tasks', 'graph', 'calendar'] vs expected ['graph', 'corporate', 'tasks']"
+      ]
+    },
+    {
+      "case_id": "rag-ocr",
+      "overall": 0.7,
+      "failures": [
+        "no expected document retrieved (got ['emd-0209-ocr_document-ocr-circular-229-2025-dubai-parliament.md'])"
+      ]
+    },
+    {
+      "case_id": "prov-omit-unsupported-claim",
+      "overall": 0.7059,
+      "failures": [
+        "no expected document retrieved (got ['emd-0150-project_documentation-evaluation-framework-project-documentation.md'])"
+      ]
+    },
+    {
+      "case_id": "fanout-everything-agentic",
+      "overall": 0.7059,
+      "failures": [
+        "graph nodes missing: ['akshay', 'litellm', 'postgresql']"
+      ]
+    },
+    {
+      "case_id": "rag-kpi",
+      "overall": 0.7434,
+      "failures": [
+        "provider order ['corporate', 'calendar', 'tasks'] vs expected ['tasks', 'corporate']"
+      ]
+    },
+    {
+      "case_id": "negp-wrong-person-role",
+      "overall": 0.75,
+      "failures": [
+        "keyword coverage 0% for ['Ayesha Khan']"
+      ]
+    },
+    {
+      "case_id": "neg-unknown-person",
+      "overall": 0.75,
+      "failures": [
+        "provider order ['calendar', 'tasks', 'corporate'] vs expected ['tasks', 'corporate']"
+      ]
+    },
+    {
+      "case_id": "d1-joseph-works-on",
+      "overall": 0.9167,
+      "failures": [
+        "graph nodes missing: ['neo4j', 'nginx', 'ocr pipeline', 'tender automation']"
+      ]
+    },
+    {
+      "case_id": "negp-unsupported-auth-relation",
+      "overall": 0.9444,
+      "failures": [
+        "answer affirmed an unsupported premise: ['tailscale authenticates against']"
+      ]
+    }
+  ],
+  "infrastructure_cases": [
+    "temporal-after-tomorrow",
+    "temporal-this-week",
+    "temporal-today",
+    "memory-neo4j-decision",
+    "memory-preference-currency",
+    "memory-reporting-style",
+    "memory-team-pref",
+    "email-recent"
+  ],
+  "semantic_stage": {
+    "syn-vector-db": "mention extraction",
+    "syn-graph-db": "mention extraction",
+    "syn-gateway": "mention extraction",
+    "syn-relational": "mention extraction",
+    "syn-mail-api": "mention extraction",
+    "abbrev-llm": "already passing",
+    "abbrev-db": "entity resolution (wrong entity)",
+    "abbrev-api": "entity resolution (threshold)",
+    "mext-generic-noun-suppressed": "mention extraction",
+    "sem-embedding-model": "entity resolution (no lexical path)",
+    "sem-speech-to-text": "entity resolution (no lexical path)",
+    "sem-object-storage": "entity resolution (empty candidates)"
+  }
+}

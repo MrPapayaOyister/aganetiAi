@@ -1,0 +1,503 @@
+{
+  "experiment": "graph_to_answer_context_path",
+  "version": "v1",
+  "dataset_version": 3,
+  "correction_version": "v3.1",
+  "production_changed": false,
+  "finding": "The evaluation harness performs TWO independent graph retrievals. EvaluationRunner._stage_graph uses RunnerConfig.graph_depth/graph_top_k and feeds ONLY trace.graph_* metrics. The LLM prompt is built from the ContextBundle produced by a SEPARATE GraphProvider inside ContextBuilder, whose top_k defaults to 8 and whose depth comes from config.settings.GRAPH_RETRIEVAL_DEPTH. RunnerConfig.providers is None, so the runner never passes its graph settings to the provider.",
+  "consequence": "Steps 10 and 11 varied a knob that cannot reach the answer path. Their GRAPH METRIC results remain valid; their answer-insensitivity conclusions were a harness artifact.",
+  "variant_A_runner_top_k": {
+    "d1-neo4j-hosted-on": {
+      "metric_nodes": [
+        4,
+        8,
+        12
+      ],
+      "prompt_hashes": [
+        "f4a8e887146f6d44",
+        "f4a8e887146f6d44",
+        "f4a8e887146f6d44"
+      ],
+      "prompt_changed": false
+    },
+    "d1-litellm-routes-to": {
+      "metric_nodes": [
+        4,
+        8,
+        12
+      ],
+      "prompt_hashes": [
+        "d239e13b810dec77",
+        "d239e13b810dec77",
+        "d239e13b810dec77"
+      ],
+      "prompt_changed": false
+    },
+    "hop2-serving-stack": {
+      "metric_nodes": [
+        4,
+        8,
+        12
+      ],
+      "prompt_hashes": [
+        "6f5b44828a3f79fe",
+        "6f5b44828a3f79fe",
+        "6f5b44828a3f79fe"
+      ],
+      "prompt_changed": false
+    },
+    "fus-qdrant-better-benchmark": {
+      "metric_nodes": [
+        4,
+        8,
+        12
+      ],
+      "prompt_hashes": [
+        "b076c67b886a3e8b",
+        "b076c67b886a3e8b",
+        "b076c67b886a3e8b"
+      ],
+      "prompt_changed": false
+    },
+    "fus-corroborated-litellm-vllm": {
+      "metric_nodes": [
+        4,
+        8,
+        12
+      ],
+      "prompt_hashes": [
+        "5fb71422895fa5cc",
+        "5fb71422895fa5cc",
+        "5fb71422895fa5cc"
+      ],
+      "prompt_changed": false
+    },
+    "conflict-graph-vs-rag": {
+      "metric_nodes": [
+        4,
+        8,
+        12
+      ],
+      "prompt_hashes": [
+        "15595c5bbddd2241",
+        "15595c5bbddd2241",
+        "15595c5bbddd2241"
+      ],
+      "prompt_changed": false
+    },
+    "long-full-arch": {
+      "metric_nodes": [
+        0,
+        0,
+        0
+      ],
+      "prompt_hashes": [
+        "ddcf58b749ea42cb",
+        "ddcf58b749ea42cb",
+        "ddcf58b749ea42cb"
+      ],
+      "prompt_changed": false
+    },
+    "d2-agentic-ai-gateway-host": {
+      "metric_nodes": [
+        4,
+        8,
+        12
+      ],
+      "prompt_hashes": [
+        "150ee568e0dccc7c",
+        "150ee568e0dccc7c",
+        "150ee568e0dccc7c"
+      ],
+      "prompt_changed": false
+    }
+  },
+  "variant_B_provider_top_k": {
+    "d1-neo4j-hosted-on": {
+      "prod_top_k_8": {
+        "graph_in_final": 5,
+        "prompt_hash": "f4a8e887146f6d44",
+        "answer_hash": "1bc2c6cbb5721d85",
+        "context_chars": 2138,
+        "tokens": 1295
+      },
+      "provider_top_k_4": {
+        "graph_in_final": 3,
+        "prompt_hash": "36ad1df12b6fd7bc",
+        "answer_hash": "1bc2c6cbb5721d85",
+        "context_chars": 2073,
+        "tokens": 1281
+      },
+      "provider_top_k_12": {
+        "graph_in_final": 8,
+        "prompt_hash": "59628ba9172ed2ee",
+        "answer_hash": "d978382b4c2a117e",
+        "context_chars": 2240,
+        "tokens": 1317
+      },
+      "provider_depth_2": {
+        "graph_in_final": 5,
+        "prompt_hash": "f4a8e887146f6d44",
+        "answer_hash": "1bc2c6cbb5721d85",
+        "context_chars": 2138,
+        "tokens": 1295
+      }
+    },
+    "d1-litellm-routes-to": {
+      "prod_top_k_8": {
+        "graph_in_final": 6,
+        "prompt_hash": "d239e13b810dec77",
+        "answer_hash": "c61bcf3feab314e3",
+        "context_chars": 2236,
+        "tokens": 1319
+      },
+      "provider_top_k_4": {
+        "graph_in_final": 3,
+        "prompt_hash": "21493cf478f51e8d",
+        "answer_hash": "276ab91be2c26549",
+        "context_chars": 2134,
+        "tokens": 1296
+      },
+      "provider_top_k_12": {
+        "graph_in_final": 8,
+        "prompt_hash": "d3bd1c444440d3d8",
+        "answer_hash": "21477300efcdb630",
+        "context_chars": 2322,
+        "tokens": 1337
+      },
+      "provider_depth_2": {
+        "graph_in_final": 6,
+        "prompt_hash": "d239e13b810dec77",
+        "answer_hash": "c61bcf3feab314e3",
+        "context_chars": 2236,
+        "tokens": 1319
+      }
+    },
+    "hop2-serving-stack": {
+      "prod_top_k_8": {
+        "graph_in_final": 6,
+        "prompt_hash": "6f5b44828a3f79fe",
+        "answer_hash": "d29964b8011ad65e",
+        "context_chars": 2182,
+        "tokens": 1305
+      },
+      "provider_top_k_4": {
+        "graph_in_final": 3,
+        "prompt_hash": "d576d739ba292d87",
+        "answer_hash": "ef4a4095f4f2db49",
+        "context_chars": 2080,
+        "tokens": 1282
+      },
+      "provider_top_k_12": {
+        "graph_in_final": 8,
+        "prompt_hash": "ece4d62121df20b1",
+        "answer_hash": "995305154d39a126",
+        "context_chars": 2268,
+        "tokens": 1323
+      },
+      "provider_depth_2": {
+        "graph_in_final": 6,
+        "prompt_hash": "6f5b44828a3f79fe",
+        "answer_hash": "d29964b8011ad65e",
+        "context_chars": 2182,
+        "tokens": 1305
+      }
+    },
+    "fus-qdrant-better-benchmark": {
+      "prod_top_k_8": {
+        "graph_in_final": 4,
+        "prompt_hash": "b076c67b886a3e8b",
+        "answer_hash": "13742f40840de214",
+        "context_chars": 1867,
+        "tokens": 1229
+      },
+      "provider_top_k_4": {
+        "graph_in_final": 3,
+        "prompt_hash": "7397c1dcc782d6f9",
+        "answer_hash": "13742f40840de214",
+        "context_chars": 1772,
+        "tokens": 1206
+      },
+      "provider_top_k_12": {
+        "graph_in_final": 7,
+        "prompt_hash": "68ecb1a4215704c6",
+        "answer_hash": "13742f40840de214",
+        "context_chars": 2042,
+        "tokens": 1269
+      },
+      "provider_depth_2": {
+        "graph_in_final": 4,
+        "prompt_hash": "b076c67b886a3e8b",
+        "answer_hash": "13742f40840de214",
+        "context_chars": 1867,
+        "tokens": 1229
+      }
+    },
+    "fus-corroborated-litellm-vllm": {
+      "prod_top_k_8": {
+        "graph_in_final": 6,
+        "prompt_hash": "5fb71422895fa5cc",
+        "answer_hash": "a86bfc21f2f5d654",
+        "context_chars": 2105,
+        "tokens": 1286
+      },
+      "provider_top_k_4": {
+        "graph_in_final": 3,
+        "prompt_hash": "efdb17f556e0487a",
+        "answer_hash": "8f123961725deedf",
+        "context_chars": 2003,
+        "tokens": 1263
+      },
+      "provider_top_k_12": {
+        "graph_in_final": 8,
+        "prompt_hash": "05b6b7b83481256d",
+        "answer_hash": "4e20929ae8fd1ab2",
+        "context_chars": 2191,
+        "tokens": 1304
+      },
+      "provider_depth_2": {
+        "graph_in_final": 6,
+        "prompt_hash": "5fb71422895fa5cc",
+        "answer_hash": "a86bfc21f2f5d654",
+        "context_chars": 2105,
+        "tokens": 1286
+      }
+    },
+    "conflict-graph-vs-rag": {
+      "prod_top_k_8": {
+        "graph_in_final": 4,
+        "prompt_hash": "15595c5bbddd2241",
+        "answer_hash": "8894dcb31d7873d7",
+        "context_chars": 2288,
+        "tokens": 1334
+      },
+      "provider_top_k_4": {
+        "graph_in_final": 1,
+        "prompt_hash": "2dccc10583b2414a",
+        "answer_hash": "f0ff66b48f28aa61",
+        "context_chars": 2196,
+        "tokens": 1315
+      },
+      "provider_top_k_12": {
+        "graph_in_final": 6,
+        "prompt_hash": "8526863019c08bf7",
+        "answer_hash": "01a5b13f24dd847a",
+        "context_chars": 2412,
+        "tokens": 1364
+      },
+      "provider_depth_2": {
+        "graph_in_final": 4,
+        "prompt_hash": "15595c5bbddd2241",
+        "answer_hash": "8894dcb31d7873d7",
+        "context_chars": 2288,
+        "tokens": 1334
+      }
+    },
+    "long-full-arch": {
+      "prod_top_k_8": {
+        "graph_in_final": 0,
+        "prompt_hash": "ddcf58b749ea42cb",
+        "answer_hash": "1bc2c6cbb5721d85",
+        "context_chars": 624,
+        "tokens": 940
+      },
+      "provider_top_k_4": {
+        "graph_in_final": 0,
+        "prompt_hash": "ddcf58b749ea42cb",
+        "answer_hash": "1bc2c6cbb5721d85",
+        "context_chars": 624,
+        "tokens": 940
+      },
+      "provider_top_k_12": {
+        "graph_in_final": 0,
+        "prompt_hash": "ddcf58b749ea42cb",
+        "answer_hash": "1bc2c6cbb5721d85",
+        "context_chars": 624,
+        "tokens": 940
+      },
+      "provider_depth_2": {
+        "graph_in_final": 0,
+        "prompt_hash": "ddcf58b749ea42cb",
+        "answer_hash": "1bc2c6cbb5721d85",
+        "context_chars": 624,
+        "tokens": 940
+      }
+    },
+    "d2-agentic-ai-gateway-host": {
+      "prod_top_k_8": {
+        "graph_in_final": 5,
+        "prompt_hash": "150ee568e0dccc7c",
+        "answer_hash": "d4f7763b772d1834",
+        "context_chars": 2332,
+        "tokens": 1344
+      },
+      "provider_top_k_4": {
+        "graph_in_final": 1,
+        "prompt_hash": "60509e979d8d0a7c",
+        "answer_hash": "d4f7763b772d1834",
+        "context_chars": 2198,
+        "tokens": 1315
+      },
+      "provider_top_k_12": {
+        "graph_in_final": 6,
+        "prompt_hash": "12b0a0af254a0d3c",
+        "answer_hash": "d4f7763b772d1834",
+        "context_chars": 2398,
+        "tokens": 1360
+      },
+      "provider_depth_2": {
+        "graph_in_final": 5,
+        "prompt_hash": "150ee568e0dccc7c",
+        "answer_hash": "d4f7763b772d1834",
+        "context_chars": 2332,
+        "tokens": 1344
+      }
+    }
+  },
+  "variant_C_graph_disabled": {
+    "d1-neo4j-hosted-on": {
+      "graph_items_before": 5,
+      "graph_items_after": 0,
+      "prompt_changed": true,
+      "answer_changed": false,
+      "sections_with": [
+        "[COMPANY KNOWLEDGE]",
+        "[KNOWLEDGE GRAPH]"
+      ],
+      "sections_without": [
+        "[COMPANY KNOWLEDGE]"
+      ]
+    },
+    "d1-litellm-routes-to": {
+      "graph_items_before": 6,
+      "graph_items_after": 0,
+      "prompt_changed": true,
+      "answer_changed": true,
+      "sections_with": [
+        "[COMPANY KNOWLEDGE]",
+        "[KNOWLEDGE GRAPH]"
+      ],
+      "sections_without": [
+        "[COMPANY KNOWLEDGE]"
+      ]
+    },
+    "hop2-serving-stack": {
+      "graph_items_before": 6,
+      "graph_items_after": 0,
+      "prompt_changed": true,
+      "answer_changed": true,
+      "sections_with": [
+        "[COMPANY KNOWLEDGE]",
+        "[KNOWLEDGE GRAPH]"
+      ],
+      "sections_without": [
+        "[COMPANY KNOWLEDGE]"
+      ]
+    },
+    "fus-qdrant-better-benchmark": {
+      "graph_items_before": 4,
+      "graph_items_after": 0,
+      "prompt_changed": true,
+      "answer_changed": false,
+      "sections_with": [
+        "[COMPANY KNOWLEDGE]",
+        "[KNOWLEDGE GRAPH]"
+      ],
+      "sections_without": [
+        "[COMPANY KNOWLEDGE]"
+      ]
+    },
+    "fus-corroborated-litellm-vllm": {
+      "graph_items_before": 6,
+      "graph_items_after": 0,
+      "prompt_changed": true,
+      "answer_changed": true,
+      "sections_with": [
+        "[COMPANY KNOWLEDGE]",
+        "[KNOWLEDGE GRAPH]"
+      ],
+      "sections_without": [
+        "[COMPANY KNOWLEDGE]"
+      ]
+    },
+    "conflict-graph-vs-rag": {
+      "graph_items_before": 4,
+      "graph_items_after": 0,
+      "prompt_changed": true,
+      "answer_changed": true,
+      "sections_with": [
+        "[COMPANY KNOWLEDGE]",
+        "[KNOWLEDGE GRAPH]"
+      ],
+      "sections_without": [
+        "[COMPANY KNOWLEDGE]"
+      ]
+    },
+    "long-full-arch": {
+      "graph_items_before": 0,
+      "graph_items_after": 0,
+      "prompt_changed": false,
+      "answer_changed": false,
+      "sections_with": [
+        "[COMPANY KNOWLEDGE]"
+      ],
+      "sections_without": [
+        "[COMPANY KNOWLEDGE]"
+      ]
+    },
+    "d2-agentic-ai-gateway-host": {
+      "graph_items_before": 5,
+      "graph_items_after": 0,
+      "prompt_changed": true,
+      "answer_changed": true,
+      "sections_with": [
+        "[COMPANY KNOWLEDGE]",
+        "[KNOWLEDGE GRAPH]"
+      ],
+      "sections_without": [
+        "[COMPANY KNOWLEDGE]"
+      ]
+    }
+  },
+  "classification": {
+    "d1-neo4j-hosted-on": "A: graph affects prompt AND answer",
+    "d1-litellm-routes-to": "A: graph affects prompt AND answer",
+    "hop2-serving-stack": "A: graph affects prompt AND answer",
+    "fus-qdrant-better-benchmark": "B: graph affects prompt but not the answer",
+    "fus-corroborated-litellm-vllm": "A: graph affects prompt AND answer",
+    "conflict-graph-vs-rag": "A: graph affects prompt AND answer",
+    "long-full-arch": "no graph evidence (no seed)",
+    "d2-agentic-ai-gateway-host": "B: graph affects prompt but not the answer"
+  },
+  "budget": {
+    "window": 8192,
+    "reserve_system": 1200,
+    "reserve_history": 1500,
+    "reserve_response": 1024,
+    "available": 4468,
+    "shares": {
+      "corporate": 0.35,
+      "graph": 0.25,
+      "memory": 0.2,
+      "calendar": 0.15,
+      "tasks": 0.15,
+      "history": 0.1,
+      "sql": 0.2
+    },
+    "graph_cap_tokens": 1117,
+    "observed_graph_allocation_tokens": [
+      34,
+      46,
+      46
+    ],
+    "observed_tasks_allocation_tokens": 717,
+    "dropped_for_budget": 0,
+    "conclusion": "graph uses 3-4% of its 1117-token cap; the budget is NOT the constraint. tasks consumes ~717 tokens (>50% of context) while graph gets 34-46."
+  },
+  "llm_determinism": {
+    "temperature": 0.0,
+    "max_tokens": 300,
+    "model": "qwen-fast",
+    "note": "answers are generated at temperature 0; identical prompts produced identical answer hashes throughout, so answer differences track prompt differences."
+  }
+}
