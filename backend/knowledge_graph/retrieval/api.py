@@ -16,8 +16,9 @@ assembly, no answer generation. This returns structured data and stops.
 from __future__ import annotations
 
 import logging
+import os
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from ..service import GraphService
 from .ranking import RankingWeights
@@ -27,6 +28,32 @@ from .retriever import GraphRetriever
 from .types import GraphContext, RetrievalStats, Subgraph
 
 log = logging.getLogger("aganeti.kg.api")
+
+# ── tenancy ──────────────────────────────────────────────────────────────────
+# The SAME two knobs backend/orchestrator/graph_tools.py reads, deliberately by
+# env rather than by import: knowledge_graph is the lower layer and must not
+# depend on orchestrator. One vocabulary, one default, no import cycle.
+#
+# STATE OF THE GRAPH, HONESTLY: no node carries an organisational property today
+# (522 of 522 entities have none), so in lenient mode this filter is a verified
+# no-op and GraphRAG behaviour is unchanged — which is the only reason it is safe
+# to add mid-flight to a frozen pipeline. It begins enforcing the moment nodes are
+# stamped. Strict mode on today's graph returns nothing, which is why it is off.
+TENANT_PROPERTY = os.getenv("GRAPH_TENANT_PROPERTY", "org_id")
+TENANT_STRICT = os.getenv("GRAPH_TENANT_STRICT", "false").strip().lower() in ("1", "true", "yes")
+
+
+def _tenant_visible(properties: "dict[str, Any]", tenant_id: str, *, strict: bool) -> bool:
+    """Is this node visible to `tenant_id`?
+
+    Lenient (default): an UNSTAMPED node is shared, so it is visible. Strict: an
+    unstamped node belongs to nobody and is hidden. A node stamped with ANOTHER
+    tenant is hidden under both — that is the part that is not configurable.
+    """
+    value = (properties or {}).get(TENANT_PROPERTY)
+    if value in (None, ""):
+        return not strict
+    return str(value) == str(tenant_id)
 
 
 class GraphRetrievalAPI:
@@ -49,8 +76,18 @@ class GraphRetrievalAPI:
     def retrieve(self, question: str, *, depth: Optional[int] = None,
                  rel_types: Optional[set[str]] = None,
                  top_k: Optional[int] = None,
-                 allow_fuzzy: bool = True) -> GraphContext:
-        """Resolve a question to entities and return their ranked neighbourhood."""
+                 allow_fuzzy: bool = True,
+                 tenant_id: Optional[str] = None,
+                 tenant_strict: Optional[bool] = None) -> GraphContext:
+        """Resolve a question to entities and return their ranked neighbourhood.
+
+        `tenant_id` is OPTIONAL and defaults to None, which applies NO tenant
+        predicate at all. Every existing caller — the evaluation harness, the
+        observability probes, the CLI — therefore behaves exactly as before. A
+        tenant is filtered on only when one is supplied; it is never inferred, and
+        an empty string is treated as absent rather than as a tenant that matches
+        nothing.
+        """
         started = time.perf_counter()
         stats = RetrievalStats()
         context = GraphContext(question=question or "")
@@ -81,6 +118,35 @@ class GraphRetrievalAPI:
         stats.nodes_visited = len(subgraph.nodes)
         stats.edges_considered = len(subgraph.edges)
         stats.edges_dropped_unsupported = subgraph.dropped_unsupported
+
+        # ── tenant predicate ────────────────────────────────────────────────
+        # BEFORE top_k, deliberately. Filtering afterwards would take the global
+        # top 8 and then remove some, silently narrowing the neighbourhood to
+        # fewer than graph_top_k; filtering first keeps "the top 8 nodes THIS
+        # tenant can see", which is what preserves the frozen graph_top_k
+        # semantics rather than merely the frozen number.
+        #
+        # An edge survives only if BOTH endpoints do: a relationship is evidence
+        # about two entities, so a half-visible edge would leak the existence of
+        # the hidden one through its own text.
+        if tenant_id:
+            strict = TENANT_STRICT if tenant_strict is None else tenant_strict
+            before = len(subgraph.nodes)
+            visible = {n.entity_id for n in subgraph.nodes
+                       if _tenant_visible(n.properties, tenant_id, strict=strict)}
+            subgraph.nodes = [n for n in subgraph.nodes if n.entity_id in visible]
+            subgraph.edges = [e for e in subgraph.edges
+                              if e.start_id in visible and e.end_id in visible]
+            # A seed the tenant cannot see must not survive in `resolved` either:
+            # that list is rendered to the model, so leaving it would disclose the
+            # entity's NAME across the boundary even with its edges removed.
+            context.resolved = [e for e in context.resolved if e.entity_id in visible]
+            context.unresolved = list(context.unresolved)
+            stats.nodes_visited = len(subgraph.nodes)
+            stats.edges_considered = len(subgraph.edges)
+            if before != len(subgraph.nodes):
+                log.info("kg api: tenant filter kept %d/%d node(s) for tenant=%s (strict=%s)",
+                         len(subgraph.nodes), before, tenant_id, strict)
 
         if top_k:
             keep = {n.entity_id for n in subgraph.nodes[:top_k]}

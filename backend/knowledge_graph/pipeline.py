@@ -61,19 +61,35 @@ class KnowledgeGraphPipeline:
                  legacy_two_call: bool = False,
                  legacy_builder: bool = False,
                  entity_extractor: Optional[EntityExtractor] = None,
-                 relationship_extractor: Optional[RelationshipExtractor] = None) -> None:
+                 relationship_extractor: Optional[RelationshipExtractor] = None,
+                 tenant_id: str | None = None) -> None:
+        """`tenant_id` is the organisation every node and edge this pipeline
+        writes belongs to — `TenantContext.tenant_id`, the same value and the same
+        name used everywhere else. It is NOT a new identity concept.
+
+        `None` means "not tenant-scoped" and reaches the builder unchanged, where
+        it becomes SHARED_TENANT. The default is therefore explicit shared data,
+        never NULL — the one outcome no supported writer may produce.
+
+        An INJECTED `builder` keeps its own tenant. It was constructed by the
+        caller, who already chose; silently re-stamping someone else's builder
+        would make the constructor argument lie about what was written.
+        """
         self.extractor = extractor or KnowledgeExtractor()
         self.normalizer = normalizer or Normalizer()
         self.legacy_two_call = legacy_two_call
+        self.tenant_id = tenant_id
         # Retained so phase-2 constructor kwargs still work.
         self.entity_extractor = entity_extractor or EntityExtractor()
         self.relationship_extractor = relationship_extractor or RelationshipExtractor()
         if builder is not None:
             self.builder = builder
         elif legacy_builder:
-            self.builder = KnowledgeGraphBuilder(service=service, source=source)
+            self.builder = KnowledgeGraphBuilder(service=service, source=source,
+                                                 tenant_id=tenant_id)
         else:
-            self.builder = BatchKnowledgeGraphBuilder(service=service, source=source)
+            self.builder = BatchKnowledgeGraphBuilder(service=service, source=source,
+                                                      tenant_id=tenant_id)
 
     # ── extraction strategies ────────────────────────────────────────────────
 

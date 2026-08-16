@@ -68,11 +68,29 @@ _PERSONAL = re.compile(
     r"reminder|draft|reply|document|upload|contact)\b", re.I)
 
 
+# POC-3 is EXPLICITLY OPT-IN, not inferred. A heuristic here would silently move
+# existing traffic onto a new execution path, and "existing chat behaviour is
+# unchanged for non-POC-3 requests" is only checkable if the trigger cannot fire
+# by accident. A leading `/agent` (or `/verify`) is something no ordinary question
+# produces, so the answer to "did this change my chat?" is provably no.
+_AGENT_PREFIX = re.compile(r"^\s*/(agent|verify)\b[:\s]*", re.I)
+
+
+def strip_agent_prefix(message: str) -> str:
+    """The question with the opt-in marker removed — what the agent actually answers."""
+    return _AGENT_PREFIX.sub("", message or "", count=1).strip()
+
+
 def route(message: str) -> str:
-    """'chart' | 'data' | 'primary'."""
+    """'agent' | 'chart' | 'data' | 'primary'."""
     t = (message or "").strip()
     if not t:
         return "primary"
+    # Checked FIRST and by prefix only: an explicit request must not be
+    # re-interpreted by the heuristics below, and the heuristics must not be
+    # able to claim a turn the user explicitly routed.
+    if _AGENT_PREFIX.match(t):
+        return "agent"
     if _PERSONAL.search(t) and not _CHART.search(t):
         return "primary"
     if _CHART.search(t):
@@ -93,6 +111,150 @@ _STATUS_LABEL = {
     "compare_periods": "Comparing the periods",
     "current_time": "Checking the date",
 }
+
+
+# ── POC-3 agent lane ──────────────────────────────────────────────────────────
+# The plan→knowledge→draft→verify→finalize loop (backend/agents), surfaced over
+# the SSE vocabulary that already exists in backend/chat/frames.py. NO new event
+# types: pipeline steps are `stage` frames and the structured payloads are
+# `artifact` frames, which is what those two frames are for. A new type would
+# oblige every existing consumer to learn it.
+#
+# WHAT IS DELIBERATELY NOT EMITTED: the drafted answer before verification, the
+# prompts, and any model reasoning. A client renders what the run PRODUCED —
+# plan, evidence, verdict, answer — never how the model got there.
+
+#: Customer-facing stage labels. The loop's node names are an implementation
+#: detail; these are what a person reads.
+_AGENT_STAGE_LABEL = {
+    "plan": "Planning",
+    "knowledge": "Searching knowledge",
+    "draft": "Drafting the answer",
+    "verify": "Checking the evidence",
+    "finalize": "Finishing",
+}
+
+#: Verdict → what the UI should say. Kept here rather than in the frontend so the
+#: wording cannot drift from the verdict that produced it.
+_VERDICT_LABEL = {
+    "SUPPORTED": "Supported by the evidence",
+    "PARTIALLY_SUPPORTED": "Partially supported",
+    "UNSUPPORTED": "Not supported by the evidence",
+    "CONFLICTING": "The evidence conflicts",
+}
+
+
+def _public_citation(c: dict) -> dict:
+    """One citation, reduced to what a customer UI should see.
+
+    Scores, corroboration counts and the raw Evidence records stay server-side:
+    they are retrieval diagnostics, and the brief is explicit that store
+    internals are not exposed unless the UI already shows them. `provider` is
+    mapped to a plain word for the same reason.
+    """
+    return {
+        "kind": c.get("kind") or "document",
+        "source": c.get("source") or c.get("document_id") or "",
+        "text": " ".join((c.get("text") or "").split())[:400],
+        "where": "document" if c.get("provider") == "corporate" else "knowledge graph",
+    }
+
+
+async def _agent_lane(user_id: str, message: str, session_id: str):
+    """Run the POC-3 loop and stream it as stage + artifact + done frames."""
+    import backend.chat.frames as F
+    from backend.agents import run_agent_loop
+
+    question = strip_agent_prefix(message)
+    if not question:
+        yield F.sse(F.error("Ask a question after /agent.", stage_name="plan"))
+        yield F.DONE_SENTINEL
+        return
+
+    # TENANT: resolved from the AUTHENTICATED user, never from the message body.
+    # Same call the dashboard lane already uses, so this introduces no second
+    # tenant mechanism. A failure to resolve yields "" — which knowledge_search
+    # treats as "no predicate", exactly as it does for the eval harness — rather
+    # than a guessed tenant.
+    tenant_id = ""
+    try:
+        from backend.auth import tenant as _tenant
+        tenant_id = await _tenant.resolve_tenant_id(user_id)
+    except Exception:  # noqa: BLE001 — a directory outage must not fail the turn
+        log.warning("agent lane: could not resolve a tenant for %s", user_id)
+
+    for node, label in _AGENT_STAGE_LABEL.items():
+        if node == "plan":
+            yield F.sse(F.stage(node, "running", label=label))
+            break
+
+    t0 = time.time()
+    try:
+        state = await run_agent_loop(request=question, user_id=user_id,
+                                     tenant_id=tenant_id, session_id=session_id,
+                                     agent_id="agent")
+    except Exception as e:  # noqa: BLE001
+        log.exception("agent lane failed")
+        yield F.sse(F.error("The agent could not complete this request.",
+                            stage_name="plan", recoverable=True))
+        yield F.sse(F.done("I could not complete this request."))
+        yield F.DONE_SENTINEL
+        return
+
+    # ── stages, from the trace the loop already recorded ──────────────────────
+    stages: list[dict] = []
+    for entry in state.get("trace") or []:
+        node = entry.get("agent", "")
+        # `planner`/`verification` are the AGENT names; the node names differ.
+        key = {"planner": "plan", "verification": "verify",
+               "finalize": "finalize"}.get(node, node)
+        label = _AGENT_STAGE_LABEL.get(key, key.replace("_", " ").title())
+        status = {"ok": "done", "skipped": "skipped",
+                  "insufficient": "done", "failed": "error"}.get(entry.get("status"), "done")
+        frame = F.stage(key, status, label=label, ms=int(entry.get("took_ms") or 0))
+        stages.append(frame)
+        yield F.sse(frame)
+
+    plan = state.get("plan") or {}
+    evidence = state.get("evidence") or {}
+    verification = state.get("verification") or {}
+    citations = [_public_citation(c) for c in (evidence.get("citations") or [])]
+
+    # ── artifacts: what it planned, what it found, what it concluded ──────────
+    yield F.sse(F.artifact(
+        id=f"{session_id}:plan", kind="agent_plan", title="Plan",
+        data={"goal": plan.get("goal", ""),
+              "steps": [{"id": s.get("id"), "agent": s.get("agent"),
+                         "task": s.get("task")} for s in (plan.get("steps") or [])]}))
+
+    yield F.sse(F.artifact(
+        id=f"{session_id}:evidence", kind="agent_evidence", title="Evidence",
+        data={"citations": citations, "counts": evidence.get("counts") or {}},
+        # `tenant_scoped` rather than the org id: whether isolation applied is
+        # useful to show, the tenant's identifier is not.
+        meta={"tenant_scoped": bool(evidence.get("tenant_enforced_by"))}))
+
+    verdict = str(verification.get("verdict") or "UNSUPPORTED")
+    yield F.sse(F.artifact(
+        id=f"{session_id}:verification", kind="agent_verification", title="Verification",
+        data={"verdict": verdict,
+              "label": _VERDICT_LABEL.get(verdict, verdict.replace("_", " ").title()),
+              "explanation": verification.get("explanation") or "",
+              "missing": verification.get("missing") or [],
+              "conflicts": verification.get("conflicts") or [],
+              "supported": bool(verification.get("releasable"))}))
+
+    final = state.get("final_answer") or "I could not answer this from the available evidence."
+    yield F.sse(F.token(final))
+    yield F.sse(F.done(final, artifacts=[f"{session_id}:plan", f"{session_id}:evidence",
+                                         f"{session_id}:verification"],
+                       # `verified` already exists on the done frame. It means
+                       # "released because the evidence supported it".
+                       verified=bool(verification.get("releasable")), stages=stages))
+    log.info("agent lane: %s verdict=%s citations=%d tenant_scoped=%s %.0fms",
+             question[:48], verdict, len(citations),
+             bool(evidence.get("tenant_enforced_by")), (time.time() - t0) * 1000)
+    yield F.DONE_SENTINEL
 
 
 # ── chart artifacts ───────────────────────────────────────────────────────────
@@ -138,6 +300,11 @@ async def unified_stream(user_id: str, message: str, session_id: str,
     yield F.sse(F.start(session_id, agent=lane))
     yield F.sse(F.stage("router", "done", label="Routing", summary=lane,
                         ms=int((time.time() - t0) * 1000)))
+
+    if lane == "agent":
+        async for chunk in _agent_lane(user_id, message, session_id):
+            yield chunk
+        return
 
     if lane == "primary":
         from backend.routes import agent_os

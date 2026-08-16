@@ -35,6 +35,12 @@ class ContextRequest:
     message: str
     session_id: str = ""
     limit: Optional[int] = None
+    #: organizations.id — the isolation boundary, when the caller resolved one.
+    #: "" means the caller could not be placed in a tenant; a provider must then
+    #: apply NO tenant predicate rather than inventing one. An empty tenant is the
+    #: one value that must never be turned into a filter, because `org_id == ""`
+    #: matches nothing and silently returns an empty context instead of failing.
+    tenant_id: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

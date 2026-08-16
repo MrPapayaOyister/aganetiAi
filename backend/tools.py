@@ -13,15 +13,20 @@ remains as a fallback.
 
 from __future__ import annotations
 
+import importlib.util as _importlib_util
 import json
+import logging
 import re
 
 from backend.action_parser import execute_action
 from backend.service_auth import internal_headers  # Phase 0: auth for internal self-calls
 
+log = logging.getLogger("aria.tools")
+
 # OpenAI tool schema — kept in lock-step with execute_action's action types.
 TOOL_SCHEMAS = [
     {
+        "group": "tasks",
         "type": "function",
         "function": {
             "name": "create_task",
@@ -41,6 +46,7 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "group": "tasks",
         "type": "function",
         "function": {
             "name": "complete_task",
@@ -55,6 +61,7 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "group": "email",
         "type": "function",
         "function": {
             "name": "draft_email",
@@ -76,6 +83,7 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "group": "calendar",
         "type": "function",
         "function": {
             "name": "schedule_meeting",
@@ -94,6 +102,7 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "group": "knowledge",
         "type": "function",
         "function": {
             "name": "get_analytics",
@@ -115,6 +124,7 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "group": "contacts",
         "type": "function",
         "function": {
             "name": "resolve_contact",
@@ -130,6 +140,7 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "group": "knowledge",
         "type": "function",
         "function": {
             "name": "search_knowledge",
@@ -143,6 +154,7 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "group": "memory",
         "type": "function",
         "function": {
             "name": "recall_memory",
@@ -156,6 +168,7 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "group": "memory",
         "type": "function",
         "function": {
             "name": "remember_fact",
@@ -169,6 +182,7 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "group": "tasks",
         "type": "function",
         "function": {
             "name": "set_reminder",
@@ -188,6 +202,7 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "group": "web",
         "type": "function",
         "function": {
             "name": "web_search",
@@ -207,6 +222,7 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "group": "email",
         "type": "function",
         "function": {
             "name": "get_emails",
@@ -222,6 +238,7 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "group": "email",
         "type": "function",
         "function": {
             "name": "read_email",
@@ -242,6 +259,7 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "group": "calendar",
         "type": "function",
         "function": {
             "name": "get_agenda",
@@ -255,6 +273,7 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "group": "contacts",
         "type": "function",
         "function": {
             "name": "get_contacts",
@@ -266,14 +285,485 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "group": "media",
+        "type": "function",
+        "function": {
+            "name": "play_youtube_video",
+            "description": "Play a YouTube video inline in the chat using an embedded "
+                           "player. Use whenever the user shares a YouTube link or video "
+                           "ID and wants to watch it, or asks you to play, show, or embed "
+                           "a specific YouTube video. This tool does NOT search YouTube — "
+                           "the user must supply the video.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "video": {"type": "string",
+                              "description": "A YouTube URL (youtube.com/watch, youtu.be, "
+                                             "/shorts/, /live/, /embed/) or a bare "
+                                             "11-character video ID. Timestamps such as "
+                                             "?t=90 or ?t=1m30s are honoured."},
+                },
+                "required": ["video"],
+            },
+        },
+    },
+    {
+        "group": "media",
+        "type": "function",
+        "function": {
+            "name": "get_youtube_video_info",
+            "description": "Look up the title, channel, and thumbnail of a YouTube video "
+                           "WITHOUT embedding a player. Use when the user wants to know "
+                           "what a link is, or when you need the title to discuss a video. "
+                           "If they want to watch it, call play_youtube_video instead.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "video": {"type": "string",
+                              "description": "A YouTube URL or an 11-character video ID"},
+                },
+                "required": ["video"],
+            },
+        },
+    },
+    {
+        "group": "news",
+        "type": "function",
+        "function": {
+            "name": "get_news",
+            "description": "Latest news headlines, rendered as a readable card in the "
+                           "chat. Use when the user asks for news, headlines, what's "
+                           "happening, or what's going on in the world/tech/business/"
+                           "science. Do NOT use this to look up a specific story or a "
+                           "past event — call web_search for that. Do NOT use it for "
+                           "the user's own email or calendar.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "enum": ["world", "tech", "business", "science", "all"],
+                        "description": "Which feed. 'all' fetches every category. "
+                                       "Defaults to world when the user just says 'news'.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "group": "livetv",
+        "type": "function",
+        "function": {
+            "name": "watch_live_tv",
+            "description": "Open the live TV player in the chat, optionally on a named "
+                           "channel. Use when the user asks to watch live TV, put on a "
+                           "news channel, or watch a specific channel by name (e.g. "
+                           "'put on Al Jazeera', 'watch DW', 'show me live TV'). Do NOT "
+                           "use this for a YouTube video or a recorded clip — call "
+                           "play_youtube_video or search_youtube for those.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel": {"type": "string",
+                                "description": "Channel name if the user named one. "
+                                               "Omit to open on the first channel."},
+                },
+            },
+        },
+    },
+    {
+        "group": "livetv",
+        "type": "function",
+        "function": {
+            "name": "search_tv_channels",
+            "description": "Find live TV channels in the public directory by name, "
+                           "category or country — no URL needed. Use when the user asks "
+                           "to add a channel by name ('add Al Arabiya'), for more "
+                           "channels of a kind ('add some sports channels'), or by "
+                           "region ('add UAE channels'). Combine filters when they say "
+                           "both ('UAE news channels'). Only channels whose stream is "
+                           "responding right now are shown. Do NOT use this to play a "
+                           "channel already in their list — call watch_live_tv.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Channel name, if they named one"},
+                    "category": {"type": "string",
+                                 "description": "e.g. news, sports, movies, music, kids"},
+                    "country": {"type": "string",
+                                "description": "ISO 2-letter country code, e.g. AE, US, GB"},
+                },
+            },
+        },
+    },
+    {
+        "group": "livetv",
+        "type": "function",
+        "function": {
+            "name": "add_tv_channels_bulk",
+            "description": "Add channels the user picked from a directory search to "
+                           "their library. Only call this with names they explicitly "
+                           "chose — the picker is how they choose. Each stream is "
+                           "re-checked before it is saved.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "names": {"type": "array", "items": {"type": "string"},
+                              "description": "Channel names the user selected"},
+                },
+                "required": ["names"],
+            },
+        },
+    },
+    {
+        "group": "livetv",
+        "type": "function",
+        "function": {
+            "name": "add_tv_channel",
+            "description": "Add a live TV channel to the user's library. Use when they "
+                           "give a channel name AND an HLS stream URL (ending .m3u8). "
+                           "The stream is checked before it is saved; a dead or "
+                           "non-playable one is rejected with the reason.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "url": {"type": "string", "description": "HLS stream URL (.m3u8)"},
+                    "category": {"type": "string", "description": "e.g. news, sport"},
+                },
+                "required": ["name", "url"],
+            },
+        },
+    },
+    # ── Radio (5 tools) ──────────────────────────────────────────────────────
+    # The carve-outs between these are the whole design: uae_radio is the DEFAULT
+    # for a bare "play radio", and search_radio must NOT fire on a general
+    # request. That wording is the original's, kept because it is what the model
+    # actually reads, and it is verified against the live model in
+    # tests/test_radio_routing.py rather than assumed.
+    {
+        "group": "radio",
+        "type": "function",
+        "function": {
+            "name": "search_radio_stations",
+            "description": "Search the radio directory for stations to SAVE, when the "
+                           "user has NOT named specific ones. Use for \"add some Saudi "
+                           "stations\", \"I want to save UAE radio stations\", \"add "
+                           "radio stations from Egypt\" — anything that asks to add or "
+                           "save BY COUNTRY, GENRE, or a partial name. Shows a "
+                           "tick-list; it plays nothing and saves nothing by itself. "
+                           "If the message already lists exact station names, use "
+                           "add_radio_stations_bulk instead. If the user wants to "
+                           "LISTEN rather than save, use uae_radio.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string",
+                             "description": "Station name to look for, Arabic or English."},
+                    "country": {"type": "string",
+                                "description": "Two-letter ISO code — AE, SA, EG, KW, "
+                                               "QA, MA, LB. Use for a country-wise browse."},
+                    "genre": {"type": "string",
+                              "description": "news, quran, pop, classical, tarab."},
+                },
+            },
+        },
+    },
+    {
+        "group": "radio",
+        "type": "function",
+        "function": {
+            "name": "add_radio_stations_bulk",
+            # The FIRST sentence is the exact phrasing the picker sends
+            # ("Add these radio stations: X, Y"). Without it the model read that
+            # message as a fresh search and the ticked stations were never saved
+            # — verified against the live model, which is the only way this class
+            # of mistake shows up.
+            "description": "Save specific NAMED stations to the user's station list. "
+                           "Use whenever the message lists station names to add, "
+                           "including the exact form \"Add these radio stations: X, Y\" "
+                           "which the picker sends when the user ticks rows. Do NOT "
+                           "search first — the names are already chosen.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "names": {"type": "array", "items": {"type": "string"},
+                              "description": "Exact station names as shown in the picker."},
+                },
+                "required": ["names"],
+            },
+        },
+    },
+    {
+        "group": "radio",
+        "type": "function",
+        "function": {
+            "name": "remove_radio_station",
+            "description": "Remove one station from the user's saved station list.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Station name to remove."},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "group": "radio",
+        "type": "function",
+        "function": {
+            "name": "my_radio",
+            "description": "Play ONLY the user's own saved stations - محطاتي. Use when "
+                           "they ask for my stations, my radio list, or my saved "
+                           "stations. For a plain \"play radio\" use uae_radio, which "
+                           "already puts saved stations first.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "group": "radio",
+        "type": "function",
+        "function": {
+            "name": "uae_radio",
+            "description": "Play UAE radio stations - تشغيل الإذاعات الإماراتية. "
+                           "USE THIS whenever the user asks to listen to radio, open "
+                           "the radio, play a station, or mentions UAE / Emirates / "
+                           "الإمارات radio without naming a specific station. This is "
+                           "the DEFAULT radio action. Triggers: \"شغل الراديو\", "
+                           "\"افتح الإذاعة\", \"play radio\", \"open radio\", "
+                           "\"UAE radio\", \"Emirates radio\". Saved stations are "
+                           "listed first automatically. Do NOT use when the user "
+                           "wants to ADD or SAVE stations rather than listen — that "
+                           "is search_radio_stations.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "group": "radio",
+        "type": "function",
+        "function": {
+            "name": "arabic_radio",
+            "description": "Play Arabic radio stations from any Arab country - إذاعات "
+                           "عربية. USE THIS when the user asks for Arabic radio "
+                           "generally, or for a specific Arab country OTHER than the "
+                           "UAE. Triggers: \"إذاعات عربية\", \"راديو سعودي\", "
+                           "\"Arabic radio\", \"Saudi radio\", \"Egyptian radio\".",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "country_code": {
+                        "type": "string",
+                        "description": "ISO code - SA Saudi, EG Egypt, KW Kuwait, "
+                                       "QA Qatar, BH Bahrain, OM Oman, JO Jordan, "
+                                       "LB Lebanon, MA Morocco, TN Tunisia, DZ Algeria, "
+                                       "IQ Iraq, SY Syria, YE Yemen, SD Sudan, LY Libya, "
+                                       "PS Palestine. Leave empty for Arabic-language "
+                                       "stations across all countries.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "group": "radio",
+        "type": "function",
+        "function": {
+            "name": "quran_radio",
+            "description": "Play Holy Quran radio stations - إذاعات القرآن الكريم. "
+                           "USE THIS when the user asks for Quran radio, Islamic "
+                           "recitation, or religious stations. Triggers: \"إذاعة "
+                           "القرآن الكريم\", \"قرآن\", \"تلاوة\", \"Quran radio\", "
+                           "\"Islamic radio\", \"recitation\".",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "group": "radio",
+        "type": "function",
+        "function": {
+            "name": "radio_by_genre",
+            "description": "Play radio stations by genre or style - إذاعات حسب النوع. "
+                           "USE THIS when the user asks for a music style or content "
+                           "type. Triggers: \"إذاعة أخبار\", \"موسيقى كلاسيكية\", "
+                           "\"طرب\", \"news radio\", \"classical\", \"jazz\", \"pop\".",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "genre": {
+                        "type": "string",
+                        "description": "Genre or tag - news, classical, pop, jazz, "
+                                       "arabic, khaleeji, tarab, oud, talk, sport.",
+                    },
+                },
+                "required": ["genre"],
+            },
+        },
+    },
+    {
+        "group": "radio",
+        "type": "function",
+        "function": {
+            "name": "search_radio",
+            "description": "Search for a specific radio station BY NAME - البحث عن محطة "
+                           "إذاعية. USE THIS ONLY when the user names a specific "
+                           "station. Triggers: \"شغل إذاعة أبوظبي\", \"افتح نور دبي\", "
+                           "\"Emirates FM\", \"play Dubai Eye\". Do NOT use for "
+                           "general or country requests - use uae_radio or "
+                           "arabic_radio instead.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string",
+                              "description": "Station name, Arabic or English."},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "group": "qr",
+        "type": "function",
+        "function": {
+            "name": "generate_qr_code",
+            # The exported description, extended with what the model needs and the
+            # original did not say: that the card IS the delivery, so the reply
+            # should not also spell the payload out. Without that, the model
+            # helpfully pastes the URL underneath, which is the one thing a QR
+            # code exists to avoid having to do.
+            "description": "Creates a QR code for the given text, URL, or data and "
+                           "displays it in the chat as a scannable image. Use when the "
+                           "user asks to turn something into a QR code, or to share a "
+                           "link so it can be scanned from a phone. The code is shown "
+                           "to the user automatically — confirm briefly and do not "
+                           "repeat the encoded text back.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "The text, link, or data to encode in the QR "
+                                       "code. Pass it EXACTLY as the user gave it — "
+                                       "do not normalise, shorten, or add a scheme to "
+                                       "a URL, because the scanned result must match "
+                                       "what they asked for.",
+                    },
+                },
+                "required": ["content"],
+            },
+        },
+    },
+    {
+        "group": "weather",
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Current weather and a 5-day forecast for a city. Renders a "
+                           "weather card in the chat and returns the conditions as "
+                           "figures you can answer from. Use for any question about "
+                           "weather, temperature, rain or forecast.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    # Verbatim from the exported tool, minus its final clause. That
+                    # clause promised "a default_location will be used instead",
+                    # which referenced an Open WebUI valve we do not have — there is
+                    # no default location anywhere in this deployment, and deriving
+                    # one from the deployment timezone or the request IP would be
+                    # precisely the guess this text forbids. Replaced with what
+                    # actually happens.
+                    "location": {
+                        "type": "string",
+                        "description": "City explicitly typed by the user, Arabic or "
+                                       "English. Only set if the user EXPLICITLY names "
+                                       "a place. If the user just says 'weather' with "
+                                       "no place, leave this null. Do NOT infer or "
+                                       "guess the location from system context, IP, or "
+                                       "conversation history — leave it null. The tool "
+                                       "uses a configured default city if the deployment "
+                                       "has one, and otherwise asks the user which city.",
+                    },
+                    "units": {"type": "string", "enum": ["metric", "imperial"],
+                              "description": "Defaults to metric."},
+                },
+            },
+        },
+    },
 ]
+
+# Search is keyless (yt-dlp) but the dependency is optional. Offering a tool that
+# can only fail is worse than not offering it, so the schema is only added when
+# the package is importable — the same posture Hermes takes with its check_fn.
+if _importlib_util.find_spec("yt_dlp") is not None:
+    TOOL_SCHEMAS.append({
+        "group": "media",
+        "type": "function",
+        "function": {
+            "name": "search_youtube",
+            "description": (
+                "Search YouTube by description when the user has NOT given a link. "
+                "Two modes, and picking the right one matters:\n"
+                "• mode='play' — they want to watch one thing now. Triggers: "
+                "'play <song/artist>', 'put on X', 'play some jazz', 'I want to "
+                "hear X', 'play the X trailer'. Plays the top result immediately.\n"
+                "• mode='browse' — they want to choose. Triggers: 'find me a video "
+                "about X', 'search YouTube for X', 'show me videos on X', 'what "
+                "videos are there about X', 'find some tutorials on X'. Returns a "
+                "list they pick from.\n"
+                "When it is genuinely ambiguous, prefer 'play'.\n"
+                "Do NOT use this when the user already gave a YouTube URL or video "
+                "ID — call play_youtube_video instead. Do NOT use it for general "
+                "web questions — call web_search."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string",
+                              "description": "What to search for, e.g. 'rick astley "
+                                             "never gonna give you up' or 'lo-fi beats'"},
+                    "mode": {"type": "string", "enum": ["play", "browse"],
+                             "description": "'play' to start the top result now, "
+                                            "'browse' to show a pickable list. "
+                                            "Defaults to 'play'."},
+                    "max_results": {"type": "integer",
+                                    "description": "Browse mode only: how many "
+                                                   "results (1-10, default 5)"},
+                },
+                "required": ["query"],
+            },
+        },
+    })
 
 # Tools that produce a user-facing side effect (vs read-only tools whose result the
 # model folds into its answer). Used by the chat loop to decide what to surface.
 ACTION_TOOLS = {"create_task", "complete_task", "draft_email", "schedule_meeting",
-                "remember_fact", "set_reminder"}
+                "remember_fact", "set_reminder",
+                # Writes to the user's channel library.
+                "add_tv_channel",
+                # Adds up to 25 rows to the library in one turn.
+                "add_tv_channels_bulk",
+                # The radio library's two writes.
+                "add_radio_stations_bulk", "remove_radio_station"}
 READ_TOOLS = {"get_analytics", "resolve_contact", "search_knowledge", "recall_memory",
-              "web_search", "get_emails", "get_agenda", "get_contacts"}
+              "web_search", "get_emails", "read_email", "get_agenda", "get_contacts",
+              # play_youtube_video renders a widget, but it is a READ tool: its
+              # result is a context string written AT the model ("do not describe
+              # the player; end your reply with this link"). Treating it as an
+              # ACTION tool would surface that instruction to the user verbatim
+              # and skip the reply that carries the clickable URL.
+              "play_youtube_video", "get_youtube_video_info", "search_youtube",
+              "get_weather", "get_news", "watch_live_tv",
+              "search_tv_channels",
+              # Renders a widget and returns a context string — same shape as
+              # play_youtube_video, and a read for the same reason.
+              "generate_qr_code",
+              # Open a player; nothing is mutated.
+              "uae_radio", "arabic_radio", "quran_radio",
+              "radio_by_genre", "search_radio",
+              # Browsing the directory and playing your own list are reads; the
+              # two WRITES are in ACTION_TOOLS.
+              "search_radio_stations", "my_radio"}
 
 
 # ── Sync→async bridge for the Google services (dispatch runs in a worker thread) ──
@@ -451,8 +941,14 @@ def _parse_args(raw) -> dict:
         return {}
 
 
-def dispatch_tool_call(name: str, raw_args, user_id: str) -> str:
-    """Execute one tool call and return a user-facing confirmation/answer string."""
+def dispatch_tool_call(name: str, raw_args, user_id: str):
+    """Execute one tool call and return its raw result.
+
+    Almost always a user-facing confirmation/answer string. Tools that render a
+    widget instead return ``(HTMLResponse, context)``; ``execute_single_tool``
+    runs everything through ``tool_result.process_tool_result``, which turns that
+    into (llm_result, embeds) and leaves plain strings alone.
+    """
     args = _parse_args(raw_args)
 
     # Guardrail: deny unknown/hallucinated actions outright. (comms actions are still
@@ -460,6 +956,21 @@ def dispatch_tool_call(name: str, raw_args, user_id: str) -> str:
     from backend.guardrails import decide
     if decide(name) == "deny":
         return f"⚠️ I'm not able to perform that action ('{name}')."
+
+    # Belt and braces for tool toggles. The real mechanism is _offered_tools(),
+    # which keeps a disabled tool out of the payload entirely — this catches the
+    # narrow case where it was still offered earlier in a multi-round turn and
+    # switched off mid-conversation. Toggles SUBTRACT ONLY: this can refuse a
+    # tool guardrails allowed, never permit one guardrails denied, which is why
+    # it runs after decide() and not instead of it.
+    if user_id:
+        try:
+            from backend.services import tool_prefs
+            if group_of(name) in set(tool_prefs.get_disabled(user_id)):
+                return (f"⚠️ {name} is switched off for this chat. Turn its group "
+                        f"back on in the tools menu to use it.")
+        except Exception:
+            log.exception("tool prefs check failed — allowing the call")
 
     # Read-only analytics: answer directly, don't go through execute_action.
     if name == "get_analytics":
@@ -634,21 +1145,114 @@ def dispatch_tool_call(name: str, raw_args, user_id: str) -> str:
         except Exception as e:
             return f"⚠️ Could not set reminder: {e}"
 
+    # YouTube: async services bridged onto the main loop, same as the mail/calendar
+    # providers above. play_youtube_video returns (HTMLResponse, context) — that
+    # tuple travels out of here untouched and is split by process_tool_result.
+    if name in ("play_youtube_video", "get_youtube_video_info"):
+        from backend.services import youtube
+        video = (args.get("video") or "").strip()
+        if not video:
+            return "⚠️ Which YouTube video? Give me a link or an 11-character video ID."
+        fn = (youtube.play_youtube_video if name == "play_youtube_video"
+              else youtube.get_youtube_video_info)
+        try:
+            return _run_async(fn(video))
+        except Exception as e:
+            return f"⚠️ Could not load that YouTube video: {e}"
+
+    # Search is sync by design: yt-dlp blocks, and dispatch already runs in a
+    # worker thread, so bridging to the event loop and back would buy nothing.
+    if name == "watch_live_tv":
+        from backend.services import livetv
+        return livetv.watch_live_tv(user_id, args.get("channel") or "")
+
+    if name == "search_tv_channels":
+        from backend.services import livetv
+        return livetv.search_tv_channels(user_id, args.get("name") or "",
+                                         args.get("category") or "",
+                                         args.get("country") or "")
+
+    if name == "add_tv_channels_bulk":
+        from backend.services import livetv
+        names = args.get("names")
+        return livetv.add_tv_channels_bulk(user_id, names if isinstance(names, list) else [])
+
+    if name == "add_tv_channel":
+        from backend.services import livetv
+        return livetv.add_tv_channel(user_id, args.get("name") or "",
+                                     args.get("url") or "",
+                                     args.get("category") or "general")
+
+    if name == "get_news":
+        from backend.services import news
+        return news.get_news(args.get("category") or "world")
+
+    if name in ("uae_radio", "arabic_radio", "quran_radio", "radio_by_genre",
+                "search_radio", "search_radio_stations", "add_radio_stations_bulk",
+                "remove_radio_station", "my_radio"):
+        from backend.services import radio
+        if name == "search_radio_stations":
+            return radio.search_radio_stations(user_id, args.get("name") or "",
+                                               args.get("country") or "",
+                                               args.get("genre") or "")
+        if name == "add_radio_stations_bulk":
+            return radio.add_radio_stations_bulk(user_id, args.get("names") or [])
+        if name == "remove_radio_station":
+            return radio.remove_radio_station(user_id, args.get("name") or "")
+        if name == "my_radio":
+            return radio.my_radio(user_id)
+        if name == "uae_radio":
+            return radio.uae_radio(user_id)
+        if name == "arabic_radio":
+            return radio.arabic_radio(args.get("country_code") or "")
+        if name == "quran_radio":
+            return radio.quran_radio()
+        if name == "radio_by_genre":
+            return radio.radio_by_genre(args.get("genre") or "")
+        return radio.search_radio(args.get("query") or "")
+
+    if name == "generate_qr_code":
+        from backend.services import qr
+        return qr.generate_qr_code(args.get("content") or "")
+
+    if name == "get_weather":
+        from backend.services import weather
+        return weather.get_weather(args.get("location") or "",
+                                   units=args.get("units") or "metric")
+
+    if name == "search_youtube":
+        from backend.services import youtube
+        try:
+            max_r = int(args.get("max_results") or 5)
+        except (TypeError, ValueError):
+            max_r = 5
+        return youtube.search_youtube(
+            args.get("query") or "", mode=args.get("mode") or "play", limit=max_r)
+
     if name == "web_search":
         query = (args.get("query") or "").strip()
         if not query:
             return "⚠️ No query provided."
-        max_r = min(int(args.get("max_results") or 5), 10)
         try:
-            from ddgs import DDGS
-            results = DDGS().text(query, max_results=max_r)
-            if not results:
-                return f"No web results found for: {query}"
-            lines = [f"**{r['title']}**\n{r.get('body', r.get('snippet', ''))[:300]}\n🔗 {r['href']}"
-                     for r in results]
-            return f"🌐 Web results for *{query}*:\n\n" + "\n\n".join(lines)
+            max_r = min(int(args.get("max_results") or 5), 10)
+        except (TypeError, ValueError):
+            max_r = 5
+        # Self-hosted SearXNG. No scraper fallback on purpose — see
+        # backend/services/websearch.py for why a silent backend swap is worse
+        # than an honest error.
+        from backend.services.websearch import SearchUnavailable, search
+        try:
+            results = search(query, max_results=max_r)
+        except SearchUnavailable as e:
+            log.warning("web_search unavailable: %s", e)
+            return ("⚠️ Web search is unavailable right now — the search service "
+                    "isn't responding. Everything else still works.")
         except Exception as e:
             return f"⚠️ Web search failed: {e}"
+        if not results:
+            return f"No web results found for: {query}"
+        lines = [f"**{r['title']}**\n{r['content'][:300]}\n🔗 {r['url']}" for r in results]
+        return f"🌐 Web results for *{query}*:\n\n" + "\n\n".join(lines)
 
     # Schedule a real calendar event on whichever provider the user connected.
     if name == "schedule_meeting":
@@ -690,18 +1294,25 @@ def dispatch_tool_call(name: str, raw_args, user_id: str) -> str:
 
 
 def execute_single_tool(name: str, raw_args, user_id: str):
-    """Run one tool; return (result_string, is_action). Read tools' results are fed
-    back to the model; action tools' results are surfaced to the user.
+    """Run one tool; return (result_string, is_action, embeds). Read tools' results
+    are fed back to the model; action tools' results are surfaced to the user.
+
+    `embeds` is a list of HTML documents for the frontend to render as sandboxed
+    iframes — empty for every tool that returns plain text, which is all of them
+    except the YouTube player. It must never be folded into `result`: the model
+    is not meant to see the markup (see backend/tool_result.py).
 
     Every call is timed + logged to the events table for analytics (P5)."""
     import time as _t
+    from backend.tool_result import process_tool_result
     _t0 = _t.monotonic()
     ok = True
     try:
-        result = dispatch_tool_call(name, raw_args, user_id)
+        processed = process_tool_result(name, dispatch_tool_call(name, raw_args, user_id))
+        result = processed.llm_result
         # Heuristic success: dispatch returns a ⚠️-prefixed string on failure.
         ok = not (isinstance(result, str) and result.lstrip().startswith("⚠️"))
-        return result, (name in ACTION_TOOLS)
+        return result, (name in ACTION_TOOLS), processed.embeds
     except Exception:
         ok = False
         raise
@@ -715,12 +1326,219 @@ def execute_single_tool(name: str, raw_args, user_id: str):
 
 
 def run_tool_calls(tool_calls: list, user_id: str) -> str:
-    """Execute every tool call from an assistant message; join confirmations."""
+    """Execute every tool call from an assistant message; join confirmations.
+
+    Text-only: any embeds a tool produced are dropped, since this helper's
+    callers have no channel to render them. Use execute_single_tool where the
+    widget matters."""
+    from backend.tool_result import process_tool_result
     parts = []
     for tc in tool_calls:
         fn = tc.get("function", {}) if isinstance(tc, dict) else {}
         name = fn.get("name")
         if not name:
             continue
-        parts.append(dispatch_tool_call(name, fn.get("arguments"), user_id))
+        result = process_tool_result(
+            name, dispatch_tool_call(name, fn.get("arguments"), user_id)).llm_result
+        parts.append(result if isinstance(result, str) else str(result))
     return "\n\n".join(p for p in parts if p)
+
+
+# ── Tool groups ──────────────────────────────────────────────────────────────
+# Groups are how a USER thinks about turning things off, not how the code is
+# organised — "I don't want email in this thread", not "these three share a
+# service module". 19 tools is already past the point where a flat on/off list
+# is usable, and it only grows.
+#
+# `group` lives on the schema dict (a sibling of "type"/"function") and is
+# REQUIRED — a test asserts every tool has one, so a new tool cannot quietly
+# become ungroupable and therefore untoggleable. It is stripped in tools_for()
+# before the schemas go on the wire: the provider is sent OpenAI's shape and
+# nothing else.
+TOOL_GROUPS: list[dict] = [
+    {"id": "email",     "label": "Email",              "user_visible": True,
+     "description": "Read and draft mail"},
+    {"id": "calendar",  "label": "Calendar",           "user_visible": True,
+     "description": "Agenda and scheduling"},
+    # Visible, but LABELLED with its dependency. resolve_contact fires as a
+    # sub-step of drafting mail and scheduling, so switching this off makes
+    # Email look broken ("I couldn't find Aisha's address") in a group the user
+    # did not touch. Saying so in the label is cheaper than the confusion.
+    {"id": "contacts",  "label": "Contacts (used by Email & Calendar)",
+     "user_visible": True, "description": "Look up people"},
+    {"id": "tasks",     "label": "Tasks & reminders",  "user_visible": True,
+     "description": "To-dos and alerts"},
+    # HIDDEN. Bundles recall_memory (an implicit read) with remember_fact (an
+    # ACTION — a write), so one switch conflates "don't save anything from this
+    # chat" with "forget everything I have ever told you". A user reaching for
+    # the first gets the second, and nothing ever says so: it degrades quietly
+    # instead of failing visibly. Privacy-of-memory deserves its own explicit
+    # control, not a tool toggle.
+    {"id": "memory",    "label": "Memory",             "user_visible": False,
+     "description": "Recall and save facts"},
+    # HIDDEN because the GROUP is incoherent, not because toggling is
+    # meaningless. search_knowledge (company handbook RAG) and get_analytics
+    # (the user's own task/email stats) have nothing to do with each other; the
+    # label names our implementation, not something a user recognises, so nobody
+    # can predict what it turns off. To surface it, SPLIT it — "Company
+    # documents" and "My stats" — rather than showing it as-is.
+    {"id": "knowledge", "label": "Knowledge & analytics", "user_visible": False,
+     "description": "Company documents and your stats"},
+    {"id": "web",       "label": "Web search",         "user_visible": True,
+     "description": "Search the public web"},
+    {"id": "media",     "label": "Media",              "user_visible": True,
+     "description": "YouTube search and playback"},
+    {"id": "weather",   "label": "Weather",            "user_visible": True,
+     "description": "Forecasts and conditions"},
+    {"id": "news",      "label": "News",               "user_visible": True,
+     "description": "Headlines from public feeds"},
+    {"id": "livetv",    "label": "Live TV",            "user_visible": True,
+     "description": "Live channel streams"},
+    # Its own group rather than a "Utilities" bucket. The rule that hid
+    # "Knowledge & analytics" was that a label must name something the user
+    # recognises; "Utilities" fails that harder, and a toggle nobody understands
+    # costs more than the panel row it saves.
+    {"id": "radio",     "label": "Radio",              "user_visible": True,
+     "description": "Live Arabic and UAE radio streams"},
+    {"id": "qr",        "label": "QR codes",           "user_visible": True,
+     "description": "Turn a link or text into a scannable code"},
+]
+
+# The rule that decides what the panel renders. PRESENTATION ONLY — tools_for(),
+# the dispatch rejection and every test still operate on all of TOOL_GROUPS.
+#
+# "visible OR currently disabled" is what makes a trapped state impossible: a
+# hidden group is only ever absent from the panel while it is ON. The moment it
+# is off — however that happened, including a value set through the API or a
+# group we hide later — it appears, can be switched back on, and then disappears
+# again. No migration, and it covers cases we did not anticipate.
+def visible_groups(disabled) -> list[dict]:
+    off = set(disabled or [])
+    return [g for g in TOOL_GROUPS if g.get("user_visible") or g["id"] in off]
+
+
+GROUP_IDS = {g["id"] for g in TOOL_GROUPS}
+
+# Tools whose answer goes stale. A turn produced by one of these carries DATA the
+# model will otherwise quote back on a repeat instead of re-calling — measured
+# for weather, mail and calendar.
+#
+# Search tools are absent on purpose: their reply is a pointer ("here are some
+# results"), not data, and they already re-call.
+#
+# ACTION tools must NEVER appear here. Marking a "task created" confirmation as
+# stale invites the model to re-run it, which is a duplicate side effect rather
+# than a wasted lookup. The assertion below makes that structural, not a habit.
+VOLATILE_TOOLS = {
+    "get_emails", "read_email", "get_agenda", "get_contacts",
+    "get_weather", "get_analytics",
+    # Headlines change constantly and the reply carries them, so a repeat would
+    # otherwise be answered from the transcript.
+    "get_news",
+    # watch_live_tv and the radio PLAY tools were here. Their results do change
+    # — the channel list, what is on air, the vote ordering — so "volatile" was
+    # the right word. But this set exists for exactly one purpose, deciding what
+    # mark_stale annotates, and annotating a player turn was measured to make the
+    # model LESS likely to re-open the player: 2/8 marked vs 7/8 unmarked. They
+    # are now in WIDGET_TOOLS instead, which mark_stale subtracts. See the note
+    # there and in backend/chat/stale.py before moving any of them back.
+    #
+    # The PICKERS stay: their replies list what was found, so there is real data
+    # to go stale and the marker behaves as designed on them.
+    "search_radio_stations",
+    # Upstream rots — about half of any directory sample is dead — so a
+    # repeat must re-query rather than quote an earlier answer.
+    "search_tv_channels",
+}
+
+assert not (VOLATILE_TOOLS & ACTION_TOOLS), (
+    "an ACTION tool is marked volatile — re-calling it would repeat a side effect"
+)
+
+# ── widget tools: an EXCLUSION set for staleness marking ─────────────────────
+#
+# Tools whose ANSWER IS A PLAYER OR CARD rather than data. Their reply text is a
+# pointer — "Opened the live TV player", "the player is active" — and carries
+# nothing the model could quote.
+#
+# This set keeps them out of mark_stale. Nothing else consults it.
+#
+# STATUS: the exclusion is deliberate but UNVERIFIED, and the open bug it was
+# meant to fix is still open. Read this before spending time here.
+#
+# The bug: ask for live TV (or radio, or a QR code) twice in a row and the second
+# request renders no card. The model does not call the tool at all — the turn
+# persists `tool_calls: []` — it answers from the transcript instead. Live,
+# 3 trials per widget tool: 27/27 cards on the first request, 7/27 on the repeat.
+#
+# What was tried and did NOT fix it: marking the prior turn stale, marking it
+# with a bespoke "the player is no longer on screen" wording, and removing the
+# marker entirely (this change). All three measured the same live outcome.
+#
+# WHAT WE NOW KNOW, and it invalidates the earlier reasoning: the server sends
+# `chat_template_kwargs: {"enable_thinking": False}` (backend/services/llm.py,
+# build_payload). Replaying one identical captured payload:
+#     thinking ON   8/8 re-called
+#     thinking OFF  0/8 re-called
+# Every measurement that guided the marker and prompt work was taken with
+# thinking ON, i.e. against a system we do not run. The suppressor is far more
+# likely to be the disabled reasoning than any marker or prompt sentence.
+#
+# THE OPEN QUESTION: does the repeat request re-call once the model is allowed to
+# reason, and is enabling thinking on tool-detection calls affordable? That is
+# the next thing to measure, on tests/routing_bench.py, which now sends the flag
+# the way the server does.
+#
+# The exclusion is kept meanwhile because it is harmless and simplifies the
+# model: a turn with no data in it has nothing to go stale.
+#
+# DELIBERATELY EXCLUDED from this set, and why:
+#   * the pickers (search_tv_channels, search_radio_stations) — their replies DO
+#     list what was found, so there is real data to go stale;
+#   * get_news and get_weather — they render a card AND carry headlines/figures,
+#     so they stay marked and their data refreshes on a repeat;
+#   * every ACTION tool — re-calling repeats a side effect. Asserted below.
+WIDGET_TOOLS = {
+    "watch_live_tv",
+    "uae_radio", "arabic_radio", "quran_radio", "radio_by_genre", "search_radio",
+    "my_radio",
+    "play_youtube_video",
+    # Deterministic rather than volatile, but the symptom is identical: ask for
+    # the same QR twice and the second answer has no card.
+    "generate_qr_code",
+}
+
+assert not (WIDGET_TOOLS & ACTION_TOOLS), (
+    "an ACTION tool is marked as a widget — its confirmation must never invite a "
+    "re-call, which would repeat the side effect"
+)
+
+
+
+def group_of(tool_name: str) -> str | None:
+    for s in TOOL_SCHEMAS:
+        if s["function"]["name"] == tool_name:
+            return s.get("group")
+    return None
+
+
+def tools_for(disabled_groups) -> list[dict]:
+    """The schemas to offer the model, with `disabled_groups` removed.
+
+    This is the cut point that makes "disabled" honest. Filtering at dispatch
+    instead would let the model call a tool the user turned off, fail, and
+    apologise — the user asked for it to be unavailable, not for it to break.
+    Absent from the payload means the model cannot call it at all.
+
+    An unknown group id is ignored rather than treated as "disable everything":
+    a stale preference naming a group we have since renamed must not silently
+    strip the user's tools.
+    """
+    disabled = {g for g in (disabled_groups or []) if g in GROUP_IDS}
+    out = []
+    for s in TOOL_SCHEMAS:
+        if s.get("group") in disabled:
+            continue
+        # Copy without `group` — it is ours, not part of the provider's schema.
+        out.append({k: v for k, v in s.items() if k != "group"})
+    return out

@@ -67,6 +67,25 @@ def all_names() -> list[str]:
     return list(_REGISTRY.keys())
 
 
+def all_permissions() -> set[str]:
+    """Every distinct `required_permission` declared by a registered tool.
+
+    This is the vocabulary an operator may grant instead of enumerating tool names.
+    It exists because the field used to be decorative: nothing read it, and the
+    permissions route dropped any grant that was not a tool name, so "email.read"
+    could not even be stored. See backend/orchestrator/authz.grant_matches.
+    """
+    return {t.required_permission for t in _REGISTRY.values() if t.required_permission}
+
+
+def tools_for_permission(permission: str) -> list[str]:
+    """Tool names covered by one permission — for showing an operator what a grant
+    actually confers before they save it."""
+    if not permission:
+        return []
+    return sorted(t.name for t in _REGISTRY.values() if t.required_permission == permission)
+
+
 def preview(name: str, args: dict) -> str:
     """Human-readable one-liner for the approval card."""
     if name == "send_email":

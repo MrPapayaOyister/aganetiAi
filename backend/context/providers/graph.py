@@ -68,8 +68,14 @@ class GraphProvider(ContextProvider):
         # GraphRetrievalAPI is synchronous (the Neo4j driver's sync API is
         # thread-safe); keep it off the event loop exactly as every other
         # graph caller in the codebase does.
+        #
+        # tenant_id is passed as None when the request carries none, which applies
+        # NO predicate — the eval harness and every other tenant-less caller keep
+        # their exact current behaviour. depth/top_k are unchanged: the tenant
+        # narrows WHICH nodes are eligible, never how far or how many we traverse.
         ctx = await asyncio.to_thread(api.retrieve, request.message,
-                                      depth=self.depth, top_k=self.top_k)
+                                      depth=self.depth, top_k=self.top_k,
+                                      tenant_id=(request.tenant_id or None))
         out: list[ContextItem] = []
 
         # Edges carry the evidence, so they are the useful unit — a node alone

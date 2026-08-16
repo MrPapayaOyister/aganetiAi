@@ -47,14 +47,6 @@ def session() -> Session:
     return _Session()
 
 
-def _alias_to_supabase_uid(alias: str) -> str | None:
-    try:
-        from config.users import USERS
-        return (USERS.get(alias) or {}).get("supabase_uid") or None
-    except Exception:
-        return None
-
-
 def resolve_user(s: Session, identity: str):
     if not identity:
         return None
@@ -71,11 +63,7 @@ def resolve_user(s: Session, identity: str):
         row = s.execute(select(M.User).where(M.User.email == identity)).scalar_one_or_none()
         if row:
             return row
-    mapped = _alias_to_supabase_uid(identity)
-    if mapped and mapped != identity:
-        row = s.execute(select(M.User).where(M.User.supabase_uid == mapped)).scalar_one_or_none()
-        if row:
-            return row
+    # See repo.resolve_user: the config-alias step is gone with the registry.
     return None
 
 

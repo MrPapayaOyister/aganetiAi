@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import re
+import os
 import time
 import unicodedata
 from typing import Iterable, Optional
@@ -23,6 +24,14 @@ from .models import NodeLabel, RelType
 from .provenance import Provenance
 from .service import GraphService, get_graph_service
 from .types import BuildResult, ExtractedEntity, ExtractedRelationship
+
+#: The node/relationship property carrying the tenant. Read from the SAME env
+#: var the read side uses (backend/orchestrator/graph_tools.py) so a writer and a
+#: filter can never disagree about which property they mean.
+TENANT_PROPERTY = os.getenv("GRAPH_TENANT_PROPERTY", "org_id")
+
+#: Sentinel for "not tenant-scoped". Mirrors backend/ingest.py's SHARED_TENANT.
+SHARED_TENANT = "__shared__"
 
 log = logging.getLogger("aganeti.kg.builder")
 
@@ -60,11 +69,24 @@ class KnowledgeGraphBuilder:
     """Persists an extraction result. Idempotent; calls only GraphService."""
 
     def __init__(self, service: Optional[GraphService] = None,
-                 source: str = "conversation") -> None:
+                 source: str = "conversation",
+                 tenant_id: str | None = None) -> None:
         """`source` is stamped on every node/edge written, so graph content can
-        later be attributed (or removed) by origin."""
+        later be attributed (or removed) by origin.
+
+        `tenant_id` follows BatchKnowledgeGraphBuilder EXACTLY — same parameter,
+        same `None -> SHARED_TENANT` default, same module constants. This class is
+        the legacy single-write builder, reachable only via
+        `KnowledgeGraphPipeline(legacy_builder=True)`, which nothing in the tree
+        sets; but "unreachable" is a property of today's call sites, not of the
+        code, and it was verified to write org_id=None. A writer that produces an
+        unstamped node is one constructor call away from re-diluting whatever a
+        future backfill cleans, so it stamps too rather than being trusted to stay
+        unused.
+        """
         self._svc = service or get_graph_service()
         self._source = source
+        self._tenant_id = tenant_id or SHARED_TENANT
 
     # ── nodes ────────────────────────────────────────────────────────────────
 
@@ -85,6 +107,9 @@ class KnowledgeGraphBuilder:
             "type": entity.type,
             "source": self._source,
             **entity.properties,
+            # LAST, so an extractor-supplied `org_id` cannot set its own
+            # visibility. Same rule and same position as the batch builder.
+            TENANT_PROPERTY: self._tenant_id,
         }
         try:
             _, stats = self._svc.merge_node_with_stats(entity.type, node_id, props)
@@ -124,7 +149,9 @@ class KnowledgeGraphBuilder:
                 f"{rel.source}-{rel.type}->{rel.target} (endpoint not persisted)")
             return
 
-        props = {"source": self._source, **rel.properties}
+        props = {"source": self._source, **rel.properties,
+                 # Tenant last, never overridable — as for nodes.
+                 TENANT_PROPERTY: self._tenant_id}
         try:
             _, stats = self._svc.merge_relationship_with_stats(
                 source.type, source.node_id, rel.type, target.type, target.node_id, props)
@@ -201,9 +228,23 @@ class BatchKnowledgeGraphBuilder:
     """
 
     def __init__(self, service: Optional[GraphService] = None,
-                 source: str = "conversation", batch_size: int = 500) -> None:
+                 source: str = "conversation", batch_size: int = 500,
+                 tenant_id: str | None = None) -> None:
         self._svc = service or get_graph_service()
         self._source = source
+        # STAMPED AT WRITE TIME, ahead of any backfill.
+        #
+        # Ordering matters and it is the same lesson as the Qdrant side: an
+        # unstamped ingestion path re-dilutes whatever a backfill just cleaned,
+        # so the writer has to stamp BEFORE the backfill runs, not after. A
+        # backfill against a still-unstamped writer is a treadmill.
+        #
+        # `None` means "not tenant-scoped" and writes SHARED_TENANT, matching
+        # backend/ingest.py's convention exactly: unstamped/shared data stays
+        # visible in lenient mode and is explicit rather than absent, so the
+        # strict ratchet can distinguish "shared on purpose" from "never
+        # stamped". Two stores, one convention.
+        self._tenant_id = tenant_id or SHARED_TENANT
         # Neo4j holds the whole UNWIND list in memory for the transaction; very
         # large batches trade round trips for heap pressure and lock duration.
         self._batch_size = max(1, batch_size)
@@ -226,6 +267,10 @@ class BatchKnowledgeGraphBuilder:
             "secondary_labels": list(entity.secondary_labels),
             "source": self._source,
             **entity.properties,
+            # Written LAST so extractor-supplied properties can never overwrite
+            # the tenant — an entity's own `org_id` field would otherwise decide
+            # its visibility.
+            TENANT_PROPERTY: self._tenant_id,
         }
         entity.node_id = node_id
         return {"id": node_id, "props": props,
@@ -238,7 +283,9 @@ class BatchKnowledgeGraphBuilder:
         if source is None or target is None or not source.node_id or not target.node_id:
             return None
         row = {"start_id": source.node_id, "end_id": target.node_id,
-               "props": {"source": self._source, **rel.properties}, **prov}
+               "props": {"source": self._source, **rel.properties,
+                         # Same rule as nodes: tenant last, never overridable.
+                         TENANT_PROPERTY: self._tenant_id}, **prov}
         # Per-edge confidence overrides the document-level default when stated.
         row["confidence"] = rel.confidence if rel.confidence is not None else prov["confidence"]
         return row

@@ -22,20 +22,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from . import models as M
 
 
-def _alias_to_supabase_uid(alias: str) -> str | None:
-    """Legacy config alias ('user_1') → its configured supabase_uid, if any.
-
-    Bridges the old static config.users identity onto the new DB identity so a
-    request the auth middleware normalised to 'user_1' still resolves to the real
-    User row (and its approvals/tasks land in Postgres, not the SQLite fallback).
-    """
-    try:
-        from config.users import USERS
-        return (USERS.get(alias) or {}).get("supabase_uid") or None
-    except Exception:
-        return None
-
-
 def _tool_is_outbound(name: str) -> bool:
     """Registry is the authority for whether a tool is approval-gated."""
     try:
@@ -80,12 +66,10 @@ async def resolve_user(s: AsyncSession, identity: str) -> Optional[M.User]:
         row = (await s.execute(select(M.User).where(M.User.email == identity))).scalar_one_or_none()
         if row:
             return row
-    # Legacy config alias ("user_1") → configured supabase_uid → user
-    mapped = _alias_to_supabase_uid(identity)
-    if mapped and mapped != identity:
-        row = (await s.execute(select(M.User).where(M.User.supabase_uid == mapped))).scalar_one_or_none()
-        if row:
-            return row
+    # No alias step. There used to be one, translating "user_1" through
+    # config.users to a supabase_uid, because the auth middleware normalised two
+    # hand-listed people onto those aliases. Identity is now the Supabase sub for
+    # everyone, so an id that misses the three lookups above is genuinely unknown.
     return None
 
 

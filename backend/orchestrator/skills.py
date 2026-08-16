@@ -13,9 +13,12 @@ is_outbound=True and routes through the approval gate.
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import date, datetime, timedelta, timezone
 
 from .registry import Tool, register
+
+log = logging.getLogger("aganeti.orchestrator.skills")
 
 
 def _ev(kind: str, user_id: str, name: str | None = None) -> None:
@@ -140,35 +143,31 @@ async def _get_analytics(ctx, metric: str = "summary", days: int = 7) -> str:
 
 # ── Web search (OUTBOUND — the query egresses; approval-gated by is_outbound) ──
 async def _web_search(ctx, query: str, max_results: int = 5) -> str:
-    import os
+    """Self-hosted SearXNG only — only it touches the public internet, so the
+    query never reaches a third-party search API (the on-prem posture).
+
+    There is deliberately no scraper fallback. This function used to fall back to
+    ddgs whenever the SearXNG call failed for any reason, which hid a real
+    outage: for as long as SEARXNG_URL pointed at the wrong port, every search
+    here was silently answered by the scraper and nobody could tell. An honest
+    error is worth more than results from a backend nobody chose.
+
+    The shared client is sync, so it runs off the loop — a blocking HTTP call in
+    an async skill would stall every other turn in flight.
+    """
+    from backend.services.websearch import SearchUnavailable, search
+
     n = min(int(max_results or 5), 10)
-    # Primary: self-hosted SearxNG on the DGX — only SearxNG touches the public
-    # internet, so the query never goes to a third-party API (on-prem posture).
-    base = os.getenv("SEARXNG_URL", "http://127.0.0.1:5555")
     try:
-        import httpx
-        async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.get(f"{base}/search", params={"q": query, "format": "json"})
-        if r.status_code == 200:
-            hits = (r.json().get("results") or [])[:n]
-            if hits:
-                lines = [f"**{x.get('title', '')}**\n{(x.get('content') or '')[:300]}\n🔗 {x.get('url', '')}"
-                         for x in hits]
-                return f"Web results for '{query}':\n\n" + "\n\n".join(lines)
-    except Exception:  # noqa: BLE001
-        pass
-    # Fallback: ddgs scraper.
-    def _run():
-        from ddgs import DDGS
-        return DDGS().text(query, max_results=n)
-    try:
-        results = await asyncio.to_thread(_run)
+        results = await asyncio.to_thread(search, query, n)
+    except SearchUnavailable as e:
+        log.warning("web_search: SearXNG unavailable: %s", e)
+        return "Web search is unavailable — the search service isn't responding."
     except Exception as e:  # noqa: BLE001
         return f"Web search failed ({e})."
     if not results:
         return f"No web results found for: {query}"
-    lines = [f"**{r.get('title', '')}**\n{(r.get('body') or r.get('snippet') or '')[:300]}\n🔗 {r.get('href', '')}"
-             for r in results]
+    lines = [f"**{r['title']}**\n{r['content'][:300]}\n🔗 {r['url']}" for r in results]
     return f"Web results for '{query}':\n\n" + "\n\n".join(lines)
 
 

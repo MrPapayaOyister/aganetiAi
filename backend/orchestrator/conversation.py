@@ -89,13 +89,28 @@ def load_full(uid: str, session_id: str) -> list[dict]:
     return _json_load_full(uid, session_id)
 
 
-def load(uid: str, session_id: str, limit: int = _CONTEXT_TURNS) -> list[dict]:
-    """Prior turns as clean executor messages ({role, content}), oldest→newest."""
+def load(uid: str, session_id: str, limit: int = _CONTEXT_TURNS,
+         mark_stale: bool = False) -> list[dict]:
+    """Prior turns as clean executor messages ({role, content}), oldest→newest.
+
+    The store's rows carry a `tools` provenance key; it is stripped here so it
+    never reaches a provider payload.
+
+    `mark_stale=True` additionally annotates turns whose data has gone stale, so
+    the model re-calls instead of quoting figures back. Opt-in rather than
+    automatic: the CHAT paths want it, while the dashboard callers of this
+    function drive chart/analytics threads whose re-query behaviour is a separate
+    question. See backend/chat/stale.py.
+    """
     st = _store()
     if st is not None and st.reads_pg():
         rows = st.load(uid, session_id, limit=limit)
         if rows:
-            return rows
+            from backend.chat.stale import mark_stale as _mark
+            if mark_stale:
+                return _mark(rows)
+            return [{"role": r.get("role"), "content": r.get("content", "")}
+                    for r in rows]
     rows = _json_load_full(uid, session_id)
     out = [{"role": r.get("role"), "content": r.get("content", "")}
            for r in rows if r.get("role") in ("user", "assistant") and r.get("content")]

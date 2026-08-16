@@ -74,11 +74,25 @@ def _is_board_key(session_key: str) -> bool:
     return len(s) == 32 and all(c in "0123456789abcdefABCDEF" for c in s)
 
 
-def _ensure_session(s, user, session_key: str):
-    """Fetch or create the chat_sessions row for this key. Returns the ORM row."""
+def _ensure_session(s, user, session_key: str, source: str = "agent"):
+    """Fetch or create the chat_sessions row for this key. Returns the ORM row.
+
+    `source` records WHICH front door opened the thread — "chat" for the
+    Assistant panel's /chat, "agent" for the agent-OS /agent/chat. Both now write
+    to this table, and without the marker the two origins are indistinguishable
+    once they are rows. Stored in `meta` so it needs no migration; the session
+    list can filter on it whenever that becomes useful.
+
+    `kind` is deliberately NOT reused for this: it says what the thread IS
+    (assistant vs analytics board), not where it came from.
+    """
     sid = _session_uuid(session_key)
     row = s.get(M.ChatSession, sid)
     if row is not None:
+        # Backfill only. An existing row's origin is whatever opened it; the
+        # current writer is not necessarily that, so never overwrite.
+        if not (row.meta or {}).get("source"):
+            row.meta = {**(row.meta or {}), "source": source}
         return row
     is_board = _is_board_key(session_key)
     row = M.ChatSession(
@@ -87,6 +101,7 @@ def _ensure_session(s, user, session_key: str):
         user_id=user.id,
         title=None,
         kind="analytics" if is_board else "assistant",
+        meta={"source": source},
         # The session IS the board: keep the 32-hex id so save_chart files charts here.
         board_id=session_key if is_board else sid.hex,
     )
@@ -98,17 +113,28 @@ def _ensure_session(s, user, session_key: str):
 # ── writes ────────────────────────────────────────────────────────────────────
 def append(uid: str, session_key: str, role: str, content: str,
            *, agent: str | None = None, model_key: str | None = None,
-           tool_calls: list | None = None, meta: dict | None = None) -> str | None:
-    """Persist one turn. Returns the new message id (str) or None if not written."""
+           tool_calls: list | None = None, meta: dict | None = None,
+           source: str = "agent") -> str | None:
+    """Persist one turn. Returns the new message id (str) or None if not written.
+
+    Defaults to source="agent" so the pre-existing agent-OS callers tag
+    themselves without changing a line; /chat passes source="chat".
+
+    A None return is NOT nothing: it means this turn did not reach Postgres. That
+    is survivable only while a second writer still holds a copy, so every
+    non-config reason to return None is logged at warning — a silent drop on a
+    write path we depend on is exactly what we cannot afford to be invisible.
+    """
     if not enabled() or not content:
         return None
     try:
         with dbsync.session() as s:
             user = dbsync.resolve_user(s, uid)
             if user is None:
-                log.debug("chat store: unknown identity %r — skipping pg write", uid)
+                log.warning("chat store: identity %r did not resolve — turn NOT persisted "
+                            "to postgres (role=%s, session=%s)", uid, role, session_key)
                 return None
-            sess = _ensure_session(s, user, session_key)
+            sess = _ensure_session(s, user, session_key, source)
             nxt = s.execute(
                 select(func.coalesce(func.max(M.ChatMessage.seq), 0) + 1)
                 .where(M.ChatMessage.session_id == sess.id)
@@ -227,6 +253,17 @@ def load_full(uid: str, session_key: str) -> list[dict]:
             out = []
             for r in rows:
                 item = {
+                    # Which tools produced this turn. Deterministic provenance —
+                    # the basis for marking a stale answer, rather than guessing
+                    # from the content.
+                    "tools": [ (tc.get("function") or {}).get("name")
+                               for tc in (r.tool_calls or [])
+                               if (tc.get("function") or {}).get("name") ],
+                    # The server-side message id. It is the join key the client
+                    # needs to attach per-message extras (artifacts/embeds) to a
+                    # rehydrated turn — a client-generated id cannot match
+                    # anything stored here.
+                    "id": str(r.id),
                     "role": r.role, "content": r.content or "",
                     "ts": r.created_at.isoformat() if r.created_at else "",
                 }
@@ -244,7 +281,8 @@ def load(uid: str, session_key: str, limit: int = _CONTEXT_TURNS_DEFAULT) -> lis
     """Recent turns as executor messages. The FIRST user message is always kept as
     the thread anchor, so a long conversation doesn't lose what it is about."""
     rows = load_full(uid, session_key)
-    msgs = [{"role": r.get("role"), "content": r.get("content", "")}
+    msgs = [{"role": r.get("role"), "content": r.get("content", ""),
+             "tools": r.get("tools") or []}
             for r in rows if r.get("role") in ("user", "assistant") and r.get("content")]
     if len(msgs) <= limit:
         return msgs
@@ -282,3 +320,34 @@ def delete(uid: str, session_key: str) -> None:
             s.commit()
     except Exception:
         log.exception("chat store: delete failed (swallowed)")
+
+
+def prune_embeds(older_than_days: int) -> int:
+    """Soft-delete kind="embed" artifacts past the retention horizon.
+
+    Only embeds. Charts, tables and PDFs are work product a user may come back
+    for; a rendered video card or search picker is a snapshot of a transient
+    lookup, and it is the kind that accumulates without bound.
+
+    Soft delete (deleted_at) rather than DELETE: every read already filters on
+    it, and a mistaken horizon is then recoverable.
+    """
+    if not enabled() or older_than_days <= 0:
+        return 0
+    from datetime import timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+    try:
+        with dbsync.session() as s:
+            rows = s.execute(
+                select(M.ChatArtifact)
+                .where(M.ChatArtifact.kind == "embed",
+                       M.ChatArtifact.created_at < cutoff,
+                       M.ChatArtifact.deleted_at.is_(None))
+            ).scalars().all()
+            for r in rows:
+                r.deleted_at = datetime.now(timezone.utc)
+            s.commit()
+            return len(rows)
+    except Exception:
+        log.exception("chat store: prune_embeds failed (swallowed)")
+        return 0

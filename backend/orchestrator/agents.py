@@ -69,9 +69,14 @@ async def _delegate(ctx, to_agent: str, task: str) -> str:
     if not spec:
         return f"error: no specialist '{to_agent}'. Available: {list(SPECIALISTS)}"
     from . import graph  # late import — avoids agents↔graph cycle
-    sub = {"id": to_agent, "tools": spec["tools"]}
+    # The sub-agent inherits the DELEGATOR'S tenant. A nested run must not be a way
+    # to escape the isolation boundary, and it must not be a way to escape the
+    # authorization boundary either: the sub-agent's own tool calls re-enter
+    # authz.authorize_call with this tenant and the specialist's narrower allowlist.
+    sub = {"id": to_agent, "tools": spec["tools"], "tenant_id": ctx.get("tenant_id", "")}
     res = await graph.run_turn(user_id=ctx["user_id"], agent=sub, user_message=task,
-                               system_prompt=spec["prompt"], session_id=f"deleg:{to_agent}")
+                               system_prompt=spec["prompt"], session_id=f"deleg:{to_agent}",
+                               tenant_id=ctx.get("tenant_id", ""))
     if res["status"] == "awaiting_approval":
         return (f"[{spec['name']} prepared an action needing your approval: "
                 f"{res['approval']['preview']}]")

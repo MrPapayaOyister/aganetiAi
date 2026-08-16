@@ -497,6 +497,83 @@ class ChatArtifact(Base, TS):
     __table_args__ = (Index("ix_chat_artifacts_session", "session_id", "created_at"),)
 
 
+# --- Media sources (live TV channels, news feeds) ------------------------------
+# A LIBRARY, not a per-session preference. Tool toggles answer "may this chat use
+# Live TV at all"; this answers "which channels exist". A curated list belongs to
+# the person, not the thread, so there is deliberately no session scope.
+#
+# user_id NULL = a global/seeded row everyone sees; set = one person's addition.
+# That gives a curated default list plus personal additions without a second
+# mechanism.
+#
+# last_status/last_checked_at exist because a dead stream must fail VISIBLY at
+# add time, not silently at play time — and rot later on. This is why it is a
+# table rather than a JSONB blob on the user: we sort and filter on status.
+class MediaSource(Base, TS):
+    __tablename__ = "media_sources"
+    id = pk()
+    org_id = fk("organizations.id", ondelete="SET NULL", nullable=True, index=True)
+    user_id = fk("users.id", nullable=True, index=True)   # NULL = global/seeded
+    # tv | radio | news. ALSO selects the validation path — see
+    # media_sources.validate_source: tv means HLS (needs #EXTM3U and an
+    # opaque-origin CORS grant), radio means a continuous audio stream (no CORS
+    # requirement, because a media element does not need one).
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str | None] = mapped_column(Text)
+    # Radio only: rendered as the card's badges, so a saved station looks like
+    # the live result it was saved from.
+    codec: Mapped[str | None] = mapped_column(Text)
+    bitrate: Mapped[int | None] = mapped_column(Integer)
+    enabled: Mapped[bool] = mapped_column(Boolean, server_default=text("true"), nullable=False)
+    seeded: Mapped[bool] = mapped_column(Boolean, server_default=text("false"), nullable=False)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_status: Mapped[str | None] = mapped_column(Text)          # ok | <reason>
+    meta: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"), nullable=False)
+    __table_args__ = (
+        Index("ix_media_sources_kind_user", "kind", "user_id", "enabled"),
+    )
+
+
+# --- Directory cache (iptv-org) -----------------------------------------------
+# A CACHE OF UPSTREAM, not a place user channels live — those stay in
+# media_sources. Refreshed daily; rows are replaced wholesale in one transaction
+# so a failed refresh can never leave a partially-populated directory.
+#
+# Only structurally usable entries are stored: https, no custom User-Agent or
+# Referrer (a browser cannot set either, so such a stream passes a server-side
+# check and then dies in the player), not closed, not NSFW. Filtering on the way
+# IN means every read is already safe.
+class MediaDirectory(Base, TS):
+    __tablename__ = "media_directory"
+    id = pk()
+    source: Mapped[str] = mapped_column(Text, nullable=False)      # iptv-org
+    ext_id: Mapped[str] = mapped_column(Text, nullable=False)      # upstream channel id
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    alt_names: Mapped[dict] = mapped_column(JSONB, server_default=text("'[]'::jsonb"), nullable=False)
+    country: Mapped[str | None] = mapped_column(Text, index=True)
+    categories: Mapped[dict] = mapped_column(JSONB, server_default=text("'[]'::jsonb"), nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    quality: Mapped[str | None] = mapped_column(Text)
+    __table_args__ = (
+        Index("ix_media_directory_name", "name"),
+        Index("ix_media_directory_source", "source"),
+    )
+
+
+# Refresh bookkeeping, one row per source. Kept separate from the rows it
+# describes so a failed refresh can record WHY without touching the data it
+# failed to replace.
+class MediaDirectoryState(Base, TS):
+    __tablename__ = "media_directory_state"
+    id = pk()
+    source: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    last_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    row_count: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)
+
+
 # --- Long-term memory (cross-thread facts) ------------------------------------
 # Postgres is the system of record (stable ordering, pagination, dedup constraint,
 # soft-delete, cascade with the user); Qdrant user_memory_{ext_uid} stays the

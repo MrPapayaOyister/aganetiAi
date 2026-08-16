@@ -32,18 +32,34 @@ except Exception:
 # cost_* are micro-USD per 1k tokens (local≈0).
 from config.settings import LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, LLM_VISION_MODEL
 
+# `ctx` is the SERVED context window, per model — not one number copied across.
+#
+# All three entries said 32768. That is the vision engine's limit (vllm-vl is
+# launched with an explicit --max-model-len 32768) and it had been pasted onto
+# the text models, which serve 40960:
+#
+#   Qwen3-30B-A3B-FP8 config.json  max_position_embeddings: 40960
+#   GET vllm-fast:9002/v1/models   "max_model_len": 40960
+#   vLLM startup log               "Using max model len 40960"
+#
+# The error was conservative — it under-claimed by 8,192 tokens (20%) — so it
+# caused premature trimming rather than overflow, which is why nothing failed
+# loudly. Anything budgeting against caps.ctx was throwing away usable context.
+_CTX_TEXT = 40960    # qwen-fast / qwen-extract on vllm-fast:9002
+_CTX_VISION = 32768  # qwen-vl on vllm-vl:9001, capped by its launch args
+
 MODELS: dict[str, dict] = {
     "gateway": {"base_url": LLM_BASE_URL, "api_key": LLM_API_KEY,
                 "model": LLM_MODEL,
-                "caps": {"tool_call": True, "vision": False, "ctx": 32768},
+                "caps": {"tool_call": True, "vision": False, "ctx": _CTX_TEXT},
                 "tier": "interactive", "cost_in": 0, "cost_out": 0},
     "gateway-fast": {"base_url": LLM_BASE_URL, "api_key": LLM_API_KEY,
                      "model": os.getenv("LLM_FAST_MODEL", LLM_MODEL),
-                     "caps": {"tool_call": True, "vision": False, "ctx": 32768},
+                     "caps": {"tool_call": True, "vision": False, "ctx": _CTX_TEXT},
                      "tier": "fast", "cost_in": 0, "cost_out": 0},
     "vision-vl": {"base_url": LLM_BASE_URL, "api_key": LLM_API_KEY,
                   "model": LLM_VISION_MODEL,
-                  "caps": {"tool_call": True, "vision": True, "ctx": 32768},
+                  "caps": {"tool_call": True, "vision": True, "ctx": _CTX_VISION},
                   "tier": "interactive", "cost_in": 0, "cost_out": 0},
 }
 

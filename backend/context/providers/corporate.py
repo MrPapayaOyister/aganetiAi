@@ -33,8 +33,12 @@ class CorporateKnowledgeProvider(ContextProvider):
         from backend.ingest import search_corporate
 
         # search_corporate embeds and queries Qdrant synchronously.
+        # tenant_id is passed straight through: `None` when the request carries no
+        # tenant, which makes the org predicate absent rather than empty. See
+        # search_corporate — an empty tenant would match nothing.
         hits = await asyncio.to_thread(
-            search_corporate, request.message, self.top_k, request.user_id)
+            search_corporate, request.message, self.top_k, request.user_id,
+            None, None, (request.tenant_id or None))
         out = []
         for h in hits or []:
             text = (h.get("text") or "").strip()

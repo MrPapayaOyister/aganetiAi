@@ -82,15 +82,21 @@ class ContextBuilder:
     async def build_context(self, user_id: str, message: str,
                             session_id: str = "", *,
                             only: Optional[Iterable[str]] = None,
-                            metadata: Optional[dict] = None) -> ContextBundle:
+                            metadata: Optional[dict] = None,
+                            tenant_id: str = "") -> ContextBundle:
         """Gather every applicable provider's context for one turn.
 
         Never raises. A provider that fails is recorded in `bundle.stats` and
         contributes nothing; the bundle is always usable.
+
+        `tenant_id` is carried to every provider on the request. Providers that can
+        enforce it do; the ones that cannot yet (graph) ignore it, so adding it here
+        is not itself a guarantee — see the per-store notes in each provider.
         """
         started = time.perf_counter()
         request = ContextRequest(user_id=user_id, message=message,
-                                 session_id=session_id, metadata=dict(metadata or {}))
+                                 session_id=session_id, tenant_id=str(tenant_id or ""),
+                                 metadata=dict(metadata or {}))
         bundle = ContextBundle()
         bundle.metadata = {"user_id": user_id, "session_id": session_id,
                            "built_at": now_iso(), **(metadata or {})}
@@ -189,7 +195,8 @@ class ContextBuilder:
                                    only: Optional[Iterable[str]] = None,
                                    metadata: Optional[dict] = None,
                                    compress: bool = True,
-                                   apply_budget: bool = True) -> RankedContextBundle:
+                                   apply_budget: bool = True,
+                                   tenant_id: str = "") -> RankedContextBundle:
         """Retrieve → fuse → rank → compress → budget.
 
         Returns a RankedContextBundle: one ranked list of fused items, PLUS the
@@ -200,7 +207,8 @@ class ContextBuilder:
         falls back to the unfused bundle rather than losing the context.
         """
         bundle = await self.build_context(user_id, message, session_id,
-                                          only=only, metadata=metadata)
+                                          only=only, metadata=metadata,
+                                          tenant_id=tenant_id)
         ranked = RankedContextBundle(bundle=bundle)
         stats = FusionStats()
 

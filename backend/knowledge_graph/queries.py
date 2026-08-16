@@ -356,3 +356,129 @@ def find_legacy_scheme_nodes() -> str:
     RETURN n.id AS id, n.canonical_name AS canonical_name, n.name AS name,
            labels(n) AS labels
     """
+
+
+# ── Tenant-scoped search (P3: Runtime B graph_search) ─────────────────────────
+# The graph carries no tenant property today — a live inspection of every distinct
+# node key found `user_ids` and `confidentiality` but nothing organisational. It is
+# structurally single-tenant, and pretending otherwise in the tool layer would be
+# worse than saying so.
+#
+# These builders therefore emit a REAL predicate on a configurable property, with
+# two modes:
+#
+#   lenient (default) — `n.<prop> IS NULL OR n.<prop> = $tenant`
+#       An unstamped node is shared. This is what makes the filter a no-op on
+#       today's data instead of returning nothing, and it tightens by itself as
+#       soon as ingestion starts stamping the property.
+#
+#   strict            — `n.<prop> = $tenant`
+#       An unstamped node belongs to nobody. Correct once the graph is stamped;
+#       returns zero rows before that, which is why it is not the default.
+#
+# The property NAME is interpolated, not parameterised, because Cypher cannot
+# parameterise a property key. It is validated by `validate_property_name` below,
+# so a caller cannot smuggle Cypher through it.
+TENANT_PROPERTY_DEFAULT = "org_id"
+
+
+def validate_property_name(prop: str) -> str:
+    """Property keys are interpolated into Cypher, so they are constrained to the
+    identifier grammar. Anything else is a programming error, not user input —
+    this value comes from configuration, never from a request."""
+    p = (prop or "").strip()
+    if not p or not p.replace("_", "").isalnum() or p[0].isdigit():
+        raise ValueError(f"invalid graph tenant property name: {prop!r}")
+    return p
+
+
+def _tenant_predicate(var: str, prop: str, strict: bool) -> str:
+    p = validate_property_name(prop)
+    if strict:
+        return f"{var}.{p} = $tenant"
+    return f"({var}.{p} IS NULL OR {var}.{p} = $tenant)"
+
+
+def tenant_find_entities_by_name(prop: str = TENANT_PROPERTY_DEFAULT,
+                                 strict: bool = False) -> str:
+    """Exact name/alias match, restricted to the caller's tenant."""
+    return f"""
+    MATCH (n:{BASE_LABEL})
+    WHERE (toLower(n.canonical_name) = toLower($name)
+           OR any(a IN coalesce(n.aliases, []) WHERE toLower(a) = toLower($name)))
+      AND {_tenant_predicate('n', prop, strict)}
+    RETURN n, labels(n) AS labels
+    ORDER BY coalesce(n.observations, 0) DESC
+    LIMIT $limit
+    """
+
+
+def tenant_search_entities(prop: str = TENANT_PROPERTY_DEFAULT,
+                           strict: bool = False) -> str:
+    """Substring match on canonical name or alias, restricted to the tenant.
+
+    Deliberately CONTAINS rather than the fulltext index: the index is driven by
+    the registry's escaped Lucene expressions, and building one here would mean
+    re-implementing that escaping in a second place. A bounded CONTAINS over ~500
+    entities is cheap, and `$q` stays a parameter either way.
+    """
+    return f"""
+    MATCH (n:{BASE_LABEL})
+    WHERE (toLower(n.canonical_name) CONTAINS toLower($q)
+           OR any(a IN coalesce(n.aliases, []) WHERE toLower(a) CONTAINS toLower($q)))
+      AND {_tenant_predicate('n', prop, strict)}
+    RETURN n, labels(n) AS labels, COUNT {{ (n)--() }} AS degree
+    ORDER BY degree DESC, coalesce(n.observations, 0) DESC
+    LIMIT $limit
+    """
+
+
+def tenant_expand_one_hop(prop: str = TENANT_PROPERTY_DEFAULT,
+                          strict: bool = False) -> str:
+    """One hop out, with BOTH endpoints restricted to the tenant.
+
+    Both sides matter: filtering only the seed would let a relationship walk from
+    an in-tenant node to an out-of-tenant one and hand the caller its properties.
+    """
+    return f"""
+    UNWIND $ids AS seed_id
+    MATCH (a:{BASE_LABEL} {{id: seed_id}})-[r]-(b:{BASE_LABEL})
+    WHERE NOT b.id IN $visited
+      AND {_tenant_predicate('a', prop, strict)}
+      AND {_tenant_predicate('b', prop, strict)}
+    RETURN a.id            AS from_id,
+           a.canonical_name AS from_name,
+           b               AS node,
+           labels(b)       AS labels,
+           type(r)         AS rel_type,
+           startNode(r).id AS start_id,
+           endNode(r).id   AS end_id,
+           properties(r)   AS rel_props
+    LIMIT $limit
+    """
+
+
+def tenant_search_entities_any_token(prop: str = TENANT_PROPERTY_DEFAULT,
+                                     strict: bool = False) -> str:
+    """Match an entity if ANY of `$terms` appears in its name or aliases.
+
+    The third and last resolution pass for graph_search. An LLM asks for
+    "the Agentic AI project" when the node is called "Agentic AI"; exact match and
+    whole-string CONTAINS both miss, and the tool then tells the model nothing is
+    recorded — which is worse than a slightly loose match, because it reads as an
+    authoritative absence.
+
+    Ranked by how many terms hit, then by degree, so the loosening cannot promote a
+    one-token coincidence above a genuine multi-token match. `$terms` is a
+    parameter; the caller lower-cases and filters it.
+    """
+    return f"""
+    MATCH (n:{BASE_LABEL})
+    WHERE {_tenant_predicate('n', prop, strict)}
+    WITH n, [t IN $terms WHERE toLower(n.canonical_name) CONTAINS t
+             OR any(a IN coalesce(n.aliases, []) WHERE toLower(a) CONTAINS t)] AS hits
+    WHERE size(hits) > 0
+    RETURN n, labels(n) AS labels, COUNT {{ (n)--() }} AS degree, size(hits) AS hit_count
+    ORDER BY hit_count DESC, degree DESC
+    LIMIT $limit
+    """

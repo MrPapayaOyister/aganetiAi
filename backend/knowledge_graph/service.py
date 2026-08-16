@@ -365,6 +365,68 @@ class GraphService:
         return [{"id": r["id"], "canonical_name": r["canonical_name"],
                  "name": r["name"], "labels": list(r["labels"])} for r in res.records]
 
+    # ── tenant-scoped search (P3: the Runtime B graph_search tool) ───────────
+    # These exist so the executor's graph tool never has to author Cypher itself.
+    # GraphService stays the ONE place a statement is executed, and the tool layer
+    # calls typed methods with typed arguments — the same contract every other
+    # consumer of this package has.
+
+    def tenant_find_entities(self, name: str, *, tenant_id: str, limit: int = 10,
+                             prop: str | None = None, strict: bool = False
+                             ) -> "list[dict[str, Any]]":
+        """Exact name/alias match within one tenant."""
+        res = self._execute(
+            q.tenant_find_entities_by_name(prop or q.TENANT_PROPERTY_DEFAULT, strict),
+            {"name": name, "tenant": tenant_id, "limit": int(limit)},
+            op="tenant_find_entities")
+        return [{"node": GraphNode.from_record(r["n"]), "labels": list(r["labels"])}
+                for r in res.records]
+
+    def tenant_search_entities(self, text: str, *, tenant_id: str, limit: int = 10,
+                               prop: str | None = None, strict: bool = False
+                               ) -> "list[dict[str, Any]]":
+        """Substring match on canonical name or alias within one tenant, ranked by
+        degree (a well-connected entity is the more useful answer)."""
+        res = self._execute(
+            q.tenant_search_entities(prop or q.TENANT_PROPERTY_DEFAULT, strict),
+            {"q": text, "tenant": tenant_id, "limit": int(limit)},
+            op="tenant_search_entities")
+        return [{"node": GraphNode.from_record(r["n"]), "labels": list(r["labels"]),
+                 "degree": int(r["degree"])} for r in res.records]
+
+    def tenant_expand_one_hop(self, ids: "list[str]", *, tenant_id: str,
+                              visited: "list[str]" | None = None, limit: int = 50,
+                              prop: str | None = None, strict: bool = False
+                              ) -> "list[dict[str, Any]]":
+        """One hop out with BOTH endpoints inside the tenant."""
+        if not ids:
+            return []
+        res = self._execute(
+            q.tenant_expand_one_hop(prop or q.TENANT_PROPERTY_DEFAULT, strict),
+            {"ids": list(ids), "visited": list(visited or []),
+             "tenant": tenant_id, "limit": int(limit)},
+            op=f"tenant_expand_one_hop[{len(ids)}]")
+        return [{"from_id": r["from_id"], "from_name": r["from_name"],
+                 "node": GraphNode.from_record(r["node"]), "labels": list(r["labels"]),
+                 "rel_type": r["rel_type"], "start_id": r["start_id"],
+                 "end_id": r["end_id"], "rel_props": dict(r["rel_props"] or {})}
+                for r in res.records]
+
+    def tenant_search_entities_any_token(self, terms: "list[str]", *, tenant_id: str,
+                                         limit: int = 10, prop: str | None = None,
+                                         strict: bool = False) -> "list[dict[str, Any]]":
+        """Loose resolution: any term matching name or alias, best-hit-count first."""
+        cleaned = [t.strip().lower() for t in terms if t and len(t.strip()) >= 3]
+        if not cleaned:
+            return []
+        res = self._execute(
+            q.tenant_search_entities_any_token(prop or q.TENANT_PROPERTY_DEFAULT, strict),
+            {"terms": cleaned, "tenant": tenant_id, "limit": int(limit)},
+            op="tenant_search_entities_any_token")
+        return [{"node": GraphNode.from_record(r["n"]), "labels": list(r["labels"]),
+                 "degree": int(r["degree"]), "hit_count": int(r["hit_count"])}
+                for r in res.records]
+
     # ── escape hatch ─────────────────────────────────────────────────────────
 
     def run_query(self, cypher: str, params: dict[str, Any] | None = None,
