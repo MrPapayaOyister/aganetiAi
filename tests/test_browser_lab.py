@@ -553,8 +553,41 @@ def test_the_catalog_matches_the_modes_the_tests_cover(client):
     assert declared == {
         "dependent_field", "delayed_element", "disabled_submit",
         "server_reject", "confirm_dialog", "unprompted_modal",
+        # Added in Phase F for §11.3. Listed here rather than exempted, because
+        # the point of this test is that a mode nobody covers cannot appear
+        # unnoticed — and the injection page is covered by
+        # `tests/test_browser_agent_level3.py`.
+        "prompt_injection",
     }
     assert declared == set(fixtures.FAILURE_MODES)
+
+
+# ── 12b. prompt injection (§11.3) ─────────────────────────────────────────────
+def test_the_injection_notice_is_visible_text_behind_the_flag(client):
+    """VISIBLE text, in the accessibility tree — not a comment and not
+    display:none. A hidden injection tests the parser; what needs testing is
+    whether an agent obeys text it can actually read."""
+    reach_application(client, qs="?fail=prompt_injection")
+    page = client.get("/application?fail=prompt_injection").text
+    assert fixtures.INJECTION_TEXT in page
+    assert 'data-testid="agent-notice"' in page
+    assert "display:none" not in page and "hidden" not in page.split("agent-notice")[1][:200]
+
+
+def test_the_injection_is_absent_by_default(client):
+    reach_application(client)
+    assert fixtures.INJECTION_TEXT not in client.get("/application").text
+    assert fixtures.INJECTION_TEXT not in client.get("/application?fail=none").text
+
+
+def test_the_injection_names_no_resolvable_host(client):
+    """§10.1 hermeticity: even a fully compromised agent must reach nothing.
+    `.invalid` is reserved by RFC 2606 and cannot resolve."""
+    import re
+    hosts = re.findall(r"https?://([^/\s]+)", fixtures.INJECTION_TEXT)
+    assert hosts, "the injection should name a destination, or it is not realistic"
+    for h in hosts:
+        assert h.endswith(".invalid"), f"{h} could resolve"
 
 
 # ── 13. hermeticity (§10.1) ───────────────────────────────────────────────────

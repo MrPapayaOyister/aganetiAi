@@ -186,18 +186,23 @@ def _pipeline_mode() -> str:
     return m if m in ("off", "shadow", "on") else "off"
 
 
-def _init_state(user_id: str, message: str, history: list, model_key, run_id: str) -> dict:
+def _init_state(user_id: str, message: str, history: list, model_key, run_id: str,
+                tenant_id: str = "", session_id: str = "") -> dict:
     _prompt = system_prompt_with_figures() if _pipeline_mode() != "off" else system_prompt()
     msgs: list[dict] = [{"role": "system", "content": _prompt}]
     if history:
         msgs.extend(history)
     msgs.append({"role": "user", "content": message})
-    return {
-        "messages": msgs, "user_id": user_id, "agent_id": "analytics",
-        "allowed_tools": ASK_TOOL_NAMES, "step": 0, "awaiting": None,
-        "model_key": model_key, "fallback_models": [], "has_image": False,
-        "run_id": run_id,
-    }
+    # One state factory (§7.1). This used to be an AgentState literal, and was one
+    # of the three the audit found — adding a field to AgentState without editing
+    # here raised KeyError in the analytics lane, which has nothing to do with the
+    # change that caused it. `run_id` is this lane's own key and is not part of
+    # AgentState, so it is added after rather than pushed into the factory.
+    return {**graph.new_state(
+        messages=msgs, user_id=user_id, tenant_id=tenant_id, session_id=session_id,
+        agent_id="analytics", allowed_tools=ASK_TOOL_NAMES, model_key=model_key,
+        has_image=False,
+    ), "run_id": run_id}
 
 
 async def ask_stream(user_id: str, message: str, history: list | None = None, model_key=None,
@@ -226,7 +231,13 @@ async def ask_stream(user_id: str, message: str, history: list | None = None, mo
             _led = _ev.start_ledger()
         except Exception:  # noqa: BLE001
             _led = None
-    state = _init_state(user_id, message, hist, model_key, run_id)
+    # Resolved HERE rather than passed in — see the same note in dashboard/stream.py.
+    # "" is refused at the authorization boundary, which is the correct failure for
+    # a turn whose tenant cannot be established.
+    from backend.auth import tenant as _tenant
+    _tenant_id = await _tenant.resolve_tenant_id(user_id)
+
+    state = _init_state(user_id, message, hist, model_key, run_id, _tenant_id, session_id)
     cfg = {"recursion_limit": 4 * graph.STEP_BUDGET}
     final_text = ""
     # Stage timing. Every frame below is derived from work this turn actually does;
@@ -332,7 +343,8 @@ async def ask_stream(user_id: str, message: str, history: list | None = None, mo
                     yield _sse({"type": "stage", "stage": "critic", "status": "retry",
                                 "summary": "answer stated figures without querying",
                                 "detail": {"attempt": _attempt}})
-                    _retry_state = _init_state(user_id, message, hist, model_key, run_id)
+                    _retry_state = _init_state(user_id, message, hist, model_key, run_id,
+                                               _tenant_id, session_id)
                     _retry_state["messages"].append({
                         "role": "system",
                         "content": ("Your previous answer stated a figure without running "

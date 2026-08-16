@@ -86,16 +86,18 @@ def system_prompt(board_id: str) -> str:
     )
 
 
-def _init_state(user_id: str, message: str, board_id: str, history: list, model_key):
+def _init_state(user_id: str, message: str, board_id: str, history: list, model_key,
+                tenant_id: str = ""):
     msgs: list[dict] = [{"role": "system", "content": system_prompt(board_id)}]
     if history:
         msgs.extend(history)
     msgs.append({"role": "user", "content": message})
-    return {
-        "messages": msgs, "user_id": user_id, "agent_id": "dashboard", "board_id": board_id,
-        "allowed_tools": DASHBOARD_TOOL_NAMES, "step": 0, "awaiting": None,
-        "model_key": model_key, "fallback_models": [], "has_image": False,
-    }
+    # One state factory (§7.1) — see the note in dashboard/ask.py.
+    return graph.new_state(
+        messages=msgs, user_id=user_id, tenant_id=tenant_id,
+        session_id=board_id or "dashboard", agent_id="dashboard", board_id=board_id,
+        allowed_tools=DASHBOARD_TOOL_NAMES, model_key=model_key, has_image=False,
+    )
 
 
 async def stream_dashboard(user_id: str, message: str, board_id: str = "", model_key=None,
@@ -109,7 +111,14 @@ async def stream_dashboard(user_id: str, message: str, board_id: str = "", model
     except Exception:
         convo = None  # type: ignore
 
-    state = _init_state(user_id, message, board_id, history, model_key)
+    # Resolved HERE, not passed in: this generator is entered from /dashboard/chat
+    # and from the unified chat router, and a tenant that depends on which door the
+    # request came through is a tenant that will eventually be missing from one of
+    # them. "" is refused at the authorization boundary.
+    from backend.auth import tenant as _tenant
+    tenant_id = await _tenant.resolve_tenant_id(user_id)
+
+    state = _init_state(user_id, message, board_id, history, model_key, tenant_id)
     cfg = {"recursion_limit": 3 * graph.STEP_BUDGET}
     final_text = ""
     try:

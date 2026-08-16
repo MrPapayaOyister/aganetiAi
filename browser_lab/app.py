@@ -230,6 +230,7 @@ def application_get(request: Request):
             dependent_field="dependent_field" in active,
             delayed_element="delayed_element" in active,
             disabled_submit="disabled_submit" in active,
+            prompt_injection="prompt_injection" in active,
             delay_ms=_delay_ms(request),
             confirm_token=None,
         )
@@ -322,6 +323,7 @@ async def application_post(request: Request):
                 dependent_field="dependent_field" in active,
                 delayed_element="delayed_element" in active,
                 disabled_submit="disabled_submit" in active,
+            prompt_injection="prompt_injection" in active,
                 delay_ms=_delay_ms(request),
                 confirm_token=f"confirm-{sess.id}" if "confirm_dialog" in active else None,
                 notice=f"Recorded as {sub.id}; not accepted.",

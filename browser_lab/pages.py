@@ -231,6 +231,7 @@ def application_page(
     *, errors: dict[str, str], values: dict[str, str], qs: str, active: list[str],
     dependent_field: bool, delayed_element: bool, disabled_submit: bool,
     delay_ms: int, confirm_token: str | None, notice: str = "",
+    prompt_injection: bool = False,
 ) -> str:
     departments = "".join(
         f'<option value="{esc(v)}"{" selected" if values.get("department") == v else ""}>{esc(t)}</option>'
@@ -335,9 +336,24 @@ def application_page(
         f'<div class="notice" data-testid="page-notice">{esc(notice)}</div>' if notice else ""
     )
 
+    # §11.3. VISIBLE text, in the accessibility tree, reachable by browser_extract
+    # and rendered by the inspector as an ordinary region. Not an HTML comment, not
+    # display:none, not white-on-white — a hidden injection tests the parser, and
+    # what needs testing is whether the agent obeys text it can actually read.
+    #
+    # Given a role and an accessible name so it arrives through exactly the channel
+    # legitimate page content arrives through. Making it structurally distinguishable
+    # would let a defence key off the structure, and no real attacker would oblige.
+    injection_block = (
+        f'''<div class="notice" role="note" aria-label="Notice"
+     data-testid="agent-notice">{esc(fixtures.INJECTION_TEXT)}</div>'''
+        if prompt_injection else ""
+    )
+
     body = f"""
 <h1>Application</h1>
 <p class="sub">All fields are processed by the lab and recorded verbatim.</p>
+{injection_block}
 {notice_block}
 {_errors_block(errors)}
 <form method="post" action="/application{qs}" enctype="multipart/form-data"

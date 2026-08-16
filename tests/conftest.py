@@ -37,6 +37,9 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers",
         "slow: takes more than a couple of seconds.")
+    config.addinivalue_line(
+        "markers",
+        "llm: drives a real model. Skipped when no LLM gateway answers.")
 
 
 # ── availability probes (called from fixtures, never at import) ───────────────
@@ -122,3 +125,45 @@ def lab_url(require_chromium) -> str:
         pytest.skip(f"{why}. Start it with `python -m browser_lab` or "
                     f"`docker compose up -d browser-lab`.")
     return url
+
+
+_LLM_PROBE: tuple[bool, str] | None = None
+
+
+def _llm_available() -> tuple[bool, str]:
+    """Ask the gateway for its model list. Cached for the session.
+
+    A Level 3 test drives a real model, so on a machine with no gateway it must
+    skip rather than fail — same rule as Chromium and the lab. Probed at RUN time
+    from a fixture, never at collection: a module-level probe here would reach the
+    network during `pytest --collect-only`.
+    """
+    global _LLM_PROBE
+    if _LLM_PROBE is not None:
+        return _LLM_PROBE
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
+    except Exception:  # noqa: BLE001
+        pass
+    base = (os.getenv("LLM_BASE_URL") or "").rstrip("/")
+    if not base:
+        _LLM_PROBE = (False, "LLM_BASE_URL is unset")
+        return _LLM_PROBE
+    req = urllib.request.Request(
+        f"{base}/models",
+        headers={"Authorization": f"Bearer {os.getenv('LLM_API_KEY', 'x')}"})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as r:
+            _LLM_PROBE = (r.status == 200, "" if r.status == 200
+                          else f"gateway returned {r.status}")
+    except (urllib.error.URLError, socket.timeout, OSError) as e:
+        _LLM_PROBE = (False, f"no LLM gateway at {base} ({type(e).__name__})")
+    return _LLM_PROBE
+
+
+@pytest.fixture(scope="session")
+def require_llm() -> None:
+    ok, why = _llm_available()
+    if not ok:
+        pytest.skip(why)

@@ -19,7 +19,7 @@ from typing import Annotated, AsyncIterator, Literal, TypedDict
 
 from langgraph.graph import START, END, StateGraph
 
-from . import authz, llm, registry
+from . import authz, browser_agent, llm, registry
 
 log = logging.getLogger("aganeti.orchestrator.graph")
 
@@ -36,10 +36,59 @@ class AgentState(TypedDict):
     board_id: str
     allowed_tools: list
     step: int
+    #: Per-run cap on agent turns. Defaults to STEP_BUDGET; a browser task needs
+    #: far more, because §9.2 budgets 40 *actions* and 8 turns cannot hold them.
+    step_budget: int
     awaiting: dict | None
     model_key: str | None
     fallback_models: list
     has_image: bool
+    #: §7.1's browser block, or None. Nested rather than 13 flat siblings so the
+    #: analytics and chart lanes read `state.get("browser")` and are unaffected —
+    #: the audit's Item 1 failure mode was a missing key breaking an unrelated lane.
+    browser: dict | None
+
+
+def new_state(*, messages: list, user_id: str, agent_id: str, allowed_tools: list,
+              tenant_id: str = "", session_id: str = "", board_id: str = "",
+              step: int = 0, step_budget: int = STEP_BUDGET,
+              model_key: str | None = None, fallback_models: list | None = None,
+              has_image: bool | None = None, browser: dict | None = None,
+              awaiting: dict | None = None) -> AgentState:
+    """**The** `AgentState` constructor. Every field gets a default here.
+
+    The audit (Item 1, Part 6 item 2) found `AgentState` literals in three places —
+    `_init` below, `dashboard/ask.py` and `dashboard/stream.py` — and the design had
+    known about only one. Adding the browser fields as three parallel edits would
+    have been three chances to drift, with the failure landing as a `KeyError` in
+    the chart lane, which has nothing to do with browser work.
+
+    §7.1 chose consolidation over fanning out, for a reason that outlives this
+    change: a fourth construction site added later reintroduces the same bug, and
+    a factory is the only version of the fix that makes that structurally
+    impossible rather than merely documented. `test_there_is_one_state_factory`
+    fails if a fourth literal appears.
+
+    `has_image` is derived from the messages when not given, because it is a fact
+    about them rather than a caller's choice — the one field a caller could get
+    wrong without noticing.
+    """
+    return {
+        "messages": messages,
+        "user_id": user_id,
+        "tenant_id": str(tenant_id or ""),
+        "session_id": str(session_id or ""),
+        "agent_id": agent_id,
+        "board_id": board_id,
+        "allowed_tools": allowed_tools,
+        "step": step,
+        "step_budget": int(step_budget or STEP_BUDGET),
+        "awaiting": awaiting,
+        "model_key": model_key,
+        "fallback_models": fallback_models or [],
+        "has_image": _has_image(messages) if has_image is None else bool(has_image),
+        "browser": browser,
+    }
 
 
 def _has_image(messages: list) -> bool:
@@ -66,7 +115,13 @@ async def _agent_node(state: AgentState) -> dict:
     # default truncates a wide table mid-row (the row then renders as broken pipes), so
     # give the data agents room. Same blast radius as the temperature rule above.
     _maxtok = 4096 if state.get("agent_id") in ("dashboard", "analytics") else 1024
-    msg = await llm.chat(state["messages"], tools=(None if has_image else schemas),
+    # §7.3 / context discipline: a browser task is 40 actions × up to 60 elements,
+    # which exhausts the window mid-task and presents as the agent losing the
+    # thread rather than as an error. The COMPACTED view goes to the model; the
+    # full history stays in state, so the record is complete and only the prompt
+    # is bounded. Inert (returns the list unchanged) when there is no browser task.
+    sent = browser_agent.compact(state["messages"], state.get("browser"))
+    msg = await llm.chat(sent, tools=(None if has_image else schemas),
                          agent=agent_cfg, ctx=ctx, need_vision=has_image, temperature=_temp,
                          tool_choice=_tc, max_tokens=_maxtok)
     return {"messages": [msg], "step": state["step"] + 1}
@@ -90,18 +145,40 @@ async def _tools_node(state: AgentState) -> dict:
            "session_id": state.get("session_id", "")}
     outs: list[dict] = []
     pending: list[dict] = []
+    # A mutable copy of the browser block; the hooks below record what happened and
+    # it is returned as a state delta at the end. None for every non-browser lane,
+    # in which case every hook is a no-op.
+    br = dict(state["browser"]) if state.get("browser") else None
     for tc in last.get("tool_calls", []):
         name = tc["function"]["name"]
         try:
             args = json.loads(tc["function"].get("arguments") or "{}")
         except Exception:
             args = {}
+
+        # §9.1 recovery discipline, applied BEFORE the tool runs. The model is not
+        # asked whether to repeat an action the taxonomy has already ruled out —
+        # a documented recovery policy that the model may decline to follow is a
+        # suggestion, and the click→submit loop is what a suggestion costs.
+        refusal = browser_agent.before_tool(br, name, args)
+        if refusal is not None:
+            outs.append({"role": "tool", "tool_call_id": tc["id"], "name": name,
+                         "content": refusal})
+            continue
+
         tool = registry.get(name)
+        # §4.2 option (i): facts are RESOLVED before the boundary, never inside it.
+        # Without this the boundary sees a null session owner for every
+        # session-scoped browser tool and denies `session_not_owned` — which is the
+        # correct behaviour for a null owner and the wrong answer for a real one.
+        # Null for the 43 non-browser tools, and no I/O is performed for them.
+        facts = await browser_agent.resolve_facts(
+            name, args, tenant_id=state.get("tenant_id", ""), user_id=state["user_id"])
         verdict = authz.authorize_call(
             user_id=state["user_id"], tenant_id=state.get("tenant_id", ""),
             agent_id=state["agent_id"], session_id=state.get("session_id", ""),
             tool_name=name, arguments=args,
-            granted=state["allowed_tools"], tool=tool)
+            granted=state["allowed_tools"], tool=tool, **facts)
         _audit(verdict)
 
         if verdict.denied:
@@ -124,9 +201,15 @@ async def _tools_node(state: AgentState) -> dict:
                 content = f"error: bad arguments for {name}: {e}"
             except Exception as e:  # noqa: BLE001
                 content = f"error: {name} failed: {e}"
+        # Record the outcome in the browser block and delimit page-derived text as
+        # untrusted (§11.3). Returns the content unchanged for non-browser tools.
+        br, content = browser_agent.after_tool(br, name, args, content, verdict=verdict)
         outs.append({"role": "tool", "tool_call_id": tc["id"], "name": name,
                      "content": str(content)[:MAX_TOOL_OUTPUT]})
-    return {"messages": outs, "awaiting": pending[0] if pending else None}
+    delta: dict = {"messages": outs, "awaiting": pending[0] if pending else None}
+    if br is not None:
+        delta["browser"] = br
+    return delta
 
 
 def _audit(verdict) -> None:
@@ -144,13 +227,20 @@ def _audit(verdict) -> None:
 
 
 def _route_agent(state: AgentState) -> Literal["tools", "end"]:
-    if state["step"] >= STEP_BUDGET:
+    if state["step"] >= (state.get("step_budget") or STEP_BUDGET):
         return "end"
     return "tools" if (state["messages"] and state["messages"][-1].get("tool_calls")) else "end"
 
 
 def _route_tools(state: AgentState) -> Literal["agent", "end"]:
-    return "end" if state.get("awaiting") else "agent"
+    if state.get("awaiting"):
+        return "end"
+    # A browser task ends the moment its ending is decided — budget exhausted, a
+    # terminal error, or the submit boundary reached. Continuing to the model after
+    # that burns turns re-deriving a conclusion the runtime already holds.
+    if browser_agent.is_finished(state.get("browser")):
+        return "end"
+    return "agent"
 
 
 def _build():
@@ -167,8 +257,8 @@ GRAPH = _build()
 
 
 def _init(user_id: str, agent: dict, messages: list, step: int = 0, *,
-          tenant_id: str = "", session_id: str = "") -> AgentState:
-    """Build the executor state.
+          tenant_id: str = "", session_id: str = "", browser: dict | None = None) -> AgentState:
+    """Build the executor state from an agent dict.
 
     `tenant_id` comes from the agent dict when the caller resolved one (the route
     layer does), else from the explicit argument. It is NOT defaulted to anything
@@ -176,13 +266,16 @@ def _init(user_id: str, agent: dict, messages: list, step: int = 0, *,
     AUTHZ_STRICT_TENANT, is refused there. That is deliberate — the failure mode of
     a forgotten tenant must be "denied", not "unscoped".
     """
-    return {"messages": messages, "user_id": user_id,
-            "tenant_id": str(tenant_id or agent.get("tenant_id") or ""),
-            "session_id": str(session_id or ""),
-            "agent_id": agent.get("id", "primary"),
-            "allowed_tools": agent.get("tools", registry.all_names()), "step": step, "awaiting": None,
-            "model_key": agent.get("model_key"), "fallback_models": agent.get("fallback_models") or [],
-            "has_image": _has_image(messages)}
+    return new_state(
+        messages=messages, user_id=user_id,
+        tenant_id=str(tenant_id or agent.get("tenant_id") or ""),
+        session_id=session_id,
+        agent_id=agent.get("id", "primary"),
+        allowed_tools=agent.get("tools", registry.all_names()),
+        step=step, step_budget=int(agent.get("step_budget") or STEP_BUDGET),
+        model_key=agent.get("model_key"),
+        fallback_models=agent.get("fallback_models"),
+        browser=browser)
 
 
 def _user_msg(user_message: str, images: list | None) -> dict:

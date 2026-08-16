@@ -5,10 +5,12 @@ the seam: that the tools are present and classified, that ownership arrives from
 `TenantContext` rather than from the model, that a call with no tenant is refused
 before the worker, and that artifacts are written with an `org_id`.
 
-**No authorization is asserted here** — `WorkerGateway._authorize()` is still empty
-and Phase E fills it. The one authorization-adjacent property tested is the §5.2
-rule that an unowned browser call must not run, which is a fail-closed refusal
-rather than a policy decision.
+**No authorization is asserted here.** It was empty when this was written and Phase
+E has since filled it; the policy itself is asserted in `tests/test_browser_authz.py`
+and nothing here duplicates it. The one authorization-adjacent property tested is the
+§5.2 rule that an unowned browser call must not run, which is a fail-closed refusal
+rather than a policy decision. Two tests below carry an AMENDED IN PHASE E note where
+E disproved an invariant this file had asserted.
 """
 from __future__ import annotations
 
@@ -74,12 +76,26 @@ class TestRegistration:
         import backend.guardrails as g
         assert name in g.TOOL_CATEGORY, f"{name} escapes the policy table"
 
-    @pytest.mark.parametrize("name", BROWSER_TOOLS)
-    def test_no_browser_tool_is_outbound(self, name):
-        """§3.2 Trap 2. `is_outbound` overrides the category and the `outbound` rule
-        precedes `guardrail_approval`, so an outbound browser tool would put an
-        approval in front of browser_inspect."""
+    @pytest.mark.parametrize("name", [n for n in BROWSER_TOOLS if n != "browser_submit"])
+    def test_no_navigational_tool_is_outbound(self, name):
+        """§3.2 Trap 2. `is_outbound` forces approval regardless of category, so an
+        outbound browser tool would put an approval in front of browser_inspect.
+        Thirteen must therefore stay clear of the flag.
+
+        AMENDED IN PHASE E. This was written as "no browser tool is outbound", which
+        Phase E's Step 0 disproved as a safe invariant: `comms` alone yields "auto"
+        at AUTONOMY_LEVEL=autonomous, so browser_submit — the one irreversible
+        action — was UNGATED at that level. The flag is the second, level-independent
+        gate that closes it. The invariant that actually matters is not "none are
+        outbound" but "only the irreversible one is", which is what this now asserts
+        together with `test_exactly_one_browser_tool_is_outbound` below.
+        """
         assert registry.get(name).is_outbound is False
+
+    def test_exactly_one_browser_tool_is_outbound(self):
+        assert registry.get("browser_submit").is_outbound is True
+        outbound = sorted(n for n in BROWSER_TOOLS if registry.get(n).is_outbound)
+        assert outbound == ["browser_submit"]
 
     def test_only_submit_requires_approval(self):
         import backend.guardrails as g
@@ -119,10 +135,11 @@ INTERNAL_HOSTS = {"browser-lab", "localhost", "127.0.0.1", "::1", "playwright-wo
 def test_browser_domain_allowlist_is_internal_only():
     """TRIPWIRE — if this fails, revisit guardrails.TOOL_CATEGORY before shipping.
 
-    All 14 browser tools are classified NOT outbound. That is correct only while a
-    browser session can reach nothing but internal compose services. The moment an
-    external host is added to ALLOWED_DOMAINS, browser tools egress — and 14 tools
-    marked non-outbound would be a lie the authorization boundary believes.
+    Thirteen of the 14 browser tools are classified NOT outbound (browser_submit is
+    the exception). That is correct only while a browser session can reach nothing
+    but internal compose services. The moment an external host is added to
+    ALLOWED_DOMAINS, browser tools egress — and 13 tools marked non-outbound would
+    be a lie the authorization boundary believes.
 
     This test exists to fail at exactly that moment. Do not add the host and
     silence the test: add the host, then decide what `TOOL_CATEGORY` and
@@ -130,8 +147,8 @@ def test_browser_domain_allowlist_is_internal_only():
     """
     external = [h for h in breg.ALLOWED_DOMAINS if h not in INTERNAL_HOSTS]
     assert external == [], (
-        f"ALLOWED_DOMAINS now contains external host(s) {external}. Browser tools "
-        f"are classified NOT outbound in guardrails.TOOL_CATEGORY on the explicit "
+        f"ALLOWED_DOMAINS now contains external host(s) {external}. Thirteen browser "
+        f"tools are classified NOT outbound in guardrails.TOOL_CATEGORY on the explicit "
         f"grounds that they reach only internal services. That is no longer true. "
         f"Revisit the browser block in backend/guardrails.py (§3.2 Trap 2) before "
         f"this ships — do not silence this test.")
@@ -280,6 +297,15 @@ class TestAntiBypassSurvivesRegistration:
 # ══════════════════════════════════════════════════════════════════════════════
 # Grants — the mechanism accepts these names (§4.3). No seeding: that is Phase E.
 # ══════════════════════════════════════════════════════════════════════════════
+#: Phase E added two rules ahead of the guardrail branch — session ownership and
+#: domain — so a bare `authorize_call` for a session-scoped tool now denies with
+#: `session_not_owned` before any grant reasoning is reached. These tests are about
+#: the GRANT rule, so they hand in facts that satisfy the two preceding rules; the
+#: rules themselves are tested in `tests/test_browser_authz.py`.
+OWNED = {"session_owner_tenant": "t", "session_owner_user": "u",
+         "current_page_host": "browser-lab"}
+
+
 class TestGrantMechanism:
     def test_the_write_time_filter_accepts_all_fourteen_names(self):
         """The audit found grants are filtered against
@@ -302,12 +328,12 @@ class TestGrantMechanism:
         res = authz.authorize_call(
             user_id="u", tenant_id="t", agent_id="a", session_id="s",
             tool_name="browser_inspect", granted=["browser_inspect"],
-            tool=registry.get("browser_inspect"))
+            tool=registry.get("browser_inspect"), **OWNED)
         assert res.decision is Decision.ALLOW and res.rule == "grant:name"
         other = authz.authorize_call(
             user_id="u", tenant_id="t", agent_id="a", session_id="s",
             tool_name="browser_fill", granted=["browser_inspect"],
-            tool=registry.get("browser_fill"))
+            tool=registry.get("browser_fill"), **OWNED)
         assert other.decision is Decision.DENY
 
     def test_a_permission_grant_covers_its_family(self):
@@ -316,13 +342,13 @@ class TestGrantMechanism:
         for n in ("browser_navigate", "browser_inspect", "browser_screenshot"):
             res = authz.authorize_call(
                 user_id="u", tenant_id="t", agent_id="a", session_id="s",
-                tool_name=n, granted=["browser.read"], tool=registry.get(n))
+                tool_name=n, granted=["browser.read"], tool=registry.get(n), **OWNED)
             assert res.decision is Decision.ALLOW and res.rule == "grant:permission", n
         # ...and does not confer write or submit.
         for n in ("browser_fill", "browser_submit"):
             res = authz.authorize_call(
                 user_id="u", tenant_id="t", agent_id="a", session_id="s",
-                tool_name=n, granted=["browser.read"], tool=registry.get(n))
+                tool_name=n, granted=["browser.read"], tool=registry.get(n), **OWNED)
             assert res.decision is Decision.DENY, n
 
     def test_a_wildcard_is_still_impossible(self):
@@ -332,23 +358,38 @@ class TestGrantMechanism:
         res = authz.authorize_call(
             user_id="u", tenant_id="t", agent_id="a", session_id="s",
             tool_name="browser_inspect", granted=["browser_*"],
-            tool=registry.get("browser_inspect"))
+            tool=registry.get("browser_inspect"), **OWNED)
         assert res.decision is Decision.DENY
         known = set(registry.all_names()) | registry.all_permissions()
         assert "browser_*" not in known, "a wildcard would now be storable"
 
-    def test_no_grants_were_seeded(self):
-        """Phase E seeds. If browser permissions appeared in the database during
-        Phase D, that happened by accident."""
+    def test_the_canary_grants_are_seeded_and_scoped_to_one_agent(self):
+        """AMENDED IN PHASE E — was `test_no_grants_were_seeded`.
+
+        Phase D asserted zero rows, because seeding was explicitly Phase E's job.
+        Phase E has now seeded them, so the assertion inverts: exactly 14 rows, all
+        on ONE agent. The second half is the part still worth testing — a seeder
+        that granted browser access org-wide would satisfy "14 rows exist" only if
+        nobody counted the agents.
+        """
         import subprocess
-        out = subprocess.run(
-            ["docker", "exec", "postgres", "psql", "-U", "postgres", "-d", "aganeti",
-             "-t", "-A", "-c",
-             "SELECT count(*) FROM agent_permissions WHERE permission LIKE 'browser%';"],
-            capture_output=True, text=True)
-        if out.returncode != 0:
-            pytest.skip("postgres not reachable")
-        assert out.stdout.strip() == "0", "browser grants were seeded in Phase D"
+
+        def q(sql):
+            out = subprocess.run(
+                ["docker", "exec", "postgres", "psql", "-U", "postgres", "-d",
+                 "aganeti", "-t", "-A", "-c", sql], capture_output=True, text=True)
+            if out.returncode != 0:
+                pytest.skip("postgres not reachable")
+            return out.stdout.strip()
+
+        assert q("SELECT count(*) FROM agent_permissions "
+                 "WHERE permission LIKE 'browser%';") == "14"
+        assert q("SELECT count(DISTINCT agent_id) FROM agent_permissions "
+                 "WHERE permission LIKE 'browser%';") == "1"
+        # And the outbound column mirrors the registry, so an operator reading the
+        # table sees which grant is approval-gated.
+        assert q("SELECT count(*) FROM agent_permissions "
+                 "WHERE permission LIKE 'browser%' AND is_outbound;") == "1"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
